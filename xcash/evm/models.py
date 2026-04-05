@@ -109,7 +109,7 @@ class EvmBroadcastTask(UndeletableModel):
     )
     data = models.TextField(_("Data"), blank=True, default="")
     gas = models.PositiveIntegerField(_("Gas"))
-    gas_price = models.PositiveBigIntegerField(_("Gas Price"))
+    gas_price = models.PositiveBigIntegerField(_("Gas Price"), blank=True, null=True)
     signed_payload = models.TextField(_("已签名链上载荷"), blank=True, default="")
 
     # completed 仅表示整笔 EVM 交易生命周期已经结束（确认成功或明确失败）。
@@ -133,13 +133,15 @@ class EvmBroadcastTask(UndeletableModel):
 
     def __str__(self) -> str:
         return (
-            self.base_task.tx_hash
+            self.base_task.tx_hash or f"{self.address_id}:{self.nonce}"
             if self.base_task_id
             else f"{self.address_id}:{self.nonce}"
         )
 
     @property
     def transaction_dict(self) -> dict:
+        if self.gas_price is None:
+            raise ValueError("EVM 任务尚未签名，gas_price 不可为空")
         return {
             "chainId": self.chain.chain_id,
             "nonce": self.nonce,
@@ -153,24 +155,66 @@ class EvmBroadcastTask(UndeletableModel):
         }
 
     def broadcast(self) -> None:
+        if self.has_lower_unsettled_nonce():
+            return None
+        self._ensure_signed_with_latest_gas_price()
+
         self.last_attempt_at = timezone.now()
         self.save(update_fields=["last_attempt_at"])
 
-        if not self.signed_payload:
-            raise RuntimeError("EVM 任务缺少 signed_payload，广播阶段不再支持本地补签")
         raw_payload = Web3.to_bytes(hexstr=self.signed_payload)
         try:
             self.chain.w3.eth.send_raw_transaction(raw_payload)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             if self._is_already_known_error(exc):
                 return self._mark_pending_chain()
-            reason = self._classify_broadcast_error(exc)
-            if reason is not None:
-                self._finalize_failure(reason)
-                return None
             raise
         self._mark_pending_chain()
         return None
+
+    def _ensure_signed_with_latest_gas_price(self) -> None:
+        """首次广播时签名并生成首个 tx_hash；重试时仅在 gas 提升时重签。"""
+        current_gas_price = self.chain.w3.eth.gas_price  # noqa: SLF001
+        if not self.signed_payload or self.gas_price is None:
+            signed = get_signer_backend().sign_evm_transaction(
+                address=self.address,
+                chain=self.chain,
+                tx_dict=self._build_transaction_dict(gas_price=current_gas_price),
+            )
+            self.gas_price = current_gas_price
+            self.signed_payload = signed.raw_transaction
+            self.save(update_fields=["gas_price", "signed_payload"])
+            if self.base_task_id:
+                self.base_task.append_tx_hash(signed.tx_hash)
+            return
+
+        if current_gas_price <= self.gas_price:
+            return
+
+        signed = get_signer_backend().sign_evm_transaction(
+            address=self.address,
+            chain=self.chain,
+            tx_dict=self._build_transaction_dict(gas_price=current_gas_price),
+        )
+        self.gas_price = current_gas_price
+        self.signed_payload = signed.raw_transaction
+        self.save(update_fields=["gas_price", "signed_payload"])
+
+        # 重签后 tx_hash 变化，更新父任务并追加历史记录以便链上观测匹配。
+        if self.base_task_id:
+            self.base_task.append_tx_hash(signed.tx_hash)
+
+    def _build_transaction_dict(self, *, gas_price: int) -> dict:
+        return {
+            "chainId": self.chain.chain_id,
+            "nonce": self.nonce,
+            "from": self.address.address,
+            "to": self.to,
+            "value": int(self.value),
+            "data": self.data if self.data else "0x",
+            "gas": self.gas,
+            "gasPrice": gas_price,
+        }
 
     def _mark_pending_chain(self) -> None:
         if self.base_task_id:
@@ -193,6 +237,21 @@ class EvmBroadcastTask(UndeletableModel):
             return "已完成"
         return "待执行"
 
+    def has_lower_unsettled_nonce(self) -> bool:
+        """同账户更低 nonce 只要尚未收口，就阻断当前任务广播。"""
+        if not self.address_id or not self.chain_id:
+            return False
+        return EvmBroadcastTask.objects.filter(
+            address=self.address,
+            chain=self.chain,
+            nonce__lt=self.nonce,
+            base_task__stage__in=(
+                BroadcastTaskStage.QUEUED,
+                BroadcastTaskStage.PENDING_CHAIN,
+            ),
+            base_task__result=BroadcastTaskResult.UNKNOWN,
+        ).exists()
+
     def _finalize_failure(self, reason: BroadcastTaskFailureReason | str) -> None:
         """把 EVM 任务收口为失败终局，并同步业务对象状态。"""
         if not self.base_task_id:
@@ -213,18 +272,6 @@ class EvmBroadcastTask(UndeletableModel):
             from withdrawals.service import WithdrawalService
 
             WithdrawalService.fail_withdrawal(broadcast_task=self.base_task)
-
-    @staticmethod
-    def _classify_broadcast_error(
-        exc: Exception,
-    ) -> BroadcastTaskFailureReason | None:
-        """将节点拒绝错误分类为可终局失败原因；未知错误继续重试。"""
-        msg = str(exc).lower()
-        if "insufficient funds" in msg:
-            return BroadcastTaskFailureReason.INSUFFICIENT_BALANCE
-        if "replacement transaction underpriced" in msg:
-            return BroadcastTaskFailureReason.FEE_TOO_LOW
-        return None
 
     @staticmethod
     def _is_already_known_error(exc: Exception) -> bool:
@@ -251,18 +298,15 @@ class EvmBroadcastTask(UndeletableModel):
         data="",
         verify_fn=None,
     ):
-        """预取 gas_price 后，在数据库行锁内完成 nonce 分配、签名取 hash，并原子写入 DB。
+        """在数据库行锁内完成 nonce 分配并原子落库待广播任务。
 
         设计要点：
         - 通过 AddressChainState 行锁对 (address, chain) 串行化，杜绝并发 nonce 冲突。
-        - gas_price 在进入事务前预取，缩短数据库锁持有时间；慢节点不应长时间阻塞后续同账户请求。
         - verify_fn 在行锁内、nonce 分配前执行，供调用方注入余额二次验证等逻辑，
-          防止 TOCTOU 竞态（Serializer 软检查 → 加锁 → 签名之间的窗口期）。
-        - 签名仅用于预计算 hash（与 broadcast() → signed_transaction() 结果一致），
-          实际广播由 transact_evm_queues 定时任务完成。
+          防止 TOCTOU 竞态（Serializer 软检查 → 加锁 → 分配 nonce 之间的窗口期）。
+        - 首次签名和首个 tx_hash 生成延后到 broadcast()；内部稳定身份只依赖 (address, chain, nonce)。
         - 行锁跟随事务提交自动释放，不依赖 Redis TTL。
         """
-        gas_price = chain.w3.eth.gas_price  # noqa: SLF001
         with db_transaction.atomic():
             state = AddressChainState.acquire_for_update(address=address, chain=chain)
 
@@ -270,24 +314,6 @@ class EvmBroadcastTask(UndeletableModel):
             if verify_fn is not None:
                 verify_fn()
             nonce = cls._next_nonce(address, chain, state=state)
-
-            # 构造与 transaction_dict 完全相同的结构，确保 hash 一致
-            tx_dict = {
-                "chainId": chain.chain_id,
-                "nonce": nonce,
-                "from": address.address,
-                "to": to,
-                "value": int(value),
-                "data": data if data else "0x",
-                "gas": gas,
-                "gasPrice": gas_price,
-            }
-            # EVM 新任务统一在调度时完成签名并持久化 raw tx，广播阶段不再接触私钥。
-            signed_payload = get_signer_backend().sign_evm_transaction(
-                address=address,
-                chain=chain,
-                tx_dict=tx_dict,
-            )
             base_task = BroadcastTask.objects.create(
                 chain=chain,
                 address=address,
@@ -295,11 +321,9 @@ class EvmBroadcastTask(UndeletableModel):
                 crypto=crypto,
                 recipient=recipient,
                 amount=amount,
-                tx_hash=signed_payload.tx_hash,
                 stage=BroadcastTaskStage.QUEUED,
                 result=BroadcastTaskResult.UNKNOWN,
             )
-            base_task.create_initial_tx_hash()
 
             # 稳定执行对象统一命名为 broadcast_task，避免继续把"任务"误解成某次签名尝试。
             broadcast_task = EvmBroadcastTask.objects.create(
@@ -311,8 +335,6 @@ class EvmBroadcastTask(UndeletableModel):
                 nonce=nonce,
                 data=data,
                 gas=gas,
-                gas_price=gas_price,
-                signed_payload=signed_payload.raw_transaction,
             )
             state.next_nonce = nonce + 1
             state.save()

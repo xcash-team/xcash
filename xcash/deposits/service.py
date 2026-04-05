@@ -207,6 +207,25 @@ class DepositService:
         try_match_collection 会在链上交易被节点推送时自动关联。
         """
         try:
+            if params["chain"].type == ChainType.EVM:
+                from evm.models import EvmBroadcastTask
+
+                decimals = params["crypto"].get_decimals(params["chain"])
+                value_raw = int(params["amount"] * Decimal(10**decimals))
+                task = EvmBroadcastTask.schedule_transfer(
+                    address=params["address"],
+                    crypto=params["crypto"],
+                    chain=params["chain"],
+                    to=params["recipient_address"],
+                    value_raw=value_raw,
+                    transfer_type=TransferType.DepositCollection,
+                )
+                DepositCollection.objects.filter(pk=params["collection_id"]).update(
+                    broadcast_task=task.base_task,
+                    updated_at=timezone.now(),
+                )
+                return True
+
             tx_hash = params["address"].send_crypto(
                 crypto=params["crypto"],
                 chain=params["chain"],
@@ -307,7 +326,22 @@ class DepositService:
                 collection_hash=transfer.hash
             )
         except DepositCollection.DoesNotExist:
-            return False
+            from chains.models import BroadcastTask
+
+            broadcast_task = BroadcastTask.resolve_by_hash(
+                chain=transfer.chain,
+                tx_hash=transfer.hash,
+            )
+            if broadcast_task is None:
+                return False
+            try:
+                collection = DepositCollection.objects.select_for_update().get(
+                    broadcast_task=broadcast_task
+                )
+            except DepositCollection.DoesNotExist:
+                return False
+            if collection.collection_hash != transfer.hash:
+                collection.collection_hash = transfer.hash
 
         transfer.type = TransferType.DepositCollection
         transfer.save(update_fields=["type"])
@@ -317,7 +351,11 @@ class DepositService:
             return True
 
         collection.transfer = transfer
-        collection.save(update_fields=["transfer", "updated_at"])
+        update_fields = ["transfer", "updated_at"]
+        if collection.collection_hash != transfer.hash:
+            collection.collection_hash = transfer.hash
+            update_fields.insert(0, "collection_hash")
+        collection.save(update_fields=update_fields)
         return True
 
     @staticmethod

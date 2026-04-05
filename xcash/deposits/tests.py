@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import PropertyMock
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
@@ -12,6 +13,7 @@ from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
+from chains.models import BroadcastTask
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainTransfer
@@ -331,8 +333,10 @@ class DepositServiceDecimalsTests(SimpleTestCase):
     @patch.object(DepositService, "_lock_collectible_group")
     @patch("deposits.service.DepositCollection.objects")
     @patch("deposits.service.Deposit.objects.filter")
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     def test_collect_deposit_uses_chain_specific_crypto_decimals(
         self,
+        schedule_transfer_mock,
         deposit_filter_mock,
         collection_objects_mock,
         lock_group_mock,
@@ -343,11 +347,17 @@ class DepositServiceDecimalsTests(SimpleTestCase):
     ):
         # 覆盖精度场景下，归集发送金额必须按链特定精度换算，而不是 Crypto 默认精度。
         recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
-            SimpleNamespace(address="0xrecipient")
+            SimpleNamespace(
+                address=Web3.to_checksum_address(
+                    "0x00000000000000000000000000000000000000aa"
+                )
+            )
         )
         # mock 占位 collection 创建和 deposit 批量更新
         collection_objects_mock.create.return_value = SimpleNamespace(pk=999)
         deposit_filter_mock.return_value.update = Mock()
+        collection_objects_mock.filter.return_value.update = Mock()
+        schedule_transfer_mock.return_value = SimpleNamespace(base_task=Mock())
 
         chain = SimpleNamespace(
             type=ChainType.EVM,
@@ -390,11 +400,12 @@ class DepositServiceDecimalsTests(SimpleTestCase):
 
         self.assertTrue(collected)
         ensure_native_buffer_mock.assert_called_once()
-        fake_addr.send_crypto.assert_called_once_with(
+        schedule_transfer_mock.assert_called_once_with(
             crypto=crypto,
             chain=chain,
-            to="0xrecipient",
-            amount=Decimal("1"),
+            address=fake_addr,
+            to=Web3.to_checksum_address("0x00000000000000000000000000000000000000aa"),
+            value_raw=10**18,
             transfer_type=TransferType.DepositCollection,
         )
 
@@ -655,6 +666,7 @@ class DepositTransferRematchTests(TestCase):
 
         create_event_mock.assert_called_once()
 
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_ensure_native_buffer")
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.RecipientAddress.objects.filter")
@@ -663,6 +675,7 @@ class DepositTransferRematchTests(TestCase):
         recipient_filter_mock,
         adapter_factory_mock,
         ensure_native_buffer_mock,
+        schedule_transfer_mock,
     ):
         # 同一客户在同链同币下多笔完成充币应共享一笔归集交易，不能重复发起第二笔归集。
         project = Project.objects.create(
@@ -713,6 +726,17 @@ class DepositTransferRematchTests(TestCase):
         adapter_factory_mock.return_value = SimpleNamespace(
             get_balance=Mock(return_value=10**6)
         )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=crypto,
+            recipient=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000d1"
+            ),
+            amount=Decimal("3"),
+        )
+        schedule_transfer_mock.return_value = SimpleNamespace(base_task=base_task)
         fake_addr = SimpleNamespace(
             address=addr.address,
             send_crypto=Mock(return_value="0x" + "c" * 64),
@@ -773,8 +797,9 @@ class DepositTransferRematchTests(TestCase):
         # 同组 Deposit 应指向同一个 DepositCollection，共享归集哈希
         self.assertIsNotNone(deposit1.collection_id)
         self.assertEqual(deposit1.collection_id, deposit2.collection_id)
-        self.assertEqual(deposit1.collection.collection_hash, "0x" + "c" * 64)
-        fake_addr.send_crypto.assert_called_once()
+        self.assertIsNone(deposit1.collection.collection_hash)
+        self.assertEqual(deposit1.collection.broadcast_task, base_task)
+        schedule_transfer_mock.assert_called_once()
         ensure_native_buffer_mock.assert_called_once()
 
     def test_confirm_collection_marks_same_hash_group_completed(self):
@@ -941,6 +966,7 @@ class DepositTransferRematchTests(TestCase):
         self.assertIsNone(deposit1.collection_id)
         self.assertIsNone(deposit2.collection_id)
 
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_ensure_native_buffer")
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
@@ -951,6 +977,7 @@ class DepositTransferRematchTests(TestCase):
         deposit_address_get_mock,
         adapter_factory_mock,
         ensure_native_buffer_mock,
+        schedule_transfer_mock,
     ):
         # 定时归集任务即使一次捞到同组两条 completed deposit，也只能真正发出一笔归集交易。
         project = Project.objects.create(
@@ -1004,6 +1031,17 @@ class DepositTransferRematchTests(TestCase):
         adapter_factory_mock.return_value = SimpleNamespace(
             get_balance=Mock(return_value=10**6)
         )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.DepositCollection,
+            crypto=crypto,
+            recipient=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000003d1"
+            ),
+            amount=Decimal("3"),
+        )
+        schedule_transfer_mock.return_value = SimpleNamespace(base_task=base_task)
 
         transfer1 = OnchainTransfer.objects.create(
             chain=chain,
@@ -1053,8 +1091,9 @@ class DepositTransferRematchTests(TestCase):
         # 同组 Deposit 应指向同一个 DepositCollection，且只发出一笔归集交易
         self.assertIsNotNone(deposit1.collection_id)
         self.assertEqual(deposit1.collection_id, deposit2.collection_id)
-        self.assertEqual(deposit1.collection.collection_hash, "0x" + "f" * 64)
-        fake_addr.send_crypto.assert_called_once()
+        self.assertIsNone(deposit1.collection.collection_hash)
+        self.assertEqual(deposit1.collection.broadcast_task, base_task)
+        schedule_transfer_mock.assert_called_once()
         ensure_native_buffer_mock.assert_called_once()
 
 
@@ -1115,8 +1154,10 @@ class DepositRemoteSignerFlowTests(TestCase):
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=3)
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.RecipientAddress.objects.filter")
+    @patch.object(Chain, "w3", new_callable=PropertyMock)
     def test_collect_deposit_uses_remote_signer_without_local_mnemonic(
         self,
+        chain_w3_mock,
         recipient_filter_mock,
         adapter_factory_mock,
         _next_nonce_mock,
@@ -1154,7 +1195,9 @@ class DepositRemoteSignerFlowTests(TestCase):
             rpc="http://localhost:8545",
             active=True,
         )
-        chain.__dict__["w3"] = SimpleNamespace(eth=SimpleNamespace(gas_price=5))
+        chain_w3_mock.return_value = SimpleNamespace(
+            eth=SimpleNamespace(gas_price=5, send_raw_transaction=Mock())
+        )
         addr = Address.objects.create(
             wallet=wallet,
             chain_type=ChainType.EVM,
@@ -1220,5 +1263,6 @@ class DepositRemoteSignerFlowTests(TestCase):
         self.assertTrue(collected)
         deposit.refresh_from_db()
         self.assertIsNotNone(deposit.collection_id)
-        self.assertEqual(deposit.collection.collection_hash, "0x" + "e" * 64)
-        signer_backend.sign_evm_transaction.assert_called_once()
+        self.assertIsNotNone(deposit.collection.broadcast_task_id)
+        self.assertIsNone(deposit.collection.collection_hash)
+        signer_backend.sign_evm_transaction.assert_not_called()

@@ -819,12 +819,14 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         self.assertTrue(collected)
         deposit.refresh_from_db()
         self.assertIsNotNone(deposit.collection_id)
-        collection_hash = deposit.collection.collection_hash
 
         collection_task = EvmBroadcastTask.objects.get(
-            base_task__tx_hash=collection_hash
+            base_task=deposit.collection.broadcast_task
         )
         collection_task.broadcast()
+        deposit.collection.refresh_from_db()
+        self.assertIsNone(deposit.collection.collection_hash)
+        collection_hash = collection_task.base_task.tx_hash
         w3.eth.wait_for_transaction_receipt(collection_hash)
         collection_transfer = self._scan_evm_chain_and_get_transfer(
             chain=chain,
@@ -1094,7 +1096,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         self.assertTrue(collected)
         deposit.refresh_from_db()
         self.assertIsNotNone(deposit.collection_id)
-        collection_hash = deposit.collection.collection_hash
 
         gas_task = EvmBroadcastTask.objects.filter(
             base_task__chain=chain,
@@ -1117,9 +1118,12 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
 
         collection_task = EvmBroadcastTask.objects.get(
-            base_task__tx_hash=collection_hash
+            base_task=deposit.collection.broadcast_task
         )
         collection_task.broadcast()
+        deposit.collection.refresh_from_db()
+        self.assertIsNone(deposit.collection.collection_hash)
+        collection_hash = collection_task.base_task.tx_hash
         w3.eth.wait_for_transaction_receipt(collection_hash)
         collection_transfer = self._scan_evm_chain_and_get_transfer(
             chain=chain,

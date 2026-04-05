@@ -59,8 +59,8 @@ deposits_tasks = {
 # evm app
 # ---------------------------
 evm_tasks = {
-    "transact_evm_queues": {
-        "task": "evm.tasks.transact_evm_queues",
+    "dispatch_due_evm_broadcast_tasks": {
+        "task": "evm.tasks.dispatch_due_evm_broadcast_tasks",
         "schedule": 10,
     },
     "scan_active_evm_chains": {

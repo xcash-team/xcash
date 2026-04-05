@@ -107,6 +107,14 @@ class DepositCollection(models.Model):
         related_name="deposit_collection",
         verbose_name=_("归集转账"),
     )
+    broadcast_task = models.OneToOneField(
+        "chains.BroadcastTask",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deposit_collection",
+        verbose_name=_("链上任务"),
+    )
     collected_at = models.DateTimeField(
         null=True,
         blank=True,

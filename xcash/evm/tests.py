@@ -211,7 +211,7 @@ class EvmBroadcastTaskTests(TestCase):
             native_coin=Crypto(name="Ethereum", symbol="ETH", coingecko_id="ethereum"),
         )
         chain.__dict__["w3"] = SimpleNamespace(
-            eth=SimpleNamespace(send_raw_transaction=Mock()),
+            eth=SimpleNamespace(gas_price=1, send_raw_transaction=Mock()),
         )
         addr = Address(
             wallet=Wallet(),
@@ -239,7 +239,9 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertFalse(broadcast_task.completed)
 
     @patch("withdrawals.service.WebhookService.create_event")
-    def test_broadcast_finalizes_withdrawal_on_insufficient_funds(self, webhook_mock):
+    def test_broadcast_keeps_insufficient_funds_retryable_without_finalizing(
+        self, webhook_mock
+    ):
         from projects.models import Project
         from withdrawals.models import Withdrawal
         from withdrawals.models import WithdrawalStatus
@@ -276,6 +278,7 @@ class EvmBroadcastTaskTests(TestCase):
         )
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
+                gas_price=1,
                 send_raw_transaction=Mock(
                     side_effect=RuntimeError(
                         "insufficient funds for gas * price + value"
@@ -320,23 +323,24 @@ class EvmBroadcastTaskTests(TestCase):
             signed_payload="0x7261772d6279746573",
         )
 
-        with self.captureOnCommitCallbacks(execute=True):
-            broadcast_task.broadcast()
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "insufficient funds for gas * price + value",
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                broadcast_task.broadcast()
 
         withdrawal.refresh_from_db()
         base_task.refresh_from_db()
         broadcast_task.refresh_from_db()
-        self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
-        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            base_task.failure_reason,
-            BroadcastTaskFailureReason.INSUFFICIENT_BALANCE,
-        )
-        self.assertTrue(broadcast_task.completed)
-        webhook_mock.assert_called_once()
+        self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(base_task.failure_reason, "")
+        self.assertFalse(broadcast_task.completed)
+        webhook_mock.assert_not_called()
 
-    def test_broadcast_finalizes_fee_too_low_error_without_retry(self):
+    def test_broadcast_keeps_fee_too_low_error_retryable_without_finalizing(self):
         native = Crypto.objects.create(
             name="Ethereum Fee Too Low",
             symbol="ETHFTL",
@@ -363,6 +367,7 @@ class EvmBroadcastTaskTests(TestCase):
         )
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
+                gas_price=1,
                 send_raw_transaction=Mock(
                     side_effect=RuntimeError("replacement transaction underpriced")
                 )
@@ -393,15 +398,18 @@ class EvmBroadcastTaskTests(TestCase):
             signed_payload="0x7261772d6279746573",
         )
 
-        broadcast_task.broadcast()
+        with self.assertRaisesMessage(
+            RuntimeError,
+            "replacement transaction underpriced",
+        ):
+            broadcast_task.broadcast()
 
         base_task.refresh_from_db()
         broadcast_task.refresh_from_db()
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            base_task.failure_reason, BroadcastTaskFailureReason.FEE_TOO_LOW
-        )
-        self.assertTrue(broadcast_task.completed)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(base_task.failure_reason, "")
+        self.assertFalse(broadcast_task.completed)
 
     def test_broadcast_keeps_nonce_too_low_for_followup_reconciliation(self):
         native = Crypto.objects.create(
@@ -430,6 +438,7 @@ class EvmBroadcastTaskTests(TestCase):
         )
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
+                gas_price=1,
                 send_raw_transaction=Mock(side_effect=RuntimeError("nonce too low"))
             )
         )
@@ -467,6 +476,93 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.failure_reason, "")
         self.assertFalse(broadcast_task.completed)
 
+    def test_broadcast_blocks_higher_nonce_until_lower_nonce_settles(self):
+        native = Crypto.objects.create(
+            name="Ethereum Nonce Block",
+            symbol="ETHNB",
+            coingecko_id="ethereum-nonce-block",
+        )
+        chain = Chain.objects.create(
+            code="eth-nonce-block",
+            name="Ethereum Nonce Block",
+            type=ChainType.EVM,
+            chain_id=20104,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000107"
+            ),
+        )
+        send_raw_transaction_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                send_raw_transaction=send_raw_transaction_mock,
+            )
+        )
+        lower_base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000108"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        EvmBroadcastTask.objects.create(
+            base_task=lower_base_task,
+            address=addr,
+            chain=chain,
+            nonce=4,
+            to=lower_base_task.recipient,
+            value=0,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000109"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=5,
+            to=base_task.recipient,
+            value=0,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        broadcast_task.broadcast()
+
+        send_raw_transaction_mock.assert_not_called()
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertIsNone(broadcast_task.last_attempt_at)
+
     def test_broadcast_treats_already_known_as_idempotent_success(self):
         native = Crypto.objects.create(
             name="Ethereum Already Known",
@@ -494,6 +590,7 @@ class EvmBroadcastTaskTests(TestCase):
         )
         chain.__dict__["w3"] = SimpleNamespace(
             eth=SimpleNamespace(
+                gas_price=1,
                 send_raw_transaction=Mock(side_effect=RuntimeError("already known"))
             )
         )
@@ -652,7 +749,7 @@ class EvmChainScannerServiceTests(TestCase):
             native_coin=Crypto(name="Ethereum", symbol="ETH", coingecko_id="ethereum"),
         )
         chain.__dict__["w3"] = SimpleNamespace(
-            eth=SimpleNamespace(send_raw_transaction=Mock(), account=Mock()),
+            eth=SimpleNamespace(gas_price=2, send_raw_transaction=Mock(), account=Mock()),
         )
         addr = Address(
             wallet=Wallet(),
@@ -676,27 +773,25 @@ class EvmChainScannerServiceTests(TestCase):
         )
         broadcast_task.save = Mock()
 
-        with self.assertRaisesMessage(RuntimeError, "广播阶段不再支持本地补签"):
+        with self.assertRaisesMessage(Exception, "远端 signer 请求失败"):
             broadcast_task.broadcast()
 
         chain.w3.eth.account.sign_transaction.assert_not_called()
 
-    @patch("evm.models.get_signer_backend")
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=3)
-    def test_create_broadcast_task_signs_immediately_and_persists_signed_payload(
+    def test_create_broadcast_task_defers_signing_until_first_broadcast(
         self,
         _next_nonce_mock,
-        get_signer_backend_mock,
     ):
-        # 新 EVM 任务必须在调度阶段完成签名并把 raw tx 落库，广播阶段不再接触私钥。
+        # 新 EVM 任务创建时只分配 nonce，不应提前签名或生成 tx_hash。
         native = Crypto.objects.create(
-            name="Ethereum Signed Payload",
-            symbol="ETHSP",
-            coingecko_id="ethereum-signed-payload",
+            name="Ethereum Deferred Signing",
+            symbol="ETHDS",
+            coingecko_id="ethereum-deferred-signing",
         )
         chain = Chain.objects.create(
-            code="eth-sp",
-            name="Ethereum Signed Payload",
+            code="eth-deferred-sign",
+            name="Ethereum Deferred Signing",
             type=ChainType.EVM,
             chain_id=1,
             rpc="http://localhost:8545",
@@ -716,13 +811,6 @@ class EvmChainScannerServiceTests(TestCase):
         )
         addr.get_lock = Mock(return_value=True)
         addr.release_lock = Mock()
-        chain.__dict__["w3"] = SimpleNamespace(eth=SimpleNamespace(gas_price=9))
-        signer_backend = Mock()
-        signer_backend.sign_evm_transaction.return_value = SimpleNamespace(
-            tx_hash="0x" + "ab" * 32,
-            raw_transaction="0xdeadbeef",
-        )
-        get_signer_backend_mock.return_value = signer_backend
 
         task = EvmBroadcastTask.schedule_transfer(
             address=addr,
@@ -733,13 +821,16 @@ class EvmChainScannerServiceTests(TestCase):
             transfer_type=TransferType.Withdrawal,
         )
 
-        self.assertEqual(task.signed_payload, "0xdeadbeef")
-        self.assertEqual(task.base_task.tx_hash, "0x" + "ab" * 32)
-        signer_backend.sign_evm_transaction.assert_called_once()
+        self.assertEqual(task.signed_payload, "")
+        self.assertIsNone(task.gas_price)
+        self.assertIsNone(task.base_task.tx_hash)
+        self.assertFalse(
+            TxHash.objects.filter(broadcast_task=task.base_task).exists()
+        )
 
     @patch("evm.models.get_signer_backend")
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=3)
-    def test_schedule_transfer_creates_initial_tx_hash_history(
+    def test_first_broadcast_creates_initial_tx_hash_history(
         self,
         _next_nonce_mock,
         get_signer_backend_mock,
@@ -785,9 +876,19 @@ class EvmChainScannerServiceTests(TestCase):
             transfer_type=TransferType.Withdrawal,
         )
 
+        self.assertIsNone(task.base_task.tx_hash)
+        self.assertFalse(TxHash.objects.filter(broadcast_task=task.base_task).exists())
+
+        chain.__dict__["w3"].eth.send_raw_transaction = Mock()
+        task.broadcast()
+
+        task.refresh_from_db()
+        task.base_task.refresh_from_db()
         history = TxHash.objects.get(broadcast_task=task.base_task, version=1)
         self.assertEqual(history.hash, task.base_task.tx_hash)
         self.assertEqual(history.chain_id, chain.pk)
+        self.assertEqual(task.signed_payload, "0xdeadbeef")
+        self.assertEqual(task.gas_price, 9)
 
     @patch("evm.models.get_signer_backend")
     @patch("chains.models.Address.get_lock", return_value=True)
@@ -866,7 +967,6 @@ class EvmChainScannerServiceTests(TestCase):
 
         self.assertEqual(task.nonce, 6)
 
-    @patch("evm.models.get_signer_backend")
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     @patch("chains.models.Address.release_lock")
     @patch(
@@ -878,7 +978,6 @@ class EvmChainScannerServiceTests(TestCase):
         _get_lock_mock,
         _release_lock_mock,
         _next_nonce_mock,
-        get_signer_backend_mock,
     ):
         native = Crypto.objects.create(
             name="Ethereum DB Lock",
@@ -906,12 +1005,6 @@ class EvmChainScannerServiceTests(TestCase):
             ),
         )
         chain.__dict__["w3"] = SimpleNamespace(eth=SimpleNamespace(gas_price=9))
-        signer_backend = Mock()
-        signer_backend.sign_evm_transaction.return_value = SimpleNamespace(
-            tx_hash="0x" + "cd" * 32,
-            raw_transaction="0xbeef",
-        )
-        get_signer_backend_mock.return_value = signer_backend
 
         task = EvmBroadcastTask.schedule_transfer(
             address=addr,
@@ -923,16 +1016,15 @@ class EvmChainScannerServiceTests(TestCase):
         )
 
         self.assertEqual(task.nonce, 0)
-        signer_backend.sign_evm_transaction.assert_called_once()
+        self.assertEqual(task.signed_payload, "")
+        self.assertIsNone(task.base_task.tx_hash)
 
-    @patch("evm.models.get_signer_backend")
     @patch.object(EvmBroadcastTask, "_next_nonce", return_value=0)
     @patch("evm.models.AddressChainState.acquire_for_update")
-    def test_schedule_transfer_reads_gas_price_before_acquiring_account_chain_state_lock(
+    def test_schedule_transfer_no_longer_reads_gas_price_before_acquiring_account_chain_state_lock(
         self,
         acquire_state_mock,
         _next_nonce_mock,
-        get_signer_backend_mock,
     ):
         native = Crypto.objects.create(
             name="Ethereum Gas Price Prefetch",
@@ -972,12 +1064,6 @@ class EvmChainScannerServiceTests(TestCase):
             order.append("lock"),
             SimpleNamespace(next_nonce=0, save=Mock()),
         )[1]
-        signer_backend = Mock()
-        signer_backend.sign_evm_transaction.return_value = SimpleNamespace(
-            tx_hash="0x" + "bb" * 32,
-            raw_transaction="0xdeadbeef",
-        )
-        get_signer_backend_mock.return_value = signer_backend
 
         EvmBroadcastTask.schedule_transfer(
             address=addr,
@@ -988,7 +1074,7 @@ class EvmChainScannerServiceTests(TestCase):
             transfer_type=TransferType.Withdrawal,
         )
 
-        self.assertEqual(order[:2], ["gas_price", "lock"])
+        self.assertEqual(order[:1], ["lock"])
 
     @patch("chains.service.OnchainTransfer.objects.create")
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
@@ -1030,7 +1116,7 @@ class EvmChainScannerServiceTests(TestCase):
 
 
 class EvmTaskQueueTests(TestCase):
-    queue_lock_key = "transact_evm_queues-locked"
+    queue_lock_key = "dispatch_due_evm_broadcast_tasks-locked"
 
     def setUp(self):
         self._clear_singleton_locks()
@@ -1069,11 +1155,14 @@ class EvmTaskQueueTests(TestCase):
         tx_hash: str,
         stage: str,
         result: str,
+        nonce: int | None = None,
+        address: Address | None = None,
     ) -> EvmBroadcastTask:
         # 任务级测试直接手工落库，聚焦“队列如何挑任务”和“终局任务是否被错误重播”。
+        task_address = address or self.addr
         base_task = BroadcastTask.objects.create(
             chain=self.chain,
-            address=self.addr,
+            address=task_address,
             transfer_type=TransferType.Withdrawal,
             crypto=self.native,
             recipient=Web3.to_checksum_address(
@@ -1086,9 +1175,9 @@ class EvmTaskQueueTests(TestCase):
         )
         return EvmBroadcastTask.objects.create(
             base_task=base_task,
-            address=self.addr,
+            address=task_address,
             chain=self.chain,
-            nonce=base_task.pk,
+            nonce=base_task.pk if nonce is None else nonce,
             to=Web3.to_checksum_address("0x00000000000000000000000000000000000000f2"),
             value=0,
             gas=21_000,
@@ -1098,7 +1187,7 @@ class EvmTaskQueueTests(TestCase):
     @patch("evm.tasks.EvmBroadcastTask.broadcast")
     def test_broadcast_task_skips_finalized_broadcast_task(self, broadcast_mock):
         # 已终局的链上任务不应再次广播，否则会把成功/失败终态重新拉回执行面。
-        from evm.tasks import broadcast_evm_broadcast_task
+        from evm.tasks import broadcast_evm_task
 
         broadcast_task = self._create_evm_task(
             tx_hash="0x" + "a" * 64,
@@ -1106,16 +1195,29 @@ class EvmTaskQueueTests(TestCase):
             result=BroadcastTaskResult.SUCCESS,
         )
 
-        broadcast_evm_broadcast_task.run(broadcast_task.pk)
+        broadcast_evm_task.run(broadcast_task.pk)
 
         broadcast_mock.assert_not_called()
 
-    @patch("evm.tasks.broadcast_evm_broadcast_task.delay")
-    def test_transact_evm_queues_dispatches_only_due_unknown_tasks(self, delay_mock):
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_due_evm_broadcast_tasks_dispatches_only_due_unknown_tasks(
+        self, delay_mock
+    ):
         # 广播队列只能挑“到期且仍未知”的任务，避免 recent / finalized 任务被误重试。
         from django.utils import timezone
 
-        from evm.tasks import transact_evm_queues
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        other_addr = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=2,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000f4"
+            ),
+        )
 
         due_queued = self._create_evm_task(
             tx_hash="0x" + "b" * 64,
@@ -1126,6 +1228,7 @@ class EvmTaskQueueTests(TestCase):
             tx_hash="0x" + "c" * 64,
             stage=BroadcastTaskStage.PENDING_CHAIN,
             result=BroadcastTaskResult.UNKNOWN,
+            address=other_addr,
         )
         recent_task = self._create_evm_task(
             tx_hash="0x" + "d" * 64,
@@ -1159,14 +1262,228 @@ class EvmTaskQueueTests(TestCase):
         )
 
         with self.captureOnCommitCallbacks(execute=True):
-            transact_evm_queues.run()
+            dispatch_due_evm_broadcast_tasks.run()
 
         self.assertEqual(
             {call.args[0] for call in delay_mock.call_args_list},
             {due_queued.pk, due_pending_chain.pk},
         )
 
-    @patch("evm.tasks.broadcast_evm_broadcast_task.delay")
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_broadcast_task_skips_when_lower_unsettled_nonce_exists(
+        self,
+        broadcast_mock,
+    ):
+        # 同账户更高 nonce 在更低 nonce 未收口前不应越过广播，否则会把真实阻塞点扩散成整串噪音。
+        from evm.tasks import broadcast_evm_task
+
+        self._create_evm_task(
+            tx_hash="0x" + "1" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+        higher_task = self._create_evm_task(
+            tx_hash="0x" + "2" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=2,
+        )
+
+        broadcast_evm_task.run(higher_task.pk)
+
+        broadcast_mock.assert_not_called()
+
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_broadcast_task_allows_higher_nonce_after_lower_task_enters_pending_confirm(
+        self,
+        broadcast_mock,
+    ):
+        # 一旦更低 nonce 已被链上观察到并进入 PENDING_CONFIRM，说明该 nonce 已消费，不应继续阻断后续 nonce。
+        from evm.tasks import broadcast_evm_task
+
+        self._create_evm_task(
+            tx_hash="0x" + "11" * 32,
+            stage=BroadcastTaskStage.PENDING_CONFIRM,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+        higher_task = self._create_evm_task(
+            tx_hash="0x" + "12" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=2,
+        )
+
+        broadcast_evm_task.run(higher_task.pk)
+
+        broadcast_mock.assert_called_once()
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_due_evm_broadcast_tasks_dispatches_only_lowest_unsettled_nonce_per_account(
+        self, delay_mock
+    ):
+        # 队列层只应放行每个账户当前最小未收口 nonce，避免高 nonce 在前序缺口存在时被反复重试。
+        from django.utils import timezone
+
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        other_addr = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=1,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000f3"
+            ),
+        )
+        lower_task = self._create_evm_task(
+            tx_hash="0x" + "3" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=5,
+        )
+        blocked_higher_task = self._create_evm_task(
+            tx_hash="0x" + "4" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=6,
+        )
+        other_account_task = self._create_evm_task(
+            tx_hash="0x" + "5" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+            address=other_addr,
+        )
+
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        EvmBroadcastTask.objects.filter(
+            pk__in=[lower_task.pk, blocked_higher_task.pk, other_account_task.pk]
+        ).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        self.assertEqual(
+            {call.args[0] for call in delay_mock.call_args_list},
+            {lower_task.pk, other_account_task.pk},
+        )
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_due_evm_broadcast_tasks_treats_pending_confirm_as_nonce_consumed(
+        self,
+        delay_mock,
+    ):
+        # SQL 选取最小阻塞 nonce 时，不应把已进入 PENDING_CONFIRM 的前序任务继续当作缺口。
+        from django.utils import timezone
+
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        lower_confirming_task = self._create_evm_task(
+            tx_hash="0x" + "13" * 32,
+            stage=BroadcastTaskStage.PENDING_CONFIRM,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+        higher_task = self._create_evm_task(
+            tx_hash="0x" + "14" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=2,
+        )
+
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        stale_attempt_at = timezone.now() - timedelta(minutes=5)
+        EvmBroadcastTask.objects.filter(pk=lower_confirming_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=stale_attempt_at,
+        )
+        EvmBroadcastTask.objects.filter(pk=higher_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        self.assertEqual(
+            [call.args[0] for call in delay_mock.call_args_list],
+            [higher_task.pk],
+        )
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_due_evm_broadcast_tasks_avoids_slice_starvation_from_blocked_high_nonces(
+        self, delay_mock
+    ):
+        # SQL 层应直接挑每账户最小未收口 nonce，避免更高 nonce 候选占满 slice 后被 Python 层全部跳过。
+        from django.utils import timezone
+
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        other_addr = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=3,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000f5"
+            ),
+        )
+        lower_task = self._create_evm_task(
+            tx_hash="0x" + "6" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+        blocked_tasks = [
+            self._create_evm_task(
+                tx_hash=f"0x{i:064x}",
+                stage=BroadcastTaskStage.QUEUED,
+                result=BroadcastTaskResult.UNKNOWN,
+                nonce=i,
+            )
+            for i in range(2, 10)
+        ]
+        other_account_task = self._create_evm_task(
+            tx_hash="0x" + "7" * 64,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+            address=other_addr,
+        )
+
+        older_created_at = timezone.now() - timedelta(seconds=12)
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        EvmBroadcastTask.objects.filter(pk=lower_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+        EvmBroadcastTask.objects.filter(
+            pk__in=[task.pk for task in blocked_tasks]
+        ).update(
+            created_at=older_created_at,
+            last_attempt_at=None,
+        )
+        EvmBroadcastTask.objects.filter(pk=other_account_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        self.assertEqual(
+            {call.args[0] for call in delay_mock.call_args_list},
+            {lower_task.pk, other_account_task.pk},
+        )
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
     def test_clear_singleton_locks_allows_queue_dispatch_after_stale_lock(
         self,
         delay_mock,
@@ -1174,7 +1491,7 @@ class EvmTaskQueueTests(TestCase):
         # singleton 锁残留会让队列任务直接返回；测试夹具必须主动清理，避免用例依赖外部缓存状态。
         from django.utils import timezone
 
-        from evm.tasks import transact_evm_queues
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
 
         cache.set(self.queue_lock_key, "true", 60)
         due_task = self._create_evm_task(
@@ -1189,7 +1506,7 @@ class EvmTaskQueueTests(TestCase):
 
         self._clear_singleton_locks()
         with self.captureOnCommitCallbacks(execute=True):
-            transact_evm_queues.run()
+            dispatch_due_evm_broadcast_tasks.run()
 
         self.assertEqual(
             [call.args[0] for call in delay_mock.call_args_list],

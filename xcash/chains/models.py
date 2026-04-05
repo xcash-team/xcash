@@ -415,10 +415,8 @@ class Address(UndeletableModel):
     ) -> str:
         """使用本账户私钥签名并发送转账，返回 tx hash / signature。
 
-        EVM：EvmBroadcastTask 队列化，锁内部管理，广播异步完成，hash 由签名确定性计算。
+        EVM：仅创建内部任务，首次广播时才生成首个 tx_hash。
         Bitcoin：BitcoinBroadcastTask 签名入库（UTXO 消耗），广播由 on_commit 触发，txid 立即可用。
-
-        所有链路均遵循"签名 → 写 DB → 异步广播"顺序，hash 在广播前已确定。
         """
         if chain.type == ChainType.EVM:
             # EvmBroadcastTask 内部管理锁，不在此处获取，避免双重加锁。
@@ -434,7 +432,6 @@ class Address(UndeletableModel):
                 value_raw=value_raw,
                 transfer_type=transfer_type,
             )
-            # EVM 提币对外仍返回链上 hash，但稳定执行对象已经统一收口到 BroadcastTask。
             return task.base_task.tx_hash
 
         if chain.type == ChainType.BITCOIN:
@@ -597,7 +594,12 @@ class BroadcastTask(UndeletableModel):
         blank=True,
         null=True,
     )
-    tx_hash = HashField(unique=False, verbose_name=_("交易哈希"))
+    tx_hash = HashField(
+        unique=False,
+        verbose_name=_("交易哈希"),
+        blank=True,
+        null=True,
+    )
     stage = models.CharField(
         _("阶段"),
         choices=BroadcastTaskStage,
@@ -655,7 +657,7 @@ class BroadcastTask(UndeletableModel):
         verbose_name_plural = verbose_name
 
     def __str__(self):
-        return self.tx_hash
+        return self.tx_hash or f"broadcast-task-{self.pk or 'unsaved'}"
 
     def clean(self) -> None:
         """在模型层显式约束阶段、结果、失败原因三者的一致性。"""
@@ -705,6 +707,8 @@ class BroadcastTask(UndeletableModel):
     @db_transaction.atomic
     def create_initial_tx_hash(self) -> TxHash:
         locked_task = BroadcastTask.objects.select_for_update().get(pk=self.pk)
+        if not locked_task.tx_hash:
+            raise ValueError("BroadcastTask 缺少 tx_hash，无法创建初始历史")
         tx_hash = TxHash.objects.filter(
             broadcast_task=locked_task,
             version=1,
@@ -737,11 +741,20 @@ class BroadcastTask(UndeletableModel):
             tx_hash=tx_hash,
             updated_at=timezone.now(),
         )
+        if locked_task.transfer_type == TransferType.Withdrawal:
+            from withdrawals.models import Withdrawal
+
+            Withdrawal.objects.filter(broadcast_task=locked_task).update(
+                hash=tx_hash,
+                updated_at=timezone.now(),
+            )
         self.tx_hash = tx_hash
         return created
 
     @staticmethod
     def resolve_by_hash(*, chain: Chain, tx_hash: str) -> BroadcastTask | None:
+        if not tx_hash:
+            return None
         history_qs = TxHash.objects.select_related("broadcast_task").filter(
             chain=chain,
             hash=tx_hash,
@@ -769,6 +782,8 @@ class BroadcastTask(UndeletableModel):
         使用 .update() 绕过 save()/full_clean() 以避免逐行加载，
         依赖 DB CheckConstraint 保证状态三元组一致性。
         """
+        if not tx_hash:
+            return 0
         task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
         if task is None:
             return 0

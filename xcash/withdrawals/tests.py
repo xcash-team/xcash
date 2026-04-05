@@ -1190,10 +1190,6 @@ class WithdrawalRemoteSignerFlowTests(TestCase):
         signer_backend.derive_address.return_value = Web3.to_checksum_address(
             "0x000000000000000000000000000000000000f001"
         )
-        signer_backend.sign_evm_transaction.return_value = SimpleNamespace(
-            tx_hash="0x" + "f" * 64,
-            raw_transaction="0xdeadbeef",
-        )
         get_wallet_signer_backend_mock.return_value = signer_backend
         get_evm_signer_backend_mock.return_value = signer_backend
         wallet = Wallet.objects.create()
@@ -1244,10 +1240,10 @@ class WithdrawalRemoteSignerFlowTests(TestCase):
 
         submitted.refresh_from_db()
         self.assertEqual(submitted.status, WithdrawalStatus.PENDING)
-        self.assertEqual(submitted.hash, "0x" + "f" * 64)
+        self.assertIsNone(submitted.hash)
         self.assertIsNotNone(submitted.broadcast_task_id)
         signer_backend.derive_address.assert_called_once()
-        signer_backend.sign_evm_transaction.assert_called_once()
+        signer_backend.sign_evm_transaction.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
