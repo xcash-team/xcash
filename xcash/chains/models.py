@@ -787,12 +787,16 @@ class BroadcastTask(UndeletableModel):
         task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
         if task is None:
             return 0
-        return BroadcastTask.objects.filter(pk=task.pk).update(
-            tx_hash=tx_hash,
-            stage=BroadcastTaskStage.FINALIZED,
-            result=BroadcastTaskResult.SUCCESS,
-            failure_reason="",
-            updated_at=timezone.now(),
+        return (
+            BroadcastTask.objects.filter(pk=task.pk, result=BroadcastTaskResult.UNKNOWN)
+            .exclude(stage=BroadcastTaskStage.FINALIZED)
+            .update(
+                tx_hash=tx_hash,
+                stage=BroadcastTaskStage.FINALIZED,
+                result=BroadcastTaskResult.SUCCESS,
+                failure_reason="",
+                updated_at=timezone.now(),
+            )
         )
 
     @staticmethod
@@ -805,11 +809,18 @@ class BroadcastTask(UndeletableModel):
 
         失败终局必须保留失败原因，便于后续按失败类型统计和排查。
         """
-        return BroadcastTask.objects.filter(pk=task_id).update(
-            stage=BroadcastTaskStage.FINALIZED,
-            result=BroadcastTaskResult.FAILED,
-            failure_reason=reason,
-            updated_at=timezone.now(),
+        return (
+            BroadcastTask.objects.filter(
+                pk=task_id,
+                result=BroadcastTaskResult.UNKNOWN,
+            )
+            .exclude(stage=BroadcastTaskStage.FINALIZED)
+            .update(
+                stage=BroadcastTaskStage.FINALIZED,
+                result=BroadcastTaskResult.FAILED,
+                failure_reason=reason,
+                updated_at=timezone.now(),
+            )
         )
 
     @staticmethod
@@ -822,7 +833,11 @@ class BroadcastTask(UndeletableModel):
         task = BroadcastTask.resolve_by_hash(chain=chain, tx_hash=tx_hash)
         if task is None:
             return 0
-        return BroadcastTask.objects.filter(pk=task.pk).update(
+        return BroadcastTask.objects.filter(
+            pk=task.pk,
+            stage=BroadcastTaskStage.PENDING_CONFIRM,
+            result=BroadcastTaskResult.UNKNOWN,
+        ).update(
             tx_hash=tx_hash,
             stage=BroadcastTaskStage.PENDING_CHAIN,
             result=BroadcastTaskResult.UNKNOWN,

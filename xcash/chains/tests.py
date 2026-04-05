@@ -1150,6 +1150,42 @@ class BroadcastTaskTransitionTests(TestCase):
             self.task.failure_reason, BroadcastTaskFailureReason.EXECUTION_REVERTED
         )
 
+    def test_mark_finalized_success_does_not_override_failed_final_state(self):
+        BroadcastTask.mark_finalized_failed(
+            task_id=self.task.pk,
+            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+        )
+
+        updated = BroadcastTask.mark_finalized_success(
+            chain=self.chain,
+            tx_hash=self.task.tx_hash,
+        )
+
+        self.assertEqual(updated, 0)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, BroadcastTaskResult.FAILED)
+        self.assertEqual(
+            self.task.failure_reason, BroadcastTaskFailureReason.EXECUTION_REVERTED
+        )
+
+    def test_mark_finalized_failed_does_not_override_success_final_state(self):
+        BroadcastTask.mark_finalized_success(
+            chain=self.chain,
+            tx_hash=self.task.tx_hash,
+        )
+
+        updated = BroadcastTask.mark_finalized_failed(
+            task_id=self.task.pk,
+            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+        )
+
+        self.assertEqual(updated, 0)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(self.task.result, BroadcastTaskResult.SUCCESS)
+        self.assertEqual(self.task.failure_reason, "")
+
     def test_mark_pending_confirm_skips_finalized_tasks(self):
         # 先将任务标记为已终结
         BroadcastTask.mark_finalized_success(
@@ -1182,6 +1218,21 @@ class BroadcastTaskTransitionTests(TestCase):
         self.assertEqual(self.task.stage, BroadcastTaskStage.PENDING_CONFIRM)
         self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(self.task.tx_hash, old_hash)
+
+    def test_reset_to_pending_chain_skips_non_pending_confirm_tasks(self):
+        BroadcastTask.objects.filter(pk=self.task.pk).update(
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        updated = BroadcastTask.reset_to_pending_chain(
+            chain=self.chain,
+            tx_hash=self.task.tx_hash,
+        )
+
+        self.assertEqual(updated, 0)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.stage, BroadcastTaskStage.QUEUED)
+        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
 
 
 class BlockNumberUpdatedCompensationTests(TestCase):
