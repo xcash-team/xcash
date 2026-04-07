@@ -405,10 +405,12 @@ class SignerWalletSignPolicyTests(TestCase):
             )
             self.assertEqual(response.status_code, 200)
 
+    @patch("wallets.views.compute_txid", return_value="ab" * 32)
     @patch("wallets.views.SignBitcoinView._load_bit_dependencies")
     def test_bitcoin_sign_endpoint_passes_replaceable_flag_to_bit_library(
         self,
         load_bit_dependencies_mock,
+        _compute_txid_mock,
     ):
         wallet = self._create_wallet(wallet_id=3004)
         create_transaction_kwargs = {}
@@ -422,6 +424,7 @@ class SignerWalletSignPolicyTests(TestCase):
                 script,
                 txid,
                 txindex,
+                type="p2pkh",
             ):
                 self.amount = amount
                 self.confirmations = confirmations
