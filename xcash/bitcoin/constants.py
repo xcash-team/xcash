@@ -29,13 +29,3 @@ BTC_P2WPKH_TX_VBYTES = (
 # ── Dust 阈值 ──
 BTC_P2WPKH_DUST_LIMIT = 294   # P2WPKH 输出的 dust 阈值 (Bitcoin Core 默认 dust_relay_fee=3000 sat/kvB)
 BTC_P2PKH_DUST_LIMIT = 546    # P2PKH 输出的 dust 阈值
-
-# ── 旧常量保留（供向后兼容参考） ──
-BTC_P2PKH_TX_OVERHEAD_VBYTES = 10
-BTC_P2PKH_INPUT_VBYTES = 148
-BTC_P2PKH_TX_BYTES = (
-    BTC_P2PKH_TX_OVERHEAD_VBYTES + BTC_P2PKH_INPUT_VBYTES + BTC_P2PKH_OUTPUT_VBYTES * 2
-)
-
-# Bitcoin 主网 WIF 前缀（mainnet compressed private key）
-BTC_WIF_PREFIX = b"\x80"

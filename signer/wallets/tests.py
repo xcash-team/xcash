@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import struct
 from unittest.mock import patch
 from uuid import uuid4
 
+from bitcoinutils.transactions import Transaction
 from django.core.cache import cache
 from django.test import TestCase
 from django.test import override_settings
@@ -404,6 +406,211 @@ class SignerWalletSignPolicyTests(TestCase):
                 **self._signed_headers(body=body),
             )
             self.assertEqual(response.status_code, 200)
+
+    def _bitcoin_sign_body_with_amounts(
+        self,
+        *,
+        wallet: SignerWallet,
+        recipient: str,
+        replaceable: bool,
+        amount_satoshi: int,
+        fee_satoshi: int,
+        utxos: list[dict] | None = None,
+    ) -> bytes:
+        source_address = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=0,
+        )
+        if utxos is None:
+            utxos = [
+                {
+                    "txid": "ab" * 32,
+                    "vout": 0,
+                    "amount": "0.001",
+                    "confirmations": 12,
+                    "script_pub_key": "0014",
+                }
+            ]
+        payload = {
+            "wallet_id": wallet.xcash_wallet_id,
+            "chain_type": ChainType.BITCOIN,
+            "bip44_account": 0,
+            "address_index": 0,
+            "source_address": source_address,
+            "to": recipient,
+            "amount_satoshi": amount_satoshi,
+            "fee_satoshi": fee_satoshi,
+            "replaceable": replaceable,
+            "utxos": utxos,
+        }
+        return json.dumps(payload).encode("utf-8")
+
+    def _assert_valid_bitcoin_sign_response(self, response) -> dict:
+        """校验 Bitcoin 签名响应格式并返回解析后的数据。"""
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["txid"]), 64)
+        self.assertTrue(all(c in "0123456789abcdef" for c in data["txid"]))
+        self.assertTrue(len(data["signed_payload"]) > 0)
+        return data
+
+    def test_bitcoin_sign_produces_valid_segwit_transaction(self):
+        """单输入、P2WPKH 目标、有找零的正常交易。"""
+        wallet = self._create_wallet(wallet_id=4001)
+        recipient = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=1,
+        )
+        # UTXO=100000 sat, amount=50000, fee=500 → change=49500 (> 294)
+        body = self._bitcoin_sign_body_with_amounts(
+            wallet=wallet,
+            recipient=recipient,
+            replaceable=False,
+            amount_satoshi=50000,
+            fee_satoshi=500,
+        )
+        response = self.client.post(
+            "/v1/sign/bitcoin",
+            data=body,
+            content_type="application/json",
+            **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+        )
+        data = self._assert_valid_bitcoin_sign_response(response)
+        tx = Transaction.from_raw(data["signed_payload"])
+        self.assertEqual(len(tx.inputs), 1)
+        self.assertEqual(len(tx.outputs), 2)  # 目标 + 找零
+
+    def test_bitcoin_sign_sweep_no_change(self):
+        """sweep 模式：全部金额转出，无找零输出。"""
+        wallet = self._create_wallet(wallet_id=4002)
+        recipient = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=1,
+        )
+        # UTXO=100000 sat, amount=99500, fee=500 → change=0
+        body = self._bitcoin_sign_body_with_amounts(
+            wallet=wallet,
+            recipient=recipient,
+            replaceable=False,
+            amount_satoshi=99500,
+            fee_satoshi=500,
+        )
+        response = self.client.post(
+            "/v1/sign/bitcoin",
+            data=body,
+            content_type="application/json",
+            **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+        )
+        data = self._assert_valid_bitcoin_sign_response(response)
+        tx = Transaction.from_raw(data["signed_payload"])
+        self.assertEqual(len(tx.inputs), 1)
+        self.assertEqual(len(tx.outputs), 1)  # 仅目标，无找零
+
+    def test_bitcoin_sign_change_below_dust_merged_into_fee(self):
+        """找零低于 dust limit 时并入矿工费，不创建找零输出。"""
+        wallet = self._create_wallet(wallet_id=4003)
+        recipient = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=1,
+        )
+        # UTXO=100000 sat, amount=99600, fee=200 → change=200 (< 294, merged)
+        body = self._bitcoin_sign_body_with_amounts(
+            wallet=wallet,
+            recipient=recipient,
+            replaceable=False,
+            amount_satoshi=99600,
+            fee_satoshi=200,
+        )
+        response = self.client.post(
+            "/v1/sign/bitcoin",
+            data=body,
+            content_type="application/json",
+            **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+        )
+        data = self._assert_valid_bitcoin_sign_response(response)
+        tx = Transaction.from_raw(data["signed_payload"])
+        self.assertEqual(len(tx.inputs), 1)
+        self.assertEqual(len(tx.outputs), 1)  # 找零并入 fee
+
+    def test_bitcoin_sign_to_p2pkh_address(self):
+        """目标地址为 P2PKH，交易应正确构造。"""
+        wallet = self._create_wallet(wallet_id=4004)
+        body = self._bitcoin_sign_body_with_amounts(
+            wallet=wallet,
+            recipient="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+            replaceable=False,
+            amount_satoshi=50000,
+            fee_satoshi=500,
+        )
+        response = self.client.post(
+            "/v1/sign/bitcoin",
+            data=body,
+            content_type="application/json",
+            **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+        )
+        data = self._assert_valid_bitcoin_sign_response(response)
+        tx = Transaction.from_raw(data["signed_payload"])
+        self.assertEqual(len(tx.inputs), 1)
+        self.assertEqual(len(tx.outputs), 2)
+
+    def test_bitcoin_sign_to_p2sh_address(self):
+        """目标地址为 P2SH，交易应正确构造。"""
+        wallet = self._create_wallet(wallet_id=4005)
+        body = self._bitcoin_sign_body_with_amounts(
+            wallet=wallet,
+            recipient="3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+            replaceable=False,
+            amount_satoshi=50000,
+            fee_satoshi=500,
+        )
+        response = self.client.post(
+            "/v1/sign/bitcoin",
+            data=body,
+            content_type="application/json",
+            **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+        )
+        data = self._assert_valid_bitcoin_sign_response(response)
+        tx = Transaction.from_raw(data["signed_payload"])
+        self.assertEqual(len(tx.inputs), 1)
+        self.assertEqual(len(tx.outputs), 2)
+
+    def test_bitcoin_sign_replaceable_sets_correct_sequence(self):
+        """验证 replaceable 标志正确设置 nSequence（BIP125）。"""
+        wallet = self._create_wallet(wallet_id=4006)
+        recipient = wallet.derive_address(
+            chain_type=ChainType.BITCOIN,
+            bip44_account=0,
+            address_index=1,
+        )
+
+        for replaceable, expected_seq in [(True, 0xFFFFFFFD), (False, 0xFFFFFFFE)]:
+            body = self._bitcoin_sign_body_with_amounts(
+                wallet=wallet,
+                recipient=recipient,
+                replaceable=replaceable,
+                amount_satoshi=50000,
+                fee_satoshi=500,
+            )
+            response = self.client.post(
+                "/v1/sign/bitcoin",
+                data=body,
+                content_type="application/json",
+                **self._signed_headers(body=body, path="/v1/sign/bitcoin"),
+            )
+            data = self._assert_valid_bitcoin_sign_response(response)
+            tx = Transaction.from_raw(data["signed_payload"])
+            actual_seq = struct.unpack("<I", tx.inputs[0].sequence)[0]
+            self.assertEqual(
+                actual_seq,
+                expected_seq,
+                f"replaceable={replaceable}: "
+                f"expected sequence 0x{expected_seq:08X}, "
+                f"got 0x{actual_seq:08X}",
+            )
 
     @patch("wallets.views.SignBitcoinView._build_and_sign_segwit_tx")
     def test_bitcoin_sign_endpoint_passes_replaceable_flag(

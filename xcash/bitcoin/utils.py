@@ -5,9 +5,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
-from bitcoin.constants import BTC_P2PKH_INPUT_VBYTES
 from bitcoin.constants import BTC_P2PKH_OUTPUT_VBYTES
-from bitcoin.constants import BTC_P2PKH_TX_OVERHEAD_VBYTES
 from bitcoin.constants import BTC_P2SH_OUTPUT_VBYTES
 from bitcoin.constants import BTC_P2WPKH_INPUT_VBYTES
 from bitcoin.constants import BTC_P2WPKH_OUTPUT_VBYTES
@@ -49,21 +47,6 @@ def sat_per_byte_from_btc_per_kb(fee_rate_btc_per_kb: Decimal) -> int:
         BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE,
     )
 
-
-def estimate_p2pkh_tx_vbytes(*, input_count: int, output_count: int = 2) -> int:
-    """估算 legacy P2PKH 交易大小。
-
-    采用保守估算：
-    - 10 bytes 固定开销（version/locktime/varint 等）
-    - 每个输入约 148 bytes
-    - 每个输出约 34 bytes
-    当前项目钱包派生的是 P2PKH（1...）地址，此估算成立。
-    """
-    return (
-        BTC_P2PKH_TX_OVERHEAD_VBYTES
-        + input_count * BTC_P2PKH_INPUT_VBYTES
-        + output_count * BTC_P2PKH_OUTPUT_VBYTES
-    )
 
 
 def _output_vbytes_for_address_type(address_type: str) -> int:
@@ -208,8 +191,7 @@ def extract_input_sequences_from_raw_transaction(
 
     offset = 4
     if len(raw) > offset + 1 and raw[offset] == 0 and raw[offset + 1] == 1:
-        # segwit 交易在 version 后插入 marker/flag；当前项目主用 P2PKH，
-        # 这里仍保留解析兼容，避免后续地址类型扩展时重复造轮子。
+        # segwit 交易在 version 后插入 marker/flag（当前项目主用 P2WPKH）。
         offset += 2
 
     input_count, offset = _read_bitcoin_varint(raw, offset)

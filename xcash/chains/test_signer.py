@@ -10,6 +10,7 @@ from bip_utils import Bip84
 from bip_utils import Bip84Coins
 from web3 import Web3
 
+from bitcoin.constants import BTC_P2WPKH_DUST_LIMIT
 from bitcoin.network import get_active_bitcoin_network
 from bitcoin.utils import btc_to_satoshi
 from chains.models import ChainType
@@ -205,7 +206,7 @@ class TestRemoteSignerBackend:
         # 找零
         total_input = sum(btc_to_satoshi(utxo["amount"]) for utxo in utxos)
         change = total_input - amount_satoshi - fee_satoshi
-        if change > 294:  # P2WPKH dust limit
+        if change > BTC_P2WPKH_DUST_LIMIT:
             change_script = P2wpkhAddress(source_address).to_script_pub_key()
             outputs.append(TxOutput(change, change_script))
 

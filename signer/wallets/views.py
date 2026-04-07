@@ -663,6 +663,13 @@ class SignBitcoinView(SignerAPIView):
         from bitcoinutils.transactions import TxWitnessInput
         from bitcoin_support.utils import classify_bitcoin_address
 
+        # 校验 source_address 必须是 P2WPKH（系统内部地址统一为 Native SegWit）
+        src_addr_type = classify_bitcoin_address(source_address)
+        if src_addr_type != "p2wpkh":
+            raise ValueError(
+                f"source_address 必须是 P2WPKH 地址，实际为 {src_addr_type}"
+            )
+
         # 构造输入
         sequence = b"\xfd\xff\xff\xff" if replaceable else b"\xfe\xff\xff\xff"
         inputs = [
