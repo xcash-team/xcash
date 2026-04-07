@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import environ
 from bip_utils import Bip44Coins
+from bip_utils import Bip84Coins
 
 env = environ.Env()
 
@@ -18,6 +19,7 @@ class BitcoinNetworkConfig:
     bech32_hrp: str
     wif_prefix: bytes
     bip44_coin: Bip44Coins
+    bip84_coin: Bip84Coins
     bit_private_key_class_name: str
 
 
@@ -29,6 +31,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         bech32_hrp="bc",
         wif_prefix=b"\x80",
         bip44_coin=Bip44Coins.BITCOIN,
+        bip84_coin=Bip84Coins.BITCOIN,
         bit_private_key_class_name="PrivateKeyMainnet",
     ),
     # regtest / signet 沿用 testnet 的 base58/WIF 版本；bech32 HRP 则分别使用 bcrt / tb。
@@ -39,6 +42,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         bech32_hrp="tb",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
+        bip84_coin=Bip84Coins.BITCOIN_TESTNET,
         bit_private_key_class_name="PrivateKeyTestnet",
     ),
     "signet": BitcoinNetworkConfig(
@@ -48,6 +52,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         bech32_hrp="tb",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
+        bip84_coin=Bip84Coins.BITCOIN_TESTNET,
         bit_private_key_class_name="PrivateKeyTestnet",
     ),
     "regtest": BitcoinNetworkConfig(
@@ -57,6 +62,7 @@ BITCOIN_NETWORKS: dict[str, BitcoinNetworkConfig] = {
         bech32_hrp="bcrt",
         wif_prefix=b"\xef",
         bip44_coin=Bip44Coins.BITCOIN_TESTNET,
+        bip84_coin=Bip84Coins.BITCOIN_REGTEST,
         bit_private_key_class_name="PrivateKeyTestnet",
     ),
 }

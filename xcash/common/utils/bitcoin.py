@@ -31,3 +31,21 @@ def is_valid_bitcoin_address(address: str) -> bool:
         return False
     else:
         return True
+
+
+def classify_bitcoin_address(address: str) -> str:
+    """识别 Bitcoin 地址的脚本类型，返回 'p2pkh' / 'p2sh' / 'p2wpkh' / 'unknown'。
+
+    用于估费时选择正确的输出体积。仅做前缀识别，
+    完整 checksum 校验由 is_valid_bitcoin_address 负责。
+    """
+    if not address:
+        return "unknown"
+    lower = address.lower()
+    if lower.startswith(("bc1q", "tb1q", "bcrt1q")):
+        return "p2wpkh"
+    if address[0] in ("3", "2"):
+        return "p2sh"
+    if address[0] in ("1", "m", "n"):
+        return "p2pkh"
+    return "unknown"

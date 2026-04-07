@@ -11,6 +11,10 @@ from bitcoin.constants import BTC_DEFAULT_FEE_RATE_SAT_PER_BYTE
 from bitcoin.constants import BTC_P2PKH_INPUT_VBYTES
 from bitcoin.constants import BTC_P2PKH_OUTPUT_VBYTES
 from bitcoin.constants import BTC_P2PKH_TX_OVERHEAD_VBYTES
+from bitcoin.constants import BTC_P2SH_OUTPUT_VBYTES
+from bitcoin.constants import BTC_P2WPKH_INPUT_VBYTES
+from bitcoin.constants import BTC_P2WPKH_OUTPUT_VBYTES
+from bitcoin.constants import BTC_SEGWIT_TX_OVERHEAD_VBYTES
 from bitcoin.constants import SATOSHI_PER_BTC
 from bitcoin.network import get_active_bitcoin_network
 
@@ -66,17 +70,42 @@ def estimate_p2pkh_tx_vbytes(*, input_count: int, output_count: int = 2) -> int:
     )
 
 
+def _output_vbytes_for_address_type(address_type: str) -> int:
+    """返回指定地址类型的输出体积（vbytes）。"""
+    if address_type == "p2wpkh":
+        return BTC_P2WPKH_OUTPUT_VBYTES
+    if address_type == "p2sh":
+        return BTC_P2SH_OUTPUT_VBYTES
+    return BTC_P2PKH_OUTPUT_VBYTES
+
+
+def estimate_segwit_tx_vbytes(
+    *,
+    input_count: int,
+    target_address_type: str = "p2wpkh",
+    include_change: bool = True,
+) -> int:
+    """估算 P2WPKH 输入的 SegWit 交易 vbytes。
+
+    内部输入统一按 P2WPKH 估算。
+    找零输出固定按 P2WPKH 估算（内部 Native SegWit 地址）。
+    目标输出按实际目标地址脚本类型估算。
+    """
+    vbytes = BTC_SEGWIT_TX_OVERHEAD_VBYTES + input_count * BTC_P2WPKH_INPUT_VBYTES
+    vbytes += _output_vbytes_for_address_type(target_address_type)
+    if include_change:
+        vbytes += BTC_P2WPKH_OUTPUT_VBYTES
+    return vbytes
+
+
 def select_utxos_for_amount(
     *,
     utxos: Sequence[BitcoinUtxo],
     amount_satoshi: int,
     fee_rate_sat_per_byte: int,
+    target_address_type: str = "p2wpkh",
 ) -> tuple[list[BitcoinUtxo], int]:
-    """为支付金额选择一组 UTXO，并返回保守估算的矿工费。
-
-    这里始终按“2 输出（收款 + 找零）”估算，宁可略高估，也不接受低估费率后广播失败。
-    选取策略为按金额从大到小挑选，目标是尽量减少输入数，从而减少矿工费和失败概率。
-    """
+    """为支付金额选择一组 UTXO，并返回 SegWit 估算的矿工费。"""
     selected: list[BitcoinUtxo] = []
     total_satoshi = 0
 
@@ -87,9 +116,10 @@ def select_utxos_for_amount(
         total_satoshi += btc_to_satoshi(utxo["amount"])
 
         fee_satoshi = (
-            estimate_p2pkh_tx_vbytes(
+            estimate_segwit_tx_vbytes(
                 input_count=len(selected),
-                output_count=2,
+                target_address_type=target_address_type,
+                include_change=True,
             )
             * fee_rate_sat_per_byte
         )
@@ -105,21 +135,19 @@ def select_utxos_for_sweep(
     *,
     utxos: Sequence[BitcoinUtxo],
     fee_rate_sat_per_byte: int,
+    target_address_type: str = "p2wpkh",
 ) -> tuple[list[BitcoinUtxo], int, int]:
-    """选择全部 UTXO 执行 sweep，并返回可转出净额与矿工费。
-
-    sweep 语义用于归集：把地址上当前全部可用余额一次性打到目标地址，
-    不再依赖调用方先用固定 fee 预扣一个"大概金额"。
-    """
+    """选择全部 UTXO 执行 sweep，返回可转出净额与矿工费。"""
     selected = list(utxos)
     if not selected:
         raise ValueError("Bitcoin sweep 缺少可用 UTXO")
 
     total_satoshi = sum(btc_to_satoshi(utxo["amount"]) for utxo in selected)
     fee_satoshi = (
-        estimate_p2pkh_tx_vbytes(
+        estimate_segwit_tx_vbytes(
             input_count=len(selected),
-            output_count=1,
+            target_address_type=target_address_type,
+            include_change=False,
         )
         * fee_rate_sat_per_byte
     )
@@ -138,10 +166,14 @@ def privkey_bytes_to_wif(privkey_bytes: bytes) -> str:
 
 
 def compute_txid(signed_payload_hex: str) -> str:
-    """从已签名 P2PKH 载荷 hex 计算 txid（double-SHA256 + 字节反转）。"""
-    tx_bytes = bytes.fromhex(signed_payload_hex)
-    txid_bytes = hashlib.sha256(hashlib.sha256(tx_bytes).digest()).digest()
-    return txid_bytes[::-1].hex()
+    """从已签名原始交易 hex 计算 txid。
+
+    SegWit 交易的 txid 基于去除 witness 数据后的序列化，
+    使用 bit.transaction.calc_txid 正确处理 legacy 和 SegWit 两种格式。
+    """
+    from bit.transaction import calc_txid
+
+    return calc_txid(signed_payload_hex)
 
 
 def _read_bitcoin_varint(raw: bytes, offset: int) -> tuple[int, int]:
