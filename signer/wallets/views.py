@@ -4,13 +4,9 @@ import hashlib
 import hmac
 import json
 from datetime import timedelta
-from importlib import import_module
 
-from bitcoin_support.network import get_active_bitcoin_network
 from bitcoin_support.utils import btc_to_satoshi
-from bitcoin_support.utils import compute_txid
 from bitcoin_support.utils import is_valid_bitcoin_address
-from bitcoin_support.utils import privkey_bytes_to_wif
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
@@ -639,32 +635,79 @@ class SignEvmView(SignerAPIView):
 
 class SignBitcoinView(SignerAPIView):
     @staticmethod
-    def _load_bit_dependencies():
-        try:
-            bit_module = import_module("bit")
+    def _build_and_sign_segwit_tx(
+        *,
+        privkey_hex: str,
+        source_address: str,
+        to: str,
+        amount_satoshi: int,
+        fee_satoshi: int,
+        replaceable: bool,
+        utxos: list[dict],
+    ) -> tuple[str, str]:
+        """构建并签名 P2WPKH SegWit 交易，返回 (txid, signed_hex)。
 
-            network = get_active_bitcoin_network()
-            private_key_cls = getattr(bit_module, network.bit_private_key_class_name)
-            bit_unspent = import_module("bit.wallet").Unspent
-        except (ModuleNotFoundError, AttributeError, ImportError) as exc:
-            raise RuntimeError(
-                "缺少 bit 依赖或类名配置错误，无法执行 Bitcoin 签名"
-            ) from exc
-        return private_key_cls, bit_unspent
+        找零逻辑显式处理：
+        - change > dust_limit → 创建找零输出
+        - 0 < change <= dust_limit → 并入 fee
+        - change == 0 → 无找零（sweep）
+        - change < 0 → 拒绝签名
+        """
+        from bitcoinutils.keys import P2pkhAddress
+        from bitcoinutils.keys import P2shAddress
+        from bitcoinutils.keys import P2wpkhAddress
+        from bitcoinutils.keys import PrivateKey
+        from bitcoinutils.transactions import Transaction
+        from bitcoinutils.transactions import TxInput
+        from bitcoinutils.transactions import TxOutput
+        from bitcoinutils.transactions import TxWitnessInput
+        from bitcoin_support.utils import classify_bitcoin_address
 
-    @staticmethod
-    def _convert_to_bit_unspents(*, raw_utxos: list[dict], bit_unspent):
-        return [
-            bit_unspent(
-                amount=btc_to_satoshi(utxo["amount"]),
-                confirmations=int(utxo.get("confirmations", 0)),
-                script=utxo["script_pub_key"],
-                txid=utxo["txid"],
-                txindex=int(utxo["vout"]),
-                type="p2wkh",
-            )
-            for utxo in raw_utxos
+        # 构造输入
+        sequence = b"\xfd\xff\xff\xff" if replaceable else b"\xfe\xff\xff\xff"
+        inputs = [
+            TxInput(utxo["txid"], int(utxo["vout"]), sequence=sequence)
+            for utxo in utxos
         ]
+
+        # 构造目标输出
+        addr_type = classify_bitcoin_address(to)
+        if addr_type == "p2wpkh":
+            target_script = P2wpkhAddress(to).to_script_pub_key()
+        elif addr_type == "p2sh":
+            target_script = P2shAddress(to).to_script_pub_key()
+        else:
+            target_script = P2pkhAddress(to).to_script_pub_key()
+
+        outputs = [TxOutput(amount_satoshi, target_script)]
+
+        # 找零计算
+        total_input = sum(btc_to_satoshi(utxo["amount"]) for utxo in utxos)
+        change = total_input - amount_satoshi - fee_satoshi
+        if change < 0:
+            raise ValueError("UTXO 余额不足以覆盖转账金额与矿工费")
+        if change > _BTC_DUST_LIMIT:
+            change_script = P2wpkhAddress(source_address).to_script_pub_key()
+            outputs.append(TxOutput(change, change_script))
+        # 0 < change <= dust_limit: 并入 fee，不创建找零输出
+
+        # 构建交易
+        tx = Transaction(inputs, outputs, has_segwit=True)
+
+        # 签名所有输入（P2WPKH）
+        secret_exponent = int.from_bytes(
+            bytes.fromhex(privkey_hex), byteorder="big"
+        )
+        key = PrivateKey(secret_exponent=secret_exponent)
+        pub = key.get_public_key()
+        script_code = pub.get_address().to_script_pub_key()
+
+        for i, utxo in enumerate(utxos):
+            utxo_amount = btc_to_satoshi(utxo["amount"])
+            sig = key.sign_segwit_input(tx, i, script_code, utxo_amount)
+            tx.witnesses.append(TxWitnessInput([sig, pub.to_hex()]))
+
+        return tx.get_txid(), tx.serialize()
 
     def post(self, request):
         self._assert_authenticated(request)
@@ -673,10 +716,8 @@ class SignBitcoinView(SignerAPIView):
             raise SignerAPIError(ErrorCode.PARAMETER_ERROR, str(serializer.errors))
 
         data = serializer.validated_data
-        # 签名操作使用行锁，保证冻结立即互斥。
         wallet = self._load_wallet(data["wallet_id"], for_signing=True)
         self._assert_wallet_can_sign(wallet=wallet)
-        # 一次派生同时取地址和私钥，避免重复解密助记词。
         expected_address, privkey_hex = wallet.derive_key_pair(
             chain_type=ChainType.BITCOIN,
             bip44_account=data["bip44_account"],
@@ -694,24 +735,16 @@ class SignBitcoinView(SignerAPIView):
             self._assert_wallet_sign_rate_limit(wallet=wallet, endpoint=request.path)
 
         try:
-            private_key_cls, bit_unspent = self._load_bit_dependencies()
-            bit_utxos = self._convert_to_bit_unspents(
-                raw_utxos=data["utxos"],
-                bit_unspent=bit_unspent,
-            )
-            privkey_bytes = bytes.fromhex(privkey_hex)
-            key = private_key_cls(privkey_bytes_to_wif(privkey_bytes))
-            key.unspents = bit_utxos  # type: ignore[attr-defined]
-            signed_payload = key.create_transaction(  # type: ignore[attr-defined]
-                outputs=[(data["to"], data["amount_satoshi"], "satoshi")],
-                fee=data["fee_satoshi"],
-                absolute_fee=True,
-                leftover=data["source_address"],
-                unspents=bit_utxos,
-                replace_by_fee=data["replaceable"],
+            txid, signed_payload = self._build_and_sign_segwit_tx(
+                privkey_hex=privkey_hex,
+                source_address=data["source_address"],
+                to=data["to"],
+                amount_satoshi=data["amount_satoshi"],
+                fee_satoshi=data["fee_satoshi"],
+                replaceable=data["replaceable"],
+                utxos=data["utxos"],
             )
         except Exception:
-            # 截断异常链，防止 traceback frame 中的私钥泄露到日志系统。
             raise SignerAPIError(
                 ErrorCode.PARAMETER_ERROR,
                 "Bitcoin 交易签名失败",
@@ -723,7 +756,7 @@ class SignBitcoinView(SignerAPIView):
         )
         return Response(
             {
-                "txid": compute_txid(signed_payload),
+                "txid": txid,
                 "signed_payload": signed_payload,
             },
             status=status.HTTP_200_OK,
