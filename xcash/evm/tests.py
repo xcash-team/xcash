@@ -1103,7 +1103,7 @@ class EvmTaskQueueTests(TestCase):
         nonce: int | None = None,
         address: Address | None = None,
     ) -> EvmBroadcastTask:
-        # 任务级测试直接手工落库，聚焦“队列如何挑任务”和“终局任务是否被错误重播”。
+        # 任务级测试直接手工落库，聚焦"队列如何挑任务"和"终局任务是否被错误重播"。
         task_address = address or self.addr
         base_task = BroadcastTask.objects.create(
             chain=self.chain,
@@ -1145,10 +1145,10 @@ class EvmTaskQueueTests(TestCase):
         broadcast_mock.assert_not_called()
 
     @patch("evm.tasks.broadcast_evm_task.delay")
-    def test_dispatch_due_evm_broadcast_tasks_dispatches_only_due_unknown_tasks(
+    def test_dispatch_due_evm_broadcast_tasks_dispatches_only_queued_unknown_tasks(
         self, delay_mock
     ):
-        # 广播队列只能挑“到期且仍未知”的任务，避免 recent / finalized 任务被误重试。
+        # dispatch 只放行 QUEUED 任务；PENDING_CHAIN / recent / finalized 不应被选中。
         from django.utils import timezone
 
         from evm.tasks import dispatch_due_evm_broadcast_tasks
@@ -1169,7 +1169,8 @@ class EvmTaskQueueTests(TestCase):
             stage=BroadcastTaskStage.QUEUED,
             result=BroadcastTaskResult.UNKNOWN,
         )
-        due_pending_chain = self._create_evm_task(
+        # PENDING_CHAIN 任务不应被 dispatch 重新选中（已在 mempool 中等待确认）。
+        self._create_evm_task(
             tx_hash="0x" + "c" * 64,
             stage=BroadcastTaskStage.PENDING_CHAIN,
             result=BroadcastTaskResult.UNKNOWN,
@@ -1187,15 +1188,10 @@ class EvmTaskQueueTests(TestCase):
         )
 
         stale_created_at = timezone.now() - timedelta(seconds=8)
-        stale_attempt_at = timezone.now() - timedelta(minutes=5)
         fresh_created_at = timezone.now()
         EvmBroadcastTask.objects.filter(pk=due_queued.pk).update(
             created_at=stale_created_at,
             last_attempt_at=None,
-        )
-        EvmBroadcastTask.objects.filter(pk=due_pending_chain.pk).update(
-            created_at=stale_created_at,
-            last_attempt_at=stale_attempt_at,
         )
         EvmBroadcastTask.objects.filter(pk=recent_task.pk).update(
             created_at=fresh_created_at,
@@ -1203,7 +1199,6 @@ class EvmTaskQueueTests(TestCase):
         )
         EvmBroadcastTask.objects.filter(pk=finalized_task.pk).update(
             created_at=stale_created_at,
-            last_attempt_at=stale_attempt_at,
         )
 
         with self.captureOnCommitCallbacks(execute=True):
@@ -1211,15 +1206,15 @@ class EvmTaskQueueTests(TestCase):
 
         self.assertEqual(
             {call.args[0] for call in delay_mock.call_args_list},
-            {due_queued.pk, due_pending_chain.pk},
+            {due_queued.pk},
         )
 
     @patch("evm.tasks.EvmBroadcastTask.broadcast")
-    def test_broadcast_task_skips_when_lower_unsettled_nonce_exists(
+    def test_broadcast_task_skips_when_lower_queued_nonce_exists(
         self,
         broadcast_mock,
     ):
-        # 同账户更高 nonce 在更低 nonce 未收口前不应越过广播，否则会把真实阻塞点扩散成整串噪音。
+        # 同账户更高 nonce 在更低 QUEUED nonce 存在时不应越过广播，保证 nonce 按顺序进入 mempool。
         from evm.tasks import broadcast_evm_task
 
         self._create_evm_task(
@@ -1265,10 +1260,10 @@ class EvmTaskQueueTests(TestCase):
         broadcast_mock.assert_called_once()
 
     @patch("evm.tasks.broadcast_evm_task.delay")
-    def test_dispatch_due_evm_broadcast_tasks_dispatches_only_lowest_unsettled_nonce_per_account(
+    def test_dispatch_due_evm_broadcast_tasks_dispatches_only_lowest_queued_nonce_per_account(
         self, delay_mock
     ):
-        # 队列层只应放行每个账户当前最小未收口 nonce，避免高 nonce 在前序缺口存在时被反复重试。
+        # 队列层只应放行每个账户当前最小 QUEUED nonce，避免高 nonce 在前序缺口存在时被反复重试。
         from django.utils import timezone
 
         from evm.tasks import dispatch_due_evm_broadcast_tasks
@@ -1458,6 +1453,246 @@ class EvmTaskQueueTests(TestCase):
             [due_task.pk],
         )
 
+    # ── Nonce 流水线测试 ──────────────────────────────────────────────
+
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_broadcast_allows_when_lower_nonce_is_pending_chain(
+        self,
+        broadcast_mock,
+    ):
+        # 低 nonce 已提交到 mempool (PENDING_CHAIN) 时，高 nonce 允许广播。
+        from evm.tasks import broadcast_evm_task
+
+        self._create_evm_task(
+            tx_hash="0x" + "a1" * 32,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+        higher_task = self._create_evm_task(
+            tx_hash="0x" + "a2" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=2,
+        )
+
+        broadcast_evm_task.run(higher_task.pk)
+
+        broadcast_mock.assert_called_once()
+
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_broadcast_blocks_when_pipeline_full(
+        self,
+        broadcast_mock,
+    ):
+        # 同地址同链 PENDING_CHAIN 达到 EVM_PIPELINE_DEPTH 时阻断新广播。
+        from evm.constants import EVM_PIPELINE_DEPTH
+        from evm.tasks import broadcast_evm_task
+
+        for i in range(EVM_PIPELINE_DEPTH):
+            self._create_evm_task(
+                tx_hash=f"0x{i:064x}",
+                stage=BroadcastTaskStage.PENDING_CHAIN,
+                result=BroadcastTaskResult.UNKNOWN,
+                nonce=i,
+            )
+        next_task = self._create_evm_task(
+            tx_hash="0x" + "b1" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=EVM_PIPELINE_DEPTH,
+        )
+
+        broadcast_evm_task.run(next_task.pk)
+
+        broadcast_mock.assert_not_called()
+
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_broadcast_resumes_after_pipeline_slot_freed(
+        self,
+        broadcast_mock,
+    ):
+        # pipeline 有空位后恢复广播。
+        from evm.constants import EVM_PIPELINE_DEPTH
+        from evm.tasks import broadcast_evm_task
+
+        pending_tasks = []
+        for i in range(EVM_PIPELINE_DEPTH):
+            pending_tasks.append(
+                self._create_evm_task(
+                    tx_hash=f"0x{i:064x}",
+                    stage=BroadcastTaskStage.PENDING_CHAIN,
+                    result=BroadcastTaskResult.UNKNOWN,
+                    nonce=i,
+                )
+            )
+        next_task = self._create_evm_task(
+            tx_hash="0x" + "c1" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=EVM_PIPELINE_DEPTH,
+        )
+
+        # 模拟一笔完成，腾出 pipeline 空位
+        first = pending_tasks[0]
+        BroadcastTask.objects.filter(pk=first.base_task_id).update(
+            stage=BroadcastTaskStage.FINALIZED,
+            result=BroadcastTaskResult.SUCCESS,
+        )
+
+        broadcast_evm_task.run(next_task.pk)
+
+        broadcast_mock.assert_called_once()
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_allows_queued_when_pipeline_has_room(self, delay_mock):
+        # 同地址已有 PENDING_CHAIN 但未满时，dispatch 仍放行最低 QUEUED nonce。
+        from django.utils import timezone
+
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        self._create_evm_task(
+            tx_hash="0x" + "d1" * 32,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=0,
+        )
+        queued_task = self._create_evm_task(
+            tx_hash="0x" + "d2" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        EvmBroadcastTask.objects.filter(pk=queued_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        self.assertEqual(
+            [call.args[0] for call in delay_mock.call_args_list],
+            [queued_task.pk],
+        )
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    def test_dispatch_blocks_when_pipeline_full(self, delay_mock):
+        # pipeline 已满时 dispatch 不选该地址的 QUEUED 任务。
+        from django.utils import timezone
+
+        from evm.constants import EVM_PIPELINE_DEPTH
+        from evm.tasks import dispatch_due_evm_broadcast_tasks
+
+        for i in range(EVM_PIPELINE_DEPTH):
+            self._create_evm_task(
+                tx_hash=f"0x{0xE0 + i:064x}",
+                stage=BroadcastTaskStage.PENDING_CHAIN,
+                result=BroadcastTaskResult.UNKNOWN,
+                nonce=i,
+            )
+        blocked_task = self._create_evm_task(
+            tx_hash="0x" + "e1" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=EVM_PIPELINE_DEPTH,
+        )
+
+        stale_created_at = timezone.now() - timedelta(seconds=8)
+        EvmBroadcastTask.objects.filter(pk=blocked_task.pk).update(
+            created_at=stale_created_at,
+            last_attempt_at=None,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            dispatch_due_evm_broadcast_tasks.run()
+
+        delay_mock.assert_not_called()
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_chain_dispatch_triggers_next_queued_after_broadcast(
+        self,
+        broadcast_mock,
+        delay_mock,
+    ):
+        # 广播成功后应链式调度同地址下一个 QUEUED nonce，无需等待下一轮 dispatch 周期。
+        from evm.tasks import broadcast_evm_task
+
+        current_task = self._create_evm_task(
+            tx_hash="0x" + "f1" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=0,
+        )
+        next_task = self._create_evm_task(
+            tx_hash="0x" + "f2" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+
+        def mark_pending(*args, **kwargs):
+            BroadcastTask.objects.filter(pk=current_task.base_task_id).update(
+                stage=BroadcastTaskStage.PENDING_CHAIN,
+            )
+
+        broadcast_mock.side_effect = mark_pending
+
+        broadcast_evm_task.run(current_task.pk)
+
+        broadcast_mock.assert_called_once()
+        delay_mock.assert_called_once_with(next_task.pk)
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_chain_dispatch_stops_when_pipeline_full(
+        self,
+        broadcast_mock,
+        delay_mock,
+    ):
+        # pipeline 满时链式调度不应继续派发。
+        from evm.constants import EVM_PIPELINE_DEPTH
+        from evm.tasks import broadcast_evm_task
+
+        # 创建 EVM_PIPELINE_DEPTH - 1 个已在 mempool 的任务
+        for i in range(EVM_PIPELINE_DEPTH - 1):
+            self._create_evm_task(
+                tx_hash=f"0x{0xF0 + i:064x}",
+                stage=BroadcastTaskStage.PENDING_CHAIN,
+                result=BroadcastTaskResult.UNKNOWN,
+                nonce=i,
+            )
+        # 当前任务广播后 pipeline 刚好满
+        current_task = self._create_evm_task(
+            tx_hash="0x" + "f3" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=EVM_PIPELINE_DEPTH - 1,
+        )
+        # 还有一个排队中的任务
+        self._create_evm_task(
+            tx_hash="0x" + "f4" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=EVM_PIPELINE_DEPTH,
+        )
+
+        def mark_pending(*args, **kwargs):
+            BroadcastTask.objects.filter(pk=current_task.base_task_id).update(
+                stage=BroadcastTaskStage.PENDING_CHAIN,
+            )
+
+        broadcast_mock.side_effect = mark_pending
+
+        broadcast_evm_task.run(current_task.pk)
+
+        broadcast_mock.assert_called_once()
+        # pipeline 满，不应链式调度下一个
+        delay_mock.assert_not_called()
+
 
 class EvmInternalTaskConfirmationTests(TestCase):
     def setUp(self):
@@ -1554,6 +1789,17 @@ class EvmInternalTaskConfirmationTests(TestCase):
         )
         return withdrawal, base_task, evm_task
 
+    def _make_overdue(self, evm_task):
+        """将 evm_task 的 last_attempt_at 设置为超过阈值。"""
+        from datetime import timedelta
+
+        from evm.constants import EVM_PENDING_REBROADCAST_TIMEOUT
+
+        evm_task.last_attempt_at = timezone.now() - timedelta(
+            seconds=EVM_PENDING_REBROADCAST_TIMEOUT + 60
+        )
+        evm_task.save(update_fields=["last_attempt_at"])
+
     @patch("withdrawals.service.WebhookService.create_event")
     @patch.object(Chain, "w3", new_callable=PropertyMock)
     def test_coordinator_fails_internal_withdrawal_when_receipt_status_zero(
@@ -1566,6 +1812,7 @@ class EvmInternalTaskConfirmationTests(TestCase):
         withdrawal, base_task, evm_task = self._create_withdrawal_with_pending_evm_task(
             tx_hash="0x" + "7" * 64
         )
+        self._make_overdue(evm_task)
         chain_w3_mock.return_value = SimpleNamespace(
             eth=SimpleNamespace(
                 get_transaction_receipt=Mock(return_value={"status": 0}),
@@ -1591,24 +1838,22 @@ class EvmInternalTaskConfirmationTests(TestCase):
 
     @patch("withdrawals.service.WebhookService.create_event")
     @patch.object(Chain, "w3", new_callable=PropertyMock)
-    def test_coordinator_keeps_internal_withdrawal_pending_when_receipt_missing(
+    def test_coordinator_skips_when_within_timeout(
         self,
         chain_w3_mock,
         webhook_mock,
     ):
-        from web3.exceptions import TransactionNotFound
-
+        """未超时的 PENDING_CHAIN 任务不做任何处理，等待 scanner 自然闭环。"""
         from evm.coordinator import InternalEvmTaskCoordinator
         from withdrawals.models import WithdrawalStatus
 
         withdrawal, base_task, evm_task = self._create_withdrawal_with_pending_evm_task(
             tx_hash="0x" + "8" * 64
         )
+        # last_attempt_at=None 或在阈值内，都视为未超时
         chain_w3_mock.return_value = SimpleNamespace(
             eth=SimpleNamespace(
-                get_transaction_receipt=Mock(
-                    side_effect=TransactionNotFound("missing")
-                ),
+                get_transaction_receipt=Mock(return_value={"status": 1}),
             )
         )
         InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
@@ -1621,6 +1866,161 @@ class EvmInternalTaskConfirmationTests(TestCase):
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertFalse(evm_task.completed)
         webhook_mock.assert_not_called()
+
+    @patch("withdrawals.service.WebhookService.create_event")
+    @patch.object(Chain, "w3", new_callable=PropertyMock)
+    def test_coordinator_confirms_withdrawal_when_receipt_found_and_overdue(
+        self,
+        chain_w3_mock,
+        webhook_mock,
+    ):
+        """超时后查到 receipt status=1，协调器直接推进成功终局。"""
+        from evm.coordinator import InternalEvmTaskCoordinator
+        from withdrawals.models import WithdrawalStatus
+
+        withdrawal, base_task, evm_task = self._create_withdrawal_with_pending_evm_task(
+            tx_hash="0x" + "b" * 64
+        )
+        self._make_overdue(evm_task)
+        chain_w3_mock.return_value = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_transaction_receipt=Mock(return_value={"status": 1}),
+            )
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
+
+        withdrawal.refresh_from_db()
+        base_task.refresh_from_db()
+        evm_task.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.SUCCESS)
+        self.assertTrue(evm_task.completed)
+        webhook_mock.assert_called_once()
+
+    @patch.object(Chain, "w3", new_callable=PropertyMock)
+    def test_coordinator_rebroadcasts_when_all_hashes_not_found_and_overdue(
+        self,
+        chain_w3_mock,
+    ):
+        """超时后所有历史 hash 均无 receipt，触发重新广播。"""
+        from web3.exceptions import TransactionNotFound
+
+        from evm.coordinator import InternalEvmTaskCoordinator
+
+        _, base_task, evm_task = self._create_withdrawal_with_pending_evm_task(
+            tx_hash="0x" + "9" * 64
+        )
+        self._make_overdue(evm_task)
+        old_attempt_at = evm_task.last_attempt_at
+
+        send_raw_mock = Mock(return_value="0x" + "f" * 64)
+        chain_w3_mock.return_value = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_transaction_receipt=Mock(
+                    side_effect=TransactionNotFound("missing")
+                ),
+                gas_price=1,
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+
+        InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
+
+        evm_task.refresh_from_db()
+        base_task.refresh_from_db()
+        self.assertGreater(evm_task.last_attempt_at, old_attempt_at)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertFalse(evm_task.completed)
+        send_raw_mock.assert_called_once()
+
+    @patch("withdrawals.service.WebhookService.create_event")
+    @patch.object(Chain, "w3", new_callable=PropertyMock)
+    def test_coordinator_finds_receipt_via_historical_hash(
+        self,
+        chain_w3_mock,
+        webhook_mock,
+    ):
+        """当前 tx_hash 无 receipt 但历史 hash 有 receipt 时，通过历史 hash 推进终局。"""
+        from chains.models import TxHash
+        from web3.exceptions import TransactionNotFound
+
+        from evm.coordinator import InternalEvmTaskCoordinator
+        from withdrawals.models import WithdrawalStatus
+
+        current_hash = "0x" + "c" * 64
+        old_hash = "0x" + "d" * 64
+        withdrawal, base_task, evm_task = self._create_withdrawal_with_pending_evm_task(
+            tx_hash=current_hash
+        )
+        # 模拟 gas 提升重签产生的历史 hash
+        TxHash.objects.create(
+            broadcast_task=base_task,
+            chain=self.chain,
+            hash=old_hash,
+            version=1,
+        )
+        self._make_overdue(evm_task)
+
+        def receipt_side_effect(tx_hash):
+            if tx_hash == old_hash:
+                return {"status": 1}
+            raise TransactionNotFound(tx_hash)
+
+        chain_w3_mock.return_value = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_transaction_receipt=Mock(side_effect=receipt_side_effect),
+            )
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
+
+        withdrawal.refresh_from_db()
+        base_task.refresh_from_db()
+        evm_task.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalStatus.COMPLETED)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.SUCCESS)
+        self.assertEqual(base_task.tx_hash, old_hash)
+        self.assertTrue(evm_task.completed)
+        webhook_mock.assert_called_once()
+
+    @patch.object(Chain, "w3", new_callable=PropertyMock)
+    def test_coordinator_continues_when_rebroadcast_raises(
+        self,
+        chain_w3_mock,
+    ):
+        """重新广播时 broadcast() 抛异常不会中断 reconcile 循环。"""
+        from web3.exceptions import TransactionNotFound
+
+        from evm.coordinator import InternalEvmTaskCoordinator
+
+        _, base_task, evm_task = self._create_withdrawal_with_pending_evm_task(
+            tx_hash="0x" + "e" * 64
+        )
+        self._make_overdue(evm_task)
+
+        chain_w3_mock.return_value = SimpleNamespace(
+            eth=SimpleNamespace(
+                get_transaction_receipt=Mock(
+                    side_effect=TransactionNotFound("missing")
+                ),
+                gas_price=1,
+                send_raw_transaction=Mock(
+                    side_effect=ConnectionError("node unreachable")
+                ),
+            )
+        )
+
+        # 不应抛异常
+        InternalEvmTaskCoordinator.reconcile_chain(chain=self.chain)
+
+        evm_task.refresh_from_db()
+        self.assertFalse(evm_task.completed)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
 
 
 @override_settings(DEBUG=False)
@@ -1842,7 +2242,7 @@ class EvmErc20ScannerTests(TestCase):
         get_transfer_logs_mock,
     ):
         # 本地 DEBUG 开发模式下，首次扫描应直接把历史游标提升到当前链头；
-        # 但同一进程后续轮询不能重复执行这次“启动对齐”，否则会不断抹平正常增量进度。
+        # 但同一进程后续轮询不能重复执行这次"启动对齐"，否则会不断抹平正常增量进度。
         EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,

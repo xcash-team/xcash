@@ -61,7 +61,7 @@ deposits_tasks = {
 evm_tasks = {
     "dispatch_due_evm_broadcast_tasks": {
         "task": "evm.tasks.dispatch_due_evm_broadcast_tasks",
-        "schedule": 10,
+        "schedule": 5,
     },
     "scan_active_evm_chains": {
         # 周期性触发所有启用中的 EVM 链自扫描，负责发现原生币直转与 ERC20 Transfer。

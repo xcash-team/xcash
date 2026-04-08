@@ -671,6 +671,36 @@ class WithdrawalService:
 
     @classmethod
     @db_transaction.atomic
+    def confirm_withdrawal_by_task(cls, *, broadcast_task) -> None:
+        """协调器确认链上成功但 scanner 未观测到时，直接推进提币终局。
+
+        与 confirm_withdrawal(transfer) 的区别：
+        - 该方法不依赖 Transfer 记录，直接通过 BroadcastTask 关联找到 Withdrawal。
+        - Withdrawal 可能从 PENDING 直接跳到 COMPLETED（跳过 CONFIRMING），
+          因为 scanner 未观测到交易意味着 Transfer 从未被创建，try_match_withdrawal
+          也从未执行过，所以 CONFIRMING 阶段不会发生。
+        调用时机：InternalEvmTaskCoordinator 发现链上 receipt status=1 但无对应 Transfer 时。
+        """
+        try:
+            withdrawal = Withdrawal.objects.select_for_update().get(
+                broadcast_task=broadcast_task,
+            )
+        except Withdrawal.DoesNotExist:
+            return
+
+        # 幂等保护：已终局则跳过
+        if withdrawal.status in (
+            WithdrawalStatus.COMPLETED,
+            WithdrawalStatus.FAILED,
+            WithdrawalStatus.REJECTED,
+        ):
+            return
+
+        withdrawal.status = WithdrawalStatus.COMPLETED
+        withdrawal.save(update_fields=["status", "updated_at"])
+        cls.notify_status_changed(withdrawal)
+
+    @classmethod
     def fail_withdrawal(cls, *, broadcast_task) -> None:
         """BroadcastTask 确认链上交易永久失败时，将提币终局为 FAILED。
 
