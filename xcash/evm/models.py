@@ -18,6 +18,7 @@ from chains.models import TransferType
 from chains.signer import get_signer_backend
 from common.fields import EvmAddressField
 from common.models import UndeletableModel
+from evm.constants import EVM_PIPELINE_DEPTH
 
 if TYPE_CHECKING:
     from currencies.models import Crypto
@@ -152,7 +153,7 @@ class EvmBroadcastTask(UndeletableModel):
         }
 
     def broadcast(self) -> None:
-        if self.has_lower_unsettled_nonce():
+        if self.has_lower_queued_nonce() or self.is_pipeline_full():
             return None
         self._ensure_signed_with_latest_gas_price()
 
@@ -234,27 +235,52 @@ class EvmBroadcastTask(UndeletableModel):
             return "已完成"
         return "待执行"
 
-    def has_lower_unsettled_nonce(self) -> bool:
-        """同账户更低 nonce 只要尚未收口，就阻断当前任务广播。"""
+    def has_lower_queued_nonce(self) -> bool:
+        """同账户更低 nonce 尚未提交到节点（QUEUED）时阻断，保证 nonce 按顺序进入 mempool。"""
         if not self.address_id or not self.chain_id:
             return False
         return EvmBroadcastTask.objects.filter(
             address=self.address,
             chain=self.chain,
             nonce__lt=self.nonce,
-            base_task__stage__in=(
-                BroadcastTaskStage.QUEUED,
-                BroadcastTaskStage.PENDING_CHAIN,
-            ),
+            base_task__stage=BroadcastTaskStage.QUEUED,
             base_task__result=BroadcastTaskResult.UNKNOWN,
         ).exists()
 
+    def is_pipeline_full(self) -> bool:
+        """同地址同链已有 >=EVM_PIPELINE_DEPTH 笔在 mempool 中等待确认时阻断。"""
+        if not self.address_id or not self.chain_id:
+            return False
+        return (
+            EvmBroadcastTask.objects.filter(
+                address=self.address,
+                chain=self.chain,
+                base_task__stage=BroadcastTaskStage.PENDING_CHAIN,
+                base_task__result=BroadcastTaskResult.UNKNOWN,
+            ).count()
+            >= EVM_PIPELINE_DEPTH
+        )
+
     @staticmethod
     def _is_already_known_error(exc: Exception) -> bool:
+        """判断节点返回的错误是否表示"交易已存在于 mempool 或已上链"。
+
+        不同 EVM 客户端返回的措辞各异：
+        - Geth / BSC / Bor / coreth / op-geth / Arbitrum: "already known"
+        - Nethermind: "AlreadyKnown"（无空格，需单独匹配）
+        - Besu: "Known transaction"
+        - Parity / OpenEthereum: "Transaction with the same hash was already imported."
+        - Anvil (Foundry): "transaction already imported"
+        - Erigon: "existing txn with same hash"
+        - 所有客户端 nonce 已上链: "nonce too low"
+        """
         msg = str(exc).lower()
         return (
             "already known" in msg
+            or "alreadyknown" in msg
             or "known transaction" in msg
+            or "already imported" in msg
+            or "existing txn with same hash" in msg
             or "nonce too low" in msg
         )
 

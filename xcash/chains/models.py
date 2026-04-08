@@ -698,6 +698,14 @@ class BroadcastTask(UndeletableModel):
     @db_transaction.atomic
     def append_tx_hash(self, tx_hash: str) -> TxHash:
         locked_task = BroadcastTask.objects.select_for_update().get(pk=self.pk)
+        # 并发广播可能产生相同 tx_hash（相同 nonce + gas_price 签名结果相同），
+        # 若已存在则视为幂等，直接返回。
+        existing = TxHash.objects.filter(
+            chain=locked_task.chain, hash=tx_hash
+        ).first()
+        if existing:
+            self.tx_hash = tx_hash
+            return existing
         max_version = (
             TxHash.objects.filter(broadcast_task=locked_task)
             .aggregate(max_version=models.Max("version"))
@@ -1208,12 +1216,14 @@ class Balance(models.Model):
         )
         if rows_updated == 0:
             try:
-                cls.objects.create(
-                    address=address,
-                    chain_token=chain_token,
-                    value=delta_value,
-                    amount=delta_amount,
-                )
+                # 用 savepoint 隔离 INSERT，避免 IntegrityError 污染外层事务
+                with db_transaction.atomic():
+                    cls.objects.create(
+                        address=address,
+                        chain_token=chain_token,
+                        value=delta_value,
+                        amount=delta_amount,
+                    )
             except IntegrityError:
                 # 并发场景：另一事务已先创建该记录，重试 UPDATE
                 cls.objects.filter(address=address, chain_token=chain_token).update(
