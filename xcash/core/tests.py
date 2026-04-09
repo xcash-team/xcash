@@ -427,6 +427,7 @@ class InitEnvScriptTests(TestCase):
 
 class LocalChainIntegrationMixin:
     EVM_RPC = "http://127.0.0.1:8545"
+    BTC_NODE_RPC = "http://xcash:xcash@127.0.0.1:18443"
     BTC_RPC = "http://xcash:xcash@127.0.0.1:18443/wallet/xcash"
     BTC_MINER_RPC = "http://xcash:xcash@127.0.0.1:18443/wallet/xcash-miner"
 
@@ -445,13 +446,27 @@ class LocalChainIntegrationMixin:
         return client
 
     def _require_bitcoin_miner(self) -> BitcoinRpcClient:
-        """返回带私钥的矿工钱包客户端，用于 regtest 打款和挖矿。"""
-        client = BitcoinRpcClient(self.BTC_MINER_RPC)
+        """返回带私钥的矿工钱包客户端，用于 regtest 打款和挖矿。
+        若 xcash-miner 钱包不存在则自动创建/加载。
+        """
+        # 先用节点级 RPC 确保钱包存在
+        node = BitcoinRpcClient(self.BTC_NODE_RPC)
         try:
-            client.get_block_count()
+            node.get_block_count()
         except Exception as exc:  # noqa: BLE001
-            self.skipTest(f"本地 bitcoind regtest 矿工钱包不可用: {exc}")
-        return client
+            self.skipTest(f"本地 bitcoind regtest 不可用: {exc}")
+
+        wallet_name = "xcash-miner"
+        try:
+            node.load_wallet(wallet_name)
+        except BitcoinRpcError:
+            # 加载失败（不存在），尝试创建
+            try:
+                node.create_wallet(wallet_name)
+            except BitcoinRpcError:
+                pass  # 已加载，忽略
+
+        return BitcoinRpcClient(self.BTC_MINER_RPC)
 
     def _deploy_test_erc20(self, w3: Web3, *, supply_raw: int):
         token_factory = w3.eth.contract(
