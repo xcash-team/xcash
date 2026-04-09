@@ -60,4 +60,8 @@ class AdapterFactory:
             from bitcoin.adapter import BitcoinAdapter
 
             return BitcoinAdapter()
+        if chain_type == "tron":
+            from tron.adapter import TronAdapter
+
+            return TronAdapter()
         raise ValueError(f"Unsupported chain adapter: {chain_type}")
