@@ -12,6 +12,7 @@ from bitcoin.network import get_active_bitcoin_network
 from common.fields import AddressField
 from common.middlewares import XcashMiddleware
 from common.utils.bitcoin import is_valid_bitcoin_address
+from tron.codec import TronAddressCodec
 
 
 class BitcoinAddressValidationTests(SimpleTestCase):
@@ -57,6 +58,14 @@ class BitcoinAddressValidationTests(SimpleTestCase):
 
 
 class TronAddressValidationTests(SimpleTestCase):
+    def test_codec_base58_validation_requires_real_checksum(self):
+        self.assertTrue(
+            TronAddressCodec.is_valid_base58("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")
+        )
+        self.assertFalse(
+            TronAddressCodec.is_valid_base58("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6u")
+        )
+
     def test_address_field_requires_real_tron_base58_checksum(self):
         field = AddressField()
         field.set_attributes_from_name("address")
