@@ -9,6 +9,7 @@ from rest_framework.serializers import Serializer
 logger = structlog.get_logger()
 
 from chains.adapters import AdapterFactory
+from chains.capabilities import ChainProductCapabilityService
 from chains.models import AddressUsage
 from chains.service import AddressService
 from chains.service import ChainService
@@ -72,12 +73,9 @@ class CreateWithdrawalSerializer(Serializer):
 
     def validate_chain(self, value):
         try:
-            chain = ChainService.get_by_code(value)
+            self._get_chain(value)
         except ObjectDoesNotExist as exc:
             raise ValidationError(detail=ErrorCode.INVALID_CHAIN.to_payload()) from exc
-        # 提前拦截不支持提币的链类型，避免通过所有校验后在 submit_withdrawal 才报错
-        if chain.type not in WithdrawalService.WITHDRAWAL_SUPPORTED_CHAIN_TYPES:
-            raise ValidationError(detail=ErrorCode.INVALID_CHAIN.to_payload())
         return value
 
     def validate(self, attrs):
@@ -92,6 +90,11 @@ class CreateWithdrawalSerializer(Serializer):
         # 1. 链+币种组合校验（本地）
         if not CryptoService.is_supported_on_chain(crypto, chain=chain):
             raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
+        if not ChainProductCapabilityService.supports_withdrawal(
+            chain=chain,
+            crypto=crypto,
+        ):
+            raise APIError(ErrorCode.INVALID_CHAIN)
 
         # 2. 内部地址保护：禁止提币到平台自有地址（按链类型过滤，避免 EVM 跨链地址误判）
         if AddressService.find_by_address(address=attrs["to"], chain_type=chain.type):

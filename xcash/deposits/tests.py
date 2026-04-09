@@ -995,7 +995,9 @@ class DepositTransferRematchTests(TestCase):
 
 
 class DepositAddressApiGuardTests(TestCase):
-    def test_address_endpoint_rejects_tron_chain_without_allocating_deposit_address(self):
+    def test_address_endpoint_uses_capability_service_to_reject_tron_usdt(
+        self,
+    ):
         project = Project.objects.create(
             name="Tron Deposit Guard Project",
             wallet=Wallet.objects.create(),
@@ -1035,13 +1037,21 @@ class DepositAddressApiGuardTests(TestCase):
         )
         force_authenticate(request, user=User.objects.create(username="deposit-api"))
 
-        with patch(
-            "deposits.viewsets.DepositAddress.get_address"
-        ) as get_address_mock:
+        with (
+            patch(
+                "deposits.viewsets.ChainProductCapabilityService.supports_deposit_address",
+                return_value=False,
+            ) as supports_deposit_address_mock,
+            patch("deposits.viewsets.DepositAddress.get_address") as get_address_mock,
+        ):
             response = DepositViewSet.as_view({"get": "address"})(request)
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], ErrorCode.INVALID_CHAIN.code)
+        supports_deposit_address_mock.assert_called_once_with(
+            chain=tron_chain,
+            crypto=usdt,
+        )
         get_address_mock.assert_not_called()
 
 

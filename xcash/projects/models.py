@@ -7,6 +7,7 @@ from django.utils.translation import gettext_lazy as _
 from shortuuid.django_fields import ShortUUIDField
 from simple_history.models import HistoricalRecords
 
+from chains.capabilities import ChainProductCapabilityService
 from chains.models import Chain
 from chains.models import ChainType
 from common.consts import UPPER_ALPHABET
@@ -230,13 +231,25 @@ class RecipientAddress(models.Model):
         return result
 
     def clean(self) -> None:
-        """归档链生态后，只允许项目录入 EVM / Bitcoin 收币地址。"""
+        """按用途校验项目收币地址允许进入的链类型。"""
         super().clean()
-        if self.chain_type and self.chain_type not in Chain.PRODUCT_ENABLED_TYPES:
-            raise ValidationError(
-                {"chain_type": _("当前版本仅支持 EVM / Bitcoin 收币地址。")}
-            )
         if self.used_for_invoice == self.used_for_deposit:
             raise ValidationError(
                 _("项目地址必须且只能用于一种用途：支付地址或归集地址。")
             )
+        if not self.chain_type:
+            return
+
+        if self.used_for_invoice:
+            allowed_chain_types = (
+                ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
+            )
+            error_message = _("当前版本支付地址仅支持 EVM / Bitcoin / Tron。")
+        else:
+            allowed_chain_types = (
+                ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
+            )
+            error_message = _("当前版本归集地址仅支持 EVM / Bitcoin。")
+
+        if self.chain_type not in allowed_chain_types:
+            raise ValidationError({"chain_type": error_message})

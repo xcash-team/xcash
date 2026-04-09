@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.contrib import admin
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.exceptions import PermissionDenied
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.test import override_settings
 from django.test.client import RequestFactory
@@ -17,8 +18,11 @@ from chains.models import Chain
 from chains.models import ChainType
 from chains.test_signer import build_test_remote_signer_backend
 from currencies.models import Crypto
+from projects.admin import CollectionAddressInline
+from projects.admin import PaymentAddressInline
 from projects.admin import ProjectAdmin
 from projects.models import Project
+from projects.models import RecipientAddress
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 
@@ -139,3 +143,59 @@ class ProjectAdminTests(TestCase):
 
         otp_mock.assert_not_called()
         save_model_mock.assert_called_once()
+
+    def test_payment_address_inline_allows_tron_choice(self):
+        request = self.factory.get("/admin/projects/project/add/")
+        request.user = self.user
+
+        inline = PaymentAddressInline(Project, admin.site)
+        formset = inline.get_formset(request, self.project)
+        choices = {
+            value for value, _label in formset.form.base_fields["chain_type"].choices
+        }
+
+        self.assertIn(ChainType.TRON, choices)
+
+    def test_collection_address_inline_excludes_tron_choice(self):
+        request = self.factory.get("/admin/projects/project/add/")
+        request.user = self.user
+
+        inline = CollectionAddressInline(Project, admin.site)
+        formset = inline.get_formset(request, self.project)
+        choices = {
+            value for value, _label in formset.form.base_fields["chain_type"].choices
+        }
+
+        self.assertNotIn(ChainType.TRON, choices)
+
+
+class RecipientAddressCapabilityTests(TestCase):
+    def setUp(self):
+        self.project = Project.objects.create(name="Recipient Capability Project")
+
+    def test_clean_allows_tron_invoice_address(self):
+        recipient = RecipientAddress(
+            name="Tron Invoice",
+            project=self.project,
+            chain_type=ChainType.TRON,
+            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
+            used_for_invoice=True,
+            used_for_deposit=False,
+        )
+
+        recipient.clean()
+
+    def test_clean_rejects_tron_collection_address(self):
+        recipient = RecipientAddress(
+            name="Tron Collection",
+            project=self.project,
+            chain_type=ChainType.TRON,
+            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
+            used_for_invoice=False,
+            used_for_deposit=True,
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            recipient.clean()
+
+        self.assertIn("chain_type", ctx.exception.message_dict)

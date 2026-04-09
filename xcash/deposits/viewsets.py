@@ -8,7 +8,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from chains.models import Chain
-from chains.models import ChainType
+from chains.capabilities import ChainProductCapabilityService
 from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
@@ -56,9 +56,6 @@ class DepositViewSet(viewsets.GenericViewSet):
             chain = Chain.objects.get(code=chain_code, active=True)
         except Chain.DoesNotExist as exc:
             raise APIError(ErrorCode.INVALID_CHAIN) from exc
-        if chain.type == ChainType.TRON:
-            # Tron 充币地址链路尚未落地，必须在入口显式拒绝，避免继续派生/缓存 DepositAddress。
-            raise APIError(ErrorCode.INVALID_CHAIN)
 
         try:
             crypto = CryptoService.get_by_symbol(crypto_symbol)
@@ -74,6 +71,11 @@ class DepositViewSet(viewsets.GenericViewSet):
                 ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT,
                 detail=f"{crypto_symbol} 不支持 {chain_code} 链",
             )
+        if not ChainProductCapabilityService.supports_deposit_address(
+            chain=chain,
+            crypto=crypto,
+        ):
+            raise APIError(ErrorCode.INVALID_CHAIN)
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
 
