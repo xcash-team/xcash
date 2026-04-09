@@ -427,7 +427,6 @@ class InitEnvScriptTests(TestCase):
 
 class LocalChainIntegrationMixin:
     EVM_RPC = "http://127.0.0.1:8545"
-    BTC_NODE_RPC = "http://xcash:xcash@127.0.0.1:18443"
     BTC_RPC = "http://xcash:xcash@127.0.0.1:18443/wallet/xcash"
     BTC_MINER_RPC = "http://xcash:xcash@127.0.0.1:18443/wallet/xcash-miner"
 
@@ -446,27 +445,13 @@ class LocalChainIntegrationMixin:
         return client
 
     def _require_bitcoin_miner(self) -> BitcoinRpcClient:
-        """返回带私钥的矿工钱包客户端，用于 regtest 打款和挖矿。
-        若 xcash-miner 钱包不存在则自动创建/加载。
-        """
-        # 先用节点级 RPC 确保钱包存在
-        node = BitcoinRpcClient(self.BTC_NODE_RPC)
+        """返回带私钥的矿工钱包客户端，用于 regtest 打款和挖矿。"""
+        client = BitcoinRpcClient(self.BTC_MINER_RPC)
         try:
-            node.get_block_count()
+            client.get_block_count()
         except Exception as exc:  # noqa: BLE001
-            self.skipTest(f"本地 bitcoind regtest 不可用: {exc}")
-
-        wallet_name = "xcash-miner"
-        try:
-            node.load_wallet(wallet_name)
-        except BitcoinRpcError:
-            # 加载失败（不存在），尝试创建
-            try:
-                node.create_wallet(wallet_name)
-            except BitcoinRpcError:
-                pass  # 已加载，忽略
-
-        return BitcoinRpcClient(self.BTC_MINER_RPC)
+            self.skipTest(f"本地 bitcoind regtest 矿工钱包不可用: {exc}")
+        return client
 
     def _deploy_test_erc20(self, w3: Web3, *, supply_raw: int):
         token_factory = w3.eth.contract(
@@ -1539,6 +1524,10 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
         # 真实 regtest 联调：项目 BTC 收款地址收到付款后，
         # 扫描、Invoice 命中、确认和 Completed 终局都必须打通。
         self._require_bitcoin()
+        # prepare_local_bitcoin 负责创建 xcash / xcash-miner 钱包并预挖区块
+        call_command(
+            "prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=101"
+        )
         wallet_client = self._require_bitcoin_miner()
         crypto = Crypto.objects.create(
             name="Bitcoin Invoice Local",
@@ -1585,10 +1574,6 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
         invoice.refresh_from_db()
         self.assertEqual(invoice.pay_address, recipient.address)
         self.assertEqual(invoice.pay_amount, Decimal("0.012"))
-
-        call_command(
-            "prepare_local_bitcoin", "--wallet-name=xcash", "--mine-blocks=101"
-        )
         tx_hash = wallet_client.send_to_address(invoice.pay_address, invoice.pay_amount)
         mining_address = wallet_client.get_new_address(
             label="btc-invoice-miner",
