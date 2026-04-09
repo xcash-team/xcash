@@ -13,11 +13,13 @@ from common.utils.bitcoin import is_valid_bitcoin_address
 
 
 class BitcoinAddressValidationTests(SimpleTestCase):
+    @patch.dict(environ, {"BITCOIN_NETWORK": "mainnet"}, clear=False)
     def test_base58_address_requires_real_checksum(self):
         # 真实 checksum 校验必须能识别“形状正确但最后一位被篡改”的假地址。
         self.assertTrue(is_valid_bitcoin_address("1BoatSLRHtKNngkdXEeobR76b53LETtpyT"))
         self.assertFalse(is_valid_bitcoin_address("1BoatSLRHtKNngkdXEeobR76b53LETtpy1"))
 
+    @patch.dict(environ, {"BITCOIN_NETWORK": "mainnet"}, clear=False)
     def test_bech32_address_requires_real_checksum(self):
         # bech32 校验同样不能只看前缀与字符集。
         self.assertTrue(
@@ -27,6 +29,7 @@ class BitcoinAddressValidationTests(SimpleTestCase):
             is_valid_bitcoin_address("bc1qz252a6sxsamzl8sllmtcxtmsntkjek4z2vaktp")
         )
 
+    @patch.dict(environ, {"BITCOIN_NETWORK": "mainnet"}, clear=False)
     def test_adapter_reuses_common_bitcoin_validation(self):
         # 适配器层必须和模型字段共用同一套 BTC 校验规则。
         self.assertTrue(

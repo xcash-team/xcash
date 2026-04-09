@@ -9,19 +9,19 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ("alerts", "0001_initial"),
-        ("projects", "0001_initial"),
+        ("bitcoin", "0001_initial"),
+        ("chains", "0001_initial"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name="projectalertstate",
-            name="project",
-            field=models.ForeignKey(
+            model_name="bitcoinscancursor",
+            name="chain",
+            field=models.OneToOneField(
                 on_delete=django.db.models.deletion.CASCADE,
-                related_name="alert_states",
-                to="projects.project",
-                verbose_name="项目",
+                related_name="bitcoin_scan_cursor",
+                to="chains.chain",
+                verbose_name="链",
             ),
         ),
     ]
