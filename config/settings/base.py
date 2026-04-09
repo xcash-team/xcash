@@ -60,6 +60,8 @@ SIGNER_BASE_URL = env.str("SIGNER_BASE_URL", default="")
 SIGNER_TIMEOUT = env.float("SIGNER_TIMEOUT", default=8.0)
 SIGNER_SHARED_SECRET = env.str("SIGNER_SHARED_SECRET", default="")
 SIGNER_REQUEST_TTL = env.int("SIGNER_REQUEST_TTL", default=300)
+TRON_RPC_TIMEOUT = env.float("TRON_RPC_TIMEOUT", default=8.0)
+TRON_API_KEY = env.str("TRON_API_KEY", default="")
 
 # 只有当 TCP 对端本身属于受信代理网段时，才接受其转发的 X-Real-IP。
 # 默认留空，生产环境必须显式配置，例如 127.0.0.1、::1 或反向代理容器网段。
@@ -178,6 +180,8 @@ LOCAL_APPS = [
     "evm",
     # Bitcoin 链相关模型（BitcoinOnchainTask）
     "bitcoin",
+    # Tron 监听、扫描游标与 provider 接入
+    "tron",
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
