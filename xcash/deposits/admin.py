@@ -180,6 +180,39 @@ class DepositAdmin(ReadOnlyModelAdmin):
         )
 
 
+class DepositInline(admin.TabularInline):
+    model = Deposit
+    extra = 0
+    can_delete = False
+    verbose_name = "充币"
+    verbose_name_plural = "充币"
+    fields = (
+        "sys_no",
+        "customer",
+        "display_chain",
+        "display_crypto",
+        "display_amount",
+        "status",
+        "created_at",
+    )
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    @display(description="链")
+    def display_chain(self, instance: Deposit):
+        return instance.transfer.chain.code
+
+    @display(description="币种")
+    def display_crypto(self, instance: Deposit):
+        return instance.transfer.crypto.symbol
+
+    @display(description="数量")
+    def display_amount(self, instance: Deposit):
+        return instance.transfer.amount
+
+
 @admin.register(DepositCollection)
 class DepositCollectionAdmin(ReadOnlyModelAdmin):
     list_display = (
@@ -193,10 +226,24 @@ class DepositCollectionAdmin(ReadOnlyModelAdmin):
     readonly_fields = (
         "collection_hash",
         "transfer",
+        "broadcast_task",
         "collected_at",
         "created_at",
         "updated_at",
     )
+    inlines = (DepositInline,)
+
+    def get_queryset(self, request):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("transfer", "broadcast_task")
+            .prefetch_related(
+                "deposits__transfer__chain",
+                "deposits__transfer__crypto",
+                "deposits__customer",
+            )
+        )
 
 
 @admin.register(DepositAddress)

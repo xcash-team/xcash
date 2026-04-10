@@ -26,8 +26,6 @@ from webhooks.service import WebhookService
 class DepositService:
     """High level orchestration around deposit lifecycle and collection."""
 
-    _NATIVE_BUFFER_RATIO = Decimal("1.2")
-
     @staticmethod
     def refresh_worth(deposit: Deposit) -> None:
         """显式计算 Deposit worth，避免继续依赖 post_save signal。"""
@@ -153,8 +151,6 @@ class DepositService:
         chain = deposit.transfer.chain
         crypto = deposit.transfer.crypto
         project = deposit.customer.project
-        # 归集金额换算必须使用链特定精度，避免覆盖精度的链上资产被错误换算。
-        crypto_decimals = crypto.get_decimals(chain)
 
         recipient = cls._select_recipient(project_id=project.id, chain_type=chain.type)
         if recipient is None:
@@ -166,21 +162,24 @@ class DepositService:
         ).address
         adapter = AdapterFactory.get_adapter(chain.type)
 
+        # 快速退出：链上余额为 0 不可能归集
         balance_raw = adapter.get_balance(deposit_addr.address, chain, crypto)
         if balance_raw <= 0:
             return None
 
-        if not cls._should_collect(deposit, balance_raw):
+        # 归集金额 = 充值金额之和（非余额），保证对账一致
+        amount = cls._calculate_collection_amount(grouped_deposits)
+
+        if not cls._should_collect(deposit, amount):
             return None
 
-        # Gas 补充交易广播后不等待链上确认即继续归集：若补充尚未到账，归集交易会因
-        # Gas 不足而失败，下一轮 gather_deposits 重试时补充已确认即可成功。
-        cls._ensure_native_buffer(
-            deposit=deposit, deposit_address=deposit_addr, adapter=adapter
-        )
-
-        amount = cls._calculate_collection_amount(deposit, balance_raw, crypto_decimals)
-        if amount is None:
+        # Gas 充足性检查：不足时自动补充并跳过本轮，等下一轮 gas 到账后重试
+        if not cls._ensure_gas_and_check(
+            deposit=deposit,
+            deposit_address=deposit_addr,
+            adapter=adapter,
+            collection_amount=amount,
+        ):
             return None
 
         # 预创建占位 collection（hash 为 NULL），并关联 deposits，
@@ -301,33 +300,10 @@ class DepositService:
             return [], None
         return grouped, grouped[0]
 
-    @classmethod
-    def _calculate_collection_amount(
-        cls, deposit: Deposit, balance_raw: int, crypto_decimals: int
-    ) -> Decimal | None:
-        """
-        计算实际可归集金额。
-
-        原生币需扣除 gas 费，ERC-20 由 _ensure_native_buffer 保证 gas 充足，
-        直接使用完整余额。余额不足 gas 时返回 None 表示跳过本次归集。
-        """
-        chain = deposit.transfer.chain
-        crypto = deposit.transfer.crypto
-
-        if crypto == chain.native_coin or crypto.is_native:
-            # 归集原生币时，需扣除 gas 费用
-            fee_raw = cls._estimate_native_fee(chain, crypto)
-            net_raw = balance_raw - fee_raw
-            if net_raw <= 0:
-                logger.warning(
-                    "原生币余额不足以支付归集 gas，跳过",
-                    deposit_id=deposit.id,
-                    chain=chain.code,
-                )
-                return None
-            return cls._to_amount(net_raw, crypto_decimals)
-
-        return cls._to_amount(balance_raw, crypto_decimals)
+    @staticmethod
+    def _calculate_collection_amount(grouped_deposits: list[Deposit]) -> Decimal:
+        """归集金额 = 分组内所有充值金额之和，保证对账一致：充多少归多少。"""
+        return sum((d.transfer.amount for d in grouped_deposits), Decimal("0"))
 
     @staticmethod
     def try_match_gas_recharge(transfer: OnchainTransfer) -> bool:
@@ -427,16 +403,12 @@ class DepositService:
         return Decimal(raw_value).scaleb(-decimals)
 
     @classmethod
-    def _should_collect(cls, deposit: Deposit, balance_raw: int) -> bool:
+    def _should_collect(cls, deposit: Deposit, collection_amount: Decimal) -> bool:
         crypto = deposit.transfer.crypto
-        chain = deposit.transfer.chain
         project = deposit.customer.project
 
-        # 归集阈值判断必须与实际发送使用同一套链特定精度，避免门槛判断失真。
-        amount = cls._to_amount(balance_raw, crypto.get_decimals(chain))
-
         try:
-            worth = amount * crypto.price("USD")
+            worth = collection_amount * crypto.price("USD")
         except KeyError:
             logger.warning(
                 "缺少代币价格，直接触发归集",
@@ -451,62 +423,83 @@ class DepositService:
         return timezone.now() >= deadline
 
     @classmethod
-    def _ensure_native_buffer(
+    def _ensure_gas_and_check(
         cls,
         *,
         deposit: Deposit,
         deposit_address,
         adapter,
-    ) -> None:
+        collection_amount: Decimal,
+    ) -> bool:
+        """
+        检查归集 gas 是否充足，不足时自动补充并跳过本轮归集。
+
+        原生币：余额 >= 归集金额 + 2 次原生币转账 gas。
+        代币：原生币余额 >= 1 次 ERC-20 转账 gas。
+        Gas 补充金额 = min(5 次 ERC-20 转账, 10 次原生币转账)。
+
+        返回 True 表示 gas 充足可立即归集，False 表示已发起补充、本轮跳过。
+        """
         chain = deposit.transfer.chain
         crypto = deposit.transfer.crypto
 
+        gas_price = cls._get_gas_price(chain)
+        if gas_price <= 0:
+            # 非 EVM 或 RPC 异常，直接放行由后续交易自行校验
+            return True
+
+        native_gas_cost = gas_price * chain.base_transfer_gas
+        erc20_gas_cost = gas_price * chain.erc20_transfer_gas
+
+        # --- 判断 gas 是否充足 ---
         if crypto == chain.native_coin or crypto.is_native:
-            return
+            # 原生币归集：余额需覆盖归集金额 + 2 次原生币转账 gas
+            crypto_decimals = crypto.get_decimals(chain)
+            collection_raw = int(collection_amount * Decimal(10**crypto_decimals))
+            required_gas_raw = 2 * native_gas_cost
+            current_balance = adapter.get_balance(
+                deposit_address.address, chain, crypto
+            )
+            if current_balance >= collection_raw + required_gas_raw:
+                return True
+        else:
+            # 代币归集：需要足够原生币支付 ERC-20 转账 gas
+            current_native = adapter.get_balance(
+                deposit_address.address, chain, chain.native_coin
+            )
+            if current_native >= erc20_gas_cost:
+                return True
 
-        required_native = cls._estimate_native_fee(chain, crypto)
-        if required_native <= 0:
-            return
+        # --- Gas 不足，发起补充 ---
+        recharge_raw = min(5 * erc20_gas_cost, 10 * native_gas_cost)
+        if recharge_raw <= 0:
+            return False
 
-        current_native = adapter.get_balance(
-            deposit_address.address,
-            chain,
-            chain.native_coin,
-        )
-
-        # 预留 1.2 倍 gas 余量，避免因价格波动导致归集失败
-        target_native = int(required_native * cls._NATIVE_BUFFER_RATIO)
-
-        if current_native >= target_native:
-            return
-
-        deficit = target_native - current_native
-        # Gas 补充金额也按链上原生币真实精度换算，避免误充过多或过少。
-        amount = cls._to_amount(deficit, chain.native_coin.get_decimals(chain))
-        if amount <= Decimal("0"):
-            return
+        native_decimals = chain.native_coin.get_decimals(chain)
+        recharge_amount = cls._to_amount(recharge_raw, native_decimals)
+        if recharge_amount <= Decimal("0"):
+            return False
 
         vault_addr = deposit.customer.project.wallet.get_address(
             chain_type=chain.type,
             usage=AddressUsage.Vault,
         )
-
         try:
             vault_addr.send_crypto(
                 crypto=chain.native_coin,
                 chain=chain,
                 to=deposit_address.address,
-                amount=amount,
+                amount=recharge_amount,
                 transfer_type=TransferType.GasRecharge,
             )
         except Exception:  # noqa: BLE001
-            # Gas 补充失败不应阻断归集流程：充值地址可能已有足够原生币，
-            # 或本次补充已广播成功但后续步骤异常。由后续归集交易自行验证余额。
             logger.warning(
-                "Gas 补充交易失败，继续尝试归集",
+                "Gas 补充交易失败，跳过本轮归集",
                 deposit_id=deposit.id,
                 chain=chain.code,
             )
+        # 无论补充成功与否，本轮均跳过，等下一轮 gas 到账后重试
+        return False
 
     @staticmethod
     def _estimate_native_fee(chain, crypto) -> int:
@@ -529,6 +522,17 @@ class DepositService:
 
         # 防御性兜底：当前系统只支持 EVM；若出现异常链类型，返回 0 避免归集流程直接崩溃。
         return 0
+
+    @staticmethod
+    def _get_gas_price(chain) -> int:
+        """获取 EVM 链当前 gas price（wei），非 EVM 返回 0。"""
+        if chain.type != ChainType.EVM:
+            return 0
+        try:
+            return chain.w3.eth.gas_price
+        except Exception:  # noqa: BLE001
+            logger.warning("获取 gas_price 失败", chain=chain.code)
+            return 0
 
     @staticmethod
     def _lock_collectible_group(deposit: Deposit) -> list[Deposit]:
