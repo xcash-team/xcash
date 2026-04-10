@@ -7,6 +7,7 @@ from core.monitoring import OperationalRiskService
 from deposits.models import Deposit
 from deposits.models import DepositAddress
 from deposits.models import DepositCollection
+from deposits.models import GasRecharge
 
 
 class DepositCollectionStateFilter(admin.SimpleListFilter):
@@ -242,6 +243,58 @@ class DepositCollectionAdmin(ReadOnlyModelAdmin):
                 "deposits__transfer__chain",
                 "deposits__transfer__crypto",
                 "deposits__customer",
+            )
+        )
+
+
+@admin.register(GasRecharge)
+class GasRechargeAdmin(ReadOnlyModelAdmin):
+    list_display = (
+        "id",
+        "display_customer",
+        "display_chain",
+        "display_status",
+        "recharged_at",
+        "created_at",
+    )
+    list_filter = ("deposit_address__chain_type",)
+    readonly_fields = (
+        "deposit_address",
+        "broadcast_task",
+        "transfer",
+        "recharged_at",
+        "created_at",
+        "updated_at",
+    )
+
+    @display(description="客户")
+    def display_customer(self, instance: GasRecharge):
+        return instance.deposit_address.customer.uid
+
+    @display(description="链类型")
+    def display_chain(self, instance: GasRecharge):
+        return instance.deposit_address.chain_type
+
+    @display(
+        description="状态",
+        label={
+            "待上链": "warning",
+            "已到账": "success",
+        },
+    )
+    def display_status(self, instance: GasRecharge):
+        if instance.recharged_at:
+            return "已到账"
+        return "待上链"
+
+    def get_queryset(self, request):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related(
+                "deposit_address__customer",
+                "broadcast_task",
+                "transfer",
             )
         )
 

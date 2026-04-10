@@ -174,16 +174,15 @@ class DepositServiceCoreTests(TestCase):
 
     # -- _ensure_gas_and_check 异常容错 --
 
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer", side_effect=RuntimeError("vault RPC timeout"))
     @patch.object(DepositService, "_get_gas_price", return_value=10)
-    def test_ensure_gas_and_check_returns_false_on_send_failure(self, _get_gas_price_mock):
+    def test_ensure_gas_and_check_returns_false_on_send_failure(self, _gp, schedule_mock):
         # Gas 补充交易失败时应返回 False，允许后续归集跳过。
         native_coin = SimpleNamespace(
             symbol="ETH",
             get_decimals=Mock(return_value=18),
         )
-        vault_addr = SimpleNamespace(
-            send_crypto=Mock(side_effect=RuntimeError("vault RPC timeout")),
-        )
+        vault_addr = SimpleNamespace()
         wallet = SimpleNamespace(get_address=Mock(return_value=vault_addr))
         project = SimpleNamespace(wallet=wallet)
         customer = SimpleNamespace(project=project)
@@ -207,7 +206,7 @@ class DepositServiceCoreTests(TestCase):
             collection_amount=Decimal("100"),
         )
         self.assertFalse(result)
-        vault_addr.send_crypto.assert_called_once()
+        schedule_mock.assert_called_once()
 
     # -- collect_deposit 防御分支 --
 
@@ -506,16 +505,21 @@ class DepositServiceDecimalsTests(SimpleTestCase):
 
         self.assertFalse(should_collect)
 
+    @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.DepositAddress.objects.get")
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=20_000_000_000)
     def test_ensure_gas_and_check_uses_correct_recharge_formula(
-        self, get_gas_price_mock
+        self, _gp, schedule_mock, _da, _gr
     ):
         # Gas 补充金额必须按 min(5*erc20_gas_cost, 10*native_gas_cost) 公式换算。
+        # native: 20G * 50k = 10^15; erc20: 20G * 100k = 2*10^15
+        # min(5 * 2*10^15, 10 * 10^15) = 10^16
         native_coin = SimpleNamespace(
             symbol="BNB",
             get_decimals=Mock(return_value=18),
         )
-        vault_addr = SimpleNamespace(send_crypto=Mock())
+        vault_addr = SimpleNamespace()
         wallet = SimpleNamespace(
             get_address=Mock(return_value=vault_addr),
         )
@@ -527,10 +531,11 @@ class DepositServiceDecimalsTests(SimpleTestCase):
         )
         crypto = SimpleNamespace(symbol="USDT", is_native=False)
         deposit = SimpleNamespace(
+            id=1,
             customer=customer,
             transfer=SimpleNamespace(chain=chain, crypto=crypto),
         )
-        deposit_address = SimpleNamespace(address="0xdeposit")
+        deposit_address = SimpleNamespace(address="0x0000000000000000000000000000000000000001")
         adapter = SimpleNamespace(get_balance=Mock(return_value=0))
 
         result = DepositService._ensure_gas_and_check(
@@ -541,13 +546,10 @@ class DepositServiceDecimalsTests(SimpleTestCase):
         )
 
         self.assertFalse(result)
-        vault_addr.send_crypto.assert_called_once_with(
-            crypto=native_coin,
-            chain=chain,
-            to="0xdeposit",
-            amount=Decimal("0.01"),
-            transfer_type=TransferType.GasRecharge,
-        )
+        schedule_mock.assert_called_once()
+        call_kwargs = schedule_mock.call_args[1]
+        self.assertEqual(call_kwargs["value_raw"], 10**16)
+        self.assertEqual(call_kwargs["transfer_type"], TransferType.GasRecharge)
 
 
 class EnsureGasAndCheckTests(SimpleTestCase):
@@ -571,7 +573,7 @@ class EnsureGasAndCheckTests(SimpleTestCase):
                 symbol="USDT", is_native=False, get_decimals=Mock(return_value=6)
             )
 
-        vault_addr = SimpleNamespace(send_crypto=Mock())
+        vault_addr = SimpleNamespace()
         wallet = SimpleNamespace(get_address=Mock(return_value=vault_addr))
         project = SimpleNamespace(wallet=wallet)
         customer = SimpleNamespace(project=project)
@@ -601,10 +603,12 @@ class EnsureGasAndCheckTests(SimpleTestCase):
             collection_amount=Decimal("1"),
         )
         self.assertTrue(result)
-        vault.send_crypto.assert_not_called()
 
+    @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.DepositAddress.objects.get")
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=10)
-    def test_native_insufficient_recharges_and_returns_false(self, _gp):
+    def test_native_insufficient_recharges_and_returns_false(self, _gp, schedule_mock, _da, _gr):
         # 原生币余额恰好等于归集金额（无多余 gas），应补充 gas 并跳过。
         deposit, addr, adapter, vault, _ = self._make_fixtures(
             crypto_is_native=True, balance=10**18
@@ -614,7 +618,7 @@ class EnsureGasAndCheckTests(SimpleTestCase):
             collection_amount=Decimal("1"),
         )
         self.assertFalse(result)
-        vault.send_crypto.assert_called_once()
+        schedule_mock.assert_called_once()
 
     @patch.object(DepositService, "_get_gas_price", return_value=10)
     def test_token_sufficient_returns_true(self, _gp):
@@ -628,10 +632,12 @@ class EnsureGasAndCheckTests(SimpleTestCase):
             collection_amount=Decimal("100"),
         )
         self.assertTrue(result)
-        vault.send_crypto.assert_not_called()
 
+    @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.DepositAddress.objects.get")
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=10)
-    def test_token_insufficient_recharges_and_returns_false(self, _gp):
+    def test_token_insufficient_recharges_and_returns_false(self, _gp, schedule_mock, _da, _gr):
         # 代币归集时原生币余额不足，应补充并跳过。
         deposit, addr, adapter, vault, _ = self._make_fixtures(
             crypto_is_native=False, native_balance=0
@@ -641,7 +647,7 @@ class EnsureGasAndCheckTests(SimpleTestCase):
             collection_amount=Decimal("100"),
         )
         self.assertFalse(result)
-        vault.send_crypto.assert_called_once()
+        schedule_mock.assert_called_once()
 
     def test_collection_amount_is_sum_of_deposits(self):
         # 归集金额 = 分组内充值金额之和。
@@ -653,11 +659,14 @@ class EnsureGasAndCheckTests(SimpleTestCase):
         total = DepositService._calculate_collection_amount(deposits)
         self.assertEqual(total, Decimal("4.5"))
 
+    @patch("deposits.service.GasRecharge.objects.create")
+    @patch("deposits.service.DepositAddress.objects.get")
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_get_gas_price", return_value=20_000_000_000)
-    def test_gas_recharge_uses_min_formula(self, _gp):
+    def test_gas_recharge_uses_min_formula(self, _gp, schedule_mock, _da, _gr):
         # Gas 补充金额 = min(5*erc20_gas, 10*native_gas)。
         # native: 20G * 50k = 10^15; erc20: 20G * 100k = 2*10^15
-        # 10 * 10^15 = 10^16; 5 * 2*10^15 = 10^16 → min = 10^16 → Decimal("0.01")
+        # 10 * 10^15 = 10^16; 5 * 2*10^15 = 10^16 → value_raw = 10^16
         deposit, addr, adapter, vault, _ = self._make_fixtures(
             crypto_is_native=False, native_balance=0, gas_price=20_000_000_000
         )
@@ -665,9 +674,9 @@ class EnsureGasAndCheckTests(SimpleTestCase):
             deposit=deposit, deposit_address=addr, adapter=adapter,
             collection_amount=Decimal("100"),
         )
-        vault.send_crypto.assert_called_once()
-        call_kwargs = vault.send_crypto.call_args[1]
-        self.assertEqual(call_kwargs["amount"], Decimal("0.01"))
+        schedule_mock.assert_called_once()
+        call_kwargs = schedule_mock.call_args[1]
+        self.assertEqual(call_kwargs["value_raw"], 10**16)
         self.assertEqual(call_kwargs["transfer_type"], TransferType.GasRecharge)
 
 
@@ -874,14 +883,12 @@ class DepositTransferRematchTests(TestCase):
     @patch("deposits.service.AdapterFactory.get_adapter")
     @patch("deposits.service.DepositAddress.objects.get")
     @patch("deposits.service.RecipientAddress.objects.filter")
-    @patch.object(Address, "send_crypto", return_value="0x" + "0" * 64)
     @patch.object(Wallet, "get_address")
     @patch.object(Chain, "w3", new_callable=PropertyMock)
     def test_multi_deposit_gas_recharge_then_collect(
         self,
         chain_w3_mock,
         wallet_get_address_mock,
-        send_crypto_mock,
         recipient_filter_mock,
         deposit_address_get_mock,
         adapter_factory_mock,
@@ -927,17 +934,14 @@ class DepositTransferRematchTests(TestCase):
             address_index=0,
             address="0x00000000000000000000000000000000000005C1",
         )
-        # Wallet.get_address 已被 mock，返回 deposit addr（send_crypto 也已被类级 mock）
         wallet_get_address_mock.return_value = addr
-        DepositAddress.objects.create(
+        da = DepositAddress.objects.create(
             customer=customer, chain_type=chain.type, address=addr,
         )
         recipient_filter_mock.return_value.order_by.return_value.first.return_value = (
             SimpleNamespace(address="0x00000000000000000000000000000000000005D1")
         )
-        deposit_address_get_mock.return_value = SimpleNamespace(
-            address=SimpleNamespace(address=addr.address)
-        )
+        deposit_address_get_mock.return_value = da
 
         # 两笔充值：1 ETH + 2 ETH = 总计 3 ETH
         transfer1 = OnchainTransfer.objects.create(
@@ -969,20 +973,36 @@ class DepositTransferRematchTests(TestCase):
         adapter_factory_mock.return_value = SimpleNamespace(
             get_balance=Mock(return_value=3 * 10**18)
         )
+        gas_task = BroadcastTask.objects.create(
+            chain=chain, address=addr,
+            transfer_type=TransferType.GasRecharge,
+            crypto=native,
+            recipient=addr.address,
+            amount=Decimal("0.005"),
+        )
+        schedule_transfer_mock.return_value = SimpleNamespace(base_task=gas_task)
+
         collected_round1 = DepositService.collect_deposit(deposit1)
         self.assertFalse(collected_round1)
-        # 补充了 gas（send_crypto 被 vault 调用），但未创建 collection
+        # 触发了 gas 补充（schedule_transfer 被调用），并创建了 GasRecharge 记录
+        schedule_transfer_mock.assert_called_once()
+        self.assertEqual(
+            schedule_transfer_mock.call_args[1]["transfer_type"],
+            TransferType.GasRecharge,
+        )
+        from deposits.models import GasRecharge
+        self.assertEqual(GasRecharge.objects.filter(broadcast_task=gas_task).count(), 1)
         deposit1.refresh_from_db()
         deposit2.refresh_from_db()
         self.assertIsNone(deposit1.collection_id)
         self.assertIsNone(deposit2.collection_id)
-        schedule_transfer_mock.assert_not_called()
 
         # --- 第二轮：gas 到账，余额 = 3 ETH + 足够 gas → 合并归集 ---
+        schedule_transfer_mock.reset_mock()
         adapter_factory_mock.return_value = SimpleNamespace(
             get_balance=Mock(return_value=3 * 10**18 + 10**7)
         )
-        base_task = BroadcastTask.objects.create(
+        collection_task = BroadcastTask.objects.create(
             chain=chain, address=addr,
             transfer_type=TransferType.DepositCollection,
             crypto=native,
@@ -991,7 +1011,7 @@ class DepositTransferRematchTests(TestCase):
             ),
             amount=Decimal("3"),
         )
-        schedule_transfer_mock.return_value = SimpleNamespace(base_task=base_task)
+        schedule_transfer_mock.return_value = SimpleNamespace(base_task=collection_task)
 
         collected_round2 = DepositService.collect_deposit(deposit1)
         self.assertTrue(collected_round2)

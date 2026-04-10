@@ -78,6 +78,45 @@ class DepositStatus(models.TextChoices):
     COMPLETED = "completed", _("已完成")
 
 
+class GasRecharge(models.Model):
+    """Gas 补充记录：归集前 Vault → 充币地址 的原生币预充。"""
+
+    deposit_address = models.ForeignKey(
+        "deposits.DepositAddress",
+        on_delete=models.PROTECT,
+        related_name="gas_recharges",
+        verbose_name=_("充币地址"),
+    )
+    broadcast_task = models.OneToOneField(
+        "chains.BroadcastTask",
+        on_delete=models.PROTECT,
+        related_name="gas_recharge",
+        verbose_name=_("链上任务"),
+    )
+    transfer = models.OneToOneField(
+        "chains.OnchainTransfer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="gas_recharge",
+        verbose_name=_("链上转账"),
+    )
+    recharged_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("到账时间"),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Gas 补充")
+        verbose_name_plural = _("Gas 补充")
+
+    def __str__(self) -> str:
+        return f"GasRecharge({self.deposit_address_id}→{self.broadcast_task_id})"
+
+
 class DepositCollection(models.Model):
     """
     归集记录：代表一次从充值地址到金库地址的链上归集交易。

@@ -826,8 +826,32 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         deposit.refresh_from_db()
         self.assertEqual(deposit.status, DepositStatus.COMPLETED)
 
-        collected = DepositService.collect_deposit(deposit)
-        self.assertTrue(collected)
+        # --- 第一轮：deposit 地址余额 = collection_amount，没有多余 gas → 补充 gas 并跳过 ---
+        collected_round1 = DepositService.collect_deposit(deposit)
+        self.assertFalse(collected_round1)
+        deposit.refresh_from_db()
+        self.assertIsNone(deposit.collection_id)
+
+        gas_task = EvmBroadcastTask.objects.filter(
+            base_task__chain=chain,
+            base_task__transfer_type=TransferType.GasRecharge,
+        ).latest("created_at")
+        # 为 vault 充值以便 gas recharge 可以广播
+        w3.eth.wait_for_transaction_receipt(
+            w3.eth.send_transaction(
+                {
+                    "from": w3.eth.accounts[0],
+                    "to": gas_task.address.address,
+                    "value": int(Decimal("1") * Decimal(10**18)),
+                }
+            )
+        )
+        gas_task.broadcast()
+        w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
+
+        # --- 第二轮：gas 已到账，归集成功 ---
+        collected_round2 = DepositService.collect_deposit(deposit)
+        self.assertTrue(collected_round2)
         deposit.refresh_from_db()
         self.assertIsNotNone(deposit.collection_id)
 
@@ -1103,10 +1127,11 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         deposit.refresh_from_db()
         self.assertEqual(deposit.status, DepositStatus.COMPLETED)
 
-        collected = DepositService.collect_deposit(deposit)
-        self.assertTrue(collected)
+        # --- 第一轮：deposit 地址无原生币，gas 不足 → 补充 gas 并跳过 ---
+        collected_round1 = DepositService.collect_deposit(deposit)
+        self.assertFalse(collected_round1)
         deposit.refresh_from_db()
-        self.assertIsNotNone(deposit.collection_id)
+        self.assertIsNone(deposit.collection_id)
 
         gas_task = EvmBroadcastTask.objects.filter(
             base_task__chain=chain,
@@ -1127,6 +1152,12 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         )
         gas_task.broadcast()
         w3.eth.wait_for_transaction_receipt(gas_task.base_task.tx_hash)
+
+        # --- 第二轮：gas 已到账，归集成功 ---
+        collected_round2 = DepositService.collect_deposit(deposit)
+        self.assertTrue(collected_round2)
+        deposit.refresh_from_db()
+        self.assertIsNotNone(deposit.collection_id)
 
         collection_task = EvmBroadcastTask.objects.get(
             base_task=deposit.collection.broadcast_task

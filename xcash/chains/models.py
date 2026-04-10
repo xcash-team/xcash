@@ -1042,6 +1042,12 @@ class OnchainTransfer(models.Model):
 
             with contextlib.suppress(DepositCollection.DoesNotExist):
                 DepositService.confirm_collection(self.deposit_collection)
+        elif self.type == TransferType.GasRecharge:
+            from deposits.models import GasRecharge  # noqa: WPS433
+
+            GasRecharge.objects.filter(transfer=self).update(
+                recharged_at=timezone.now()
+            )
         elif self.type == TransferType.Withdrawal:
             from withdrawals.models import Withdrawal  # noqa: WPS433
 

@@ -19,6 +19,7 @@ from deposits.models import Deposit
 from deposits.models import DepositAddress
 from deposits.models import DepositCollection
 from deposits.models import DepositStatus
+from deposits.models import GasRecharge
 from projects.models import RecipientAddress
 from webhooks.service import WebhookService
 
@@ -284,7 +285,7 @@ class DepositService:
 
     @staticmethod
     def try_match_gas_recharge(transfer: OnchainTransfer) -> bool:
-        """通过 BroadcastTask 识别 Vault → 充币地址的 Gas 补充转账。"""
+        """通过 BroadcastTask 识别 Vault → 充币地址的 Gas 补充转账，并关联到 GasRecharge 记录。"""
         from chains.models import BroadcastTask
 
         task = BroadcastTask.resolve_by_hash(
@@ -294,6 +295,12 @@ class DepositService:
             return False
         transfer.type = TransferType.GasRecharge
         transfer.save(update_fields=["type"])
+
+        # 将链上转账关联到 GasRecharge 审计记录
+        GasRecharge.objects.filter(
+            broadcast_task=task,
+            transfer__isnull=True,
+        ).update(transfer=transfer, updated_at=timezone.now())
         return True
 
     @classmethod
@@ -439,22 +446,29 @@ class DepositService:
         if recharge_raw <= 0:
             return False
 
-        native_decimals = chain.native_coin.get_decimals(chain)
-        recharge_amount = cls._to_amount(recharge_raw, native_decimals)
-        if recharge_amount <= Decimal("0"):
-            return False
-
         vault_addr = deposit.customer.project.wallet.get_address(
             chain_type=chain.type,
             usage=AddressUsage.Vault,
         )
         try:
-            vault_addr.send_crypto(
-                crypto=chain.native_coin,
+            from evm.models import EvmBroadcastTask
+
+            task = EvmBroadcastTask.schedule_transfer(
+                address=vault_addr,
                 chain=chain,
+                crypto=chain.native_coin,
                 to=deposit_address.address,
-                amount=recharge_amount,
+                value_raw=recharge_raw,
                 transfer_type=TransferType.GasRecharge,
+            )
+            # 记录 Gas 补充操作，供后续链上匹配和审计追踪
+            deposit_addr_record = DepositAddress.objects.get(
+                customer=deposit.customer,
+                chain_type=chain.type,
+            )
+            GasRecharge.objects.create(
+                deposit_address=deposit_addr_record,
+                broadcast_task=task.base_task,
             )
         except Exception:  # noqa: BLE001
             logger.warning(
