@@ -209,14 +209,6 @@ class DepositServiceCoreTests(TestCase):
         self.assertFalse(result)
         vault_addr.send_crypto.assert_called_once()
 
-    def test_estimate_native_fee_unknown_chain_returns_zero(self):
-        # 未知链类型返回 0（安全兜底）。
-        chain = SimpleNamespace(type="unknown", code="x")
-        crypto = SimpleNamespace(symbol="X", is_native=True)
-
-        fee = DepositService._estimate_native_fee(chain, crypto)
-        self.assertEqual(fee, 0)
-
     # -- collect_deposit 防御分支 --
 
     @patch("deposits.service.AdapterFactory.get_adapter")

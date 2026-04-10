@@ -139,10 +139,8 @@ class Deposit(models.Model):
     )
     transfer = models.OneToOneField(
         "chains.OnchainTransfer",
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         verbose_name=_("链上转账"),
-        blank=True,
-        null=True,
     )
     worth = models.DecimalField(
         _("价值(USD)"),
@@ -155,7 +153,7 @@ class Deposit(models.Model):
         verbose_name=_("状态"),
         default=DepositStatus.CONFIRMING,
     )
-    # 多笔 Deposit 可共享同一笔归集交易（DepositCollection），外键替代原来冗余的双字段设计。
+    # 多笔 Deposit 可共享同一笔归集交易（DepositCollection）
     collection = models.ForeignKey(
         "deposits.DepositCollection",
         on_delete=models.SET_NULL,

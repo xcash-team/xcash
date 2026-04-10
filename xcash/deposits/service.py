@@ -56,7 +56,7 @@ class DepositService:
             logger.exception("发送充币 webhook 通知失败", deposit_id=deposit.pk)
 
     @classmethod
-    def notify_created(cls, deposit: Deposit) -> None:
+    def _pre_notify(cls, deposit: Deposit) -> None:
         # 预通知：链上刚出块，尚未达到确认数。
         if deposit.customer.project.pre_notify:
             cls._notify(deposit, DepositStatus.CONFIRMING)
@@ -69,7 +69,7 @@ class DepositService:
     def initialize_deposit(cls, deposit: Deposit) -> Deposit:
         """显式执行 Deposit 创建后的初始化。"""
         cls.refresh_worth(deposit)
-        cls.notify_created(deposit)
+        cls._pre_notify(deposit)
         return deposit
 
     @classmethod
@@ -204,41 +204,25 @@ class DepositService:
     @classmethod
     def execute_collection(cls, params: dict) -> bool:
         """
-        归集执行阶段（事务外调用）：广播链上交易并回写 collection_hash。
+        归集执行阶段（事务外调用）：广播链上交易并回写 broadcast_task。
 
         广播失败时清理占位 collection 以便下次重试。
-        广播成功后即使后续 DB 更新 hash 失败，deposits 仍标记为"归集中"，
+        广播成功后即使后续 DB 更新失败，deposits 仍标记为"归集中"，
         try_match_collection 会在链上交易被节点推送时自动关联。
         """
         try:
-            if params["chain"].type == ChainType.EVM:
-                from evm.models import EvmBroadcastTask
+            from evm.models import EvmBroadcastTask
 
-                decimals = params["crypto"].get_decimals(params["chain"])
-                value_raw = int(params["amount"] * Decimal(10**decimals))
-                task = EvmBroadcastTask.schedule_transfer(
-                    address=params["address"],
-                    crypto=params["crypto"],
-                    chain=params["chain"],
-                    to=params["recipient_address"],
-                    value_raw=value_raw,
-                    transfer_type=TransferType.DepositCollection,
-                )
-                DepositCollection.objects.filter(pk=params["collection_id"]).update(
-                    broadcast_task=task.base_task,
-                    updated_at=timezone.now(),
-                )
-                return True
-
-            else:
-                tx_hash = params["address"].send_crypto(
-                    crypto=params["crypto"],
-                    chain=params["chain"],
-                    to=params["recipient_address"],
-                    amount=params["amount"],
-                    transfer_type=TransferType.DepositCollection,
-                )
-                broadcast_task = None
+            decimals = params["crypto"].get_decimals(params["chain"])
+            value_raw = int(params["amount"] * Decimal(10**decimals))
+            task = EvmBroadcastTask.schedule_transfer(
+                address=params["address"],
+                crypto=params["crypto"],
+                chain=params["chain"],
+                to=params["recipient_address"],
+                value_raw=value_raw,
+                transfer_type=TransferType.DepositCollection,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "归集充币失败，清理占位 collection",
@@ -247,19 +231,12 @@ class DepositService:
                 crypto=params["crypto"].symbol,
                 exc=exc,
             )
-            # 广播失败：清理占位 collection，释放 deposits 以便下次重试
             cls._cleanup_placeholder_collection(params["collection_id"])
             return False
 
-        # 广播成功：回写真实 tx_hash
-        update_kwargs = {
-            "collection_hash": tx_hash,
-            "updated_at": timezone.now(),
-        }
-        if broadcast_task is not None:
-            update_kwargs["broadcast_task"] = broadcast_task
         DepositCollection.objects.filter(pk=params["collection_id"]).update(
-            **update_kwargs
+            broadcast_task=task.base_task,
+            updated_at=timezone.now(),
         )
         return True
 
@@ -322,42 +299,29 @@ class DepositService:
     @classmethod
     @db_transaction.atomic
     def try_match_collection(cls, transfer: OnchainTransfer) -> bool:
-        """将链上归集转账与 DepositCollection 记录关联。"""
-        try:
-            collection = DepositCollection.objects.select_for_update().get(
-                collection_hash=transfer.hash
-            )
-        except DepositCollection.DoesNotExist:
-            from chains.models import BroadcastTask
+        """通过 BroadcastTask 将链上归集转账与 DepositCollection 记录关联。"""
+        from chains.models import BroadcastTask
 
-            broadcast_task = BroadcastTask.resolve_by_hash(
-                chain=transfer.chain,
-                tx_hash=transfer.hash,
-            )
-            if broadcast_task is None:
-                return False
-            try:
-                collection = DepositCollection.objects.select_for_update().get(
-                    broadcast_task=broadcast_task
-                )
-            except DepositCollection.DoesNotExist:
-                return False
-            if collection.collection_hash != transfer.hash:
-                collection.collection_hash = transfer.hash
+        broadcast_task = BroadcastTask.resolve_by_hash(
+            chain=transfer.chain, tx_hash=transfer.hash
+        )
+        if broadcast_task is None:
+            return False
+
+        collection = (
+            DepositCollection.objects.select_for_update()
+            .filter(broadcast_task=broadcast_task)
+            .first()
+        )
+        if collection is None:
+            return False
 
         transfer.type = TransferType.DepositCollection
         transfer.save(update_fields=["type"])
 
-        # 幂等：已关联则跳过，避免重复处理时覆盖已有关联。
-        if collection.transfer_id:
-            return True
-
+        collection.collection_hash = transfer.hash
         collection.transfer = transfer
-        update_fields = ["transfer", "updated_at"]
-        if collection.collection_hash != transfer.hash:
-            collection.collection_hash = transfer.hash
-            update_fields.insert(0, "collection_hash")
-        collection.save(update_fields=update_fields)
+        collection.save(update_fields=["collection_hash", "transfer", "updated_at"])
         return True
 
     @staticmethod
@@ -500,28 +464,6 @@ class DepositService:
             )
         # 无论补充成功与否，本轮均跳过，等下一轮 gas 到账后重试
         return False
-
-    @staticmethod
-    def _estimate_native_fee(chain, crypto) -> int:
-        if chain.type == ChainType.EVM:
-            try:
-                gas_price = chain.w3.eth.gas_price  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                # RPC 异常时返回 0，由调用方决定是否继续归集
-                logger.warning(
-                    "获取 gas_price 失败，返回 0",
-                    chain=chain.code,
-                )
-                return 0
-            gas_limit = (
-                chain.base_transfer_gas
-                if crypto == chain.native_coin or crypto.is_native
-                else chain.erc20_transfer_gas
-            )
-            return int(gas_price * gas_limit)
-
-        # 防御性兜底：当前系统只支持 EVM；若出现异常链类型，返回 0 避免归集流程直接崩溃。
-        return 0
 
     @staticmethod
     def _get_gas_price(chain) -> int:
