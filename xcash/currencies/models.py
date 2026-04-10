@@ -64,8 +64,8 @@ class Crypto(models.Model):
 
     @property
     def is_native(self):
-        # 当前系统保留的原生币符号：EVM 系（ETH/BNB/POL）与 Bitcoin（BTC）。
-        natives = ["ETH", "BSC", "POL", "BNB", "BTC"]
+        # 当前系统保留的原生币符号：EVM 系、Bitcoin 与 Tron。
+        natives = ["ETH", "BSC", "POL", "BNB", "BTC", "TRX"]
         return self.symbol in natives
 
     def price(self, fiat):

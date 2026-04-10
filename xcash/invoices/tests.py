@@ -26,6 +26,7 @@ from chains.models import TransferType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
 from currencies.models import Crypto
+from currencies.models import ChainToken
 from currencies.models import Fiat
 from invoices.admin import InvoiceAdmin
 from invoices.exceptions import InvoiceAllocationError
@@ -608,6 +609,64 @@ class InvoicePublicThrottleTests(TestCase):
             type(retrieve_view.get_throttles()[0]),
             type(select_method_view.get_throttles()[0]),
         )
+
+
+class InvoiceAllowedMethodsCapabilityTests(TestCase):
+    def test_available_methods_only_exposes_usdt_for_tron_invoice(self):
+        project = Project.objects.create(
+            name="Invoice Capability Project",
+            wallet=Wallet.objects.create(),
+        )
+        trx = Crypto.objects.create(
+            name="Tron Native",
+            symbol="TRX",
+            coingecko_id="tron-native-invoice-capability",
+        )
+        tron_usdt = Crypto.objects.create(
+            name="Tether USD",
+            symbol="USDT",
+            coingecko_id="tether-tron-invoice-capability",
+            decimals=6,
+        )
+        tron_usdc = Crypto.objects.create(
+            name="USD Coin",
+            symbol="USDC",
+            coingecko_id="usd-coin-tron-invoice-capability",
+            decimals=6,
+        )
+        tron_chain = Chain.objects.create(
+            name="Tron Invoice Capability",
+            code="tron-invoice-capability",
+            type=ChainType.TRON,
+            native_coin=trx,
+            rpc="http://tron.invalid",
+            active=True,
+        )
+        ChainToken.objects.create(
+            crypto=tron_usdt,
+            chain=tron_chain,
+            address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            decimals=6,
+        )
+        ChainToken.objects.create(
+            crypto=tron_usdc,
+            chain=tron_chain,
+            address="TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8",
+            decimals=6,
+        )
+        RecipientAddress.objects.create(
+            name="tron-pay",
+            project=project,
+            chain_type=ChainType.TRON,
+            address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
+            used_for_invoice=True,
+            used_for_deposit=False,
+        )
+
+        methods = Invoice.available_methods(project)
+
+        self.assertEqual(methods["USDT"], [tron_chain.code])
+        self.assertNotIn("USDC", methods)
 
 
 class InvoiceConfirmDropStatusTests(TestCase):

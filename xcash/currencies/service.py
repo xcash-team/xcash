@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typing
 
+from chains.capabilities import ChainProductCapabilityService
 from chains.service import ChainService
 from currencies.models import Crypto
 from currencies.models import Fiat
@@ -78,7 +79,10 @@ class CryptoService:
             available_codes = {
                 chain.code
                 for chain in active_chains
-                if crypto.support_this_chain(chain)
+                if ChainProductCapabilityService.supports_invoice_method(
+                    chain=chain,
+                    crypto=crypto,
+                )
             }
             if available_codes:
                 sanitized[crypto.symbol] = available_codes

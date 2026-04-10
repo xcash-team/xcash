@@ -34,26 +34,35 @@ class ReferenceDataBootstrapSignalTests(TestCase):
 
         self.assertTrue(Fiat.objects.filter(code="USD").exists())
         self.assertTrue(Crypto.objects.filter(symbol="ETH").exists())
+        self.assertTrue(Crypto.objects.filter(symbol="TRX").exists())
         self.assertTrue(Crypto.objects.filter(symbol="BNB").exists())
         self.assertTrue(Crypto.objects.filter(symbol="POL").exists())
+        self.assertTrue(Crypto.objects.get(symbol="TRX").is_native)
 
         eth_chain = Chain.objects.get(code="ethereum-mainnet")
         bsc_chain = Chain.objects.get(code="bsc-mainnet")
         polygon_chain = Chain.objects.get(code="polygon-mainnet")
         btc_chain = Chain.objects.get(code="bitcoin-mainnet")
+        tron_chain = Chain.objects.get(code="tron-mainnet")
 
         self.assertEqual(eth_chain.type, ChainType.EVM)
         self.assertEqual(bsc_chain.type, ChainType.EVM)
         self.assertEqual(polygon_chain.type, ChainType.EVM)
         self.assertEqual(btc_chain.type, ChainType.BITCOIN)
+        self.assertEqual(tron_chain.type, ChainType.TRON)
         self.assertFalse(eth_chain.active)
         self.assertFalse(bsc_chain.active)
         self.assertFalse(polygon_chain.active)
         self.assertFalse(btc_chain.active)
+        self.assertFalse(tron_chain.active)
         self.assertEqual(eth_chain.rpc, "")
         self.assertEqual(bsc_chain.rpc, "")
         self.assertEqual(polygon_chain.rpc, "")
         self.assertEqual(btc_chain.rpc, "")
+        self.assertEqual(tron_chain.rpc, "")
+        self.assertIsNone(tron_chain.chain_id)
+        self.assertIsNone(tron_chain.is_poa)
+        self.assertEqual(tron_chain.confirm_block_count, 0)
         self.assertTrue(
             ChainToken.objects.filter(
                 chain=eth_chain,
@@ -79,6 +88,13 @@ class ReferenceDataBootstrapSignalTests(TestCase):
             ChainToken.objects.filter(
                 chain=polygon_chain,
                 crypto__symbol="POL",
+                address="",
+            ).exists()
+        )
+        self.assertTrue(
+            ChainToken.objects.filter(
+                chain=tron_chain,
+                crypto__symbol="TRX",
                 address="",
             ).exists()
         )
@@ -161,6 +177,13 @@ class ReferenceDataBootstrapSignalTests(TestCase):
                 address=Web3.to_checksum_address(
                     "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063"
                 ),
+            ).exists()
+        )
+        self.assertTrue(
+            ChainToken.objects.filter(
+                chain=tron_chain,
+                crypto__symbol="USDT",
+                address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
             ).exists()
         )
 

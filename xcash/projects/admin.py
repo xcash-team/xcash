@@ -16,9 +16,9 @@ from unfold.widgets import UnfoldAdminTextInputWidget
 from alerts.admin import ProjectTelegramAlertConfigInline
 from alerts.models import ProjectTelegramAlertConfig
 from chains.adapters import AdapterFactory
+from chains.capabilities import ChainProductCapabilityService
 from chains.models import Address
 from chains.models import AddressUsage
-from chains.models import Chain
 from chains.models import ChainType
 from common.admin import ModelAdmin
 from projects.models import Project
@@ -107,6 +107,8 @@ class ProjectHmacKeyWidget(UnfoldAdminTextInputWidget):
 class RecipientAddressInlineForm(forms.ModelForm):
     """支付地址 / 归集地址 inline 共用表单，包含地址格式校验和跨项目占用检查。"""
 
+    allowed_chain_types = frozenset(ChainType.values)
+
     class Meta:
         model = RecipientAddress
         fields = ("name", "chain_type", "address")
@@ -116,7 +118,7 @@ class RecipientAddressInlineForm(forms.ModelForm):
         self.fields["chain_type"].choices = [
             choice
             for choice in ChainType.choices
-            if choice[0] in Chain.PRODUCT_ENABLED_TYPES
+            if choice[0] in self.allowed_chain_types
         ]
 
     def clean(self):
@@ -126,8 +128,8 @@ class RecipientAddressInlineForm(forms.ModelForm):
         if not chain_type or not address:
             return cleaned_data
 
-        if chain_type not in Chain.PRODUCT_ENABLED_TYPES:
-            raise ValidationError(_("当前版本仅支持 EVM / Bitcoin 项目地址"))
+        if chain_type not in self.allowed_chain_types:
+            raise ValidationError(_("当前用途不支持该地址格式"))
 
         adapter = AdapterFactory.get_adapter(chain_type=chain_type)
         if not adapter.validate_address(address=address):
@@ -159,15 +161,34 @@ class _RecipientAddressInline(TabularInline):
     fields = ("name", "chain_type", "address")
     usage_field = ""
     opposite_usage_field = ""
+    allowed_chain_types = frozenset(ChainType.values)
 
     def get_queryset(self, request):
         return super().get_queryset(request).filter(**{self.usage_field: True})
+
+    def get_formset(self, request, obj=None, **kwargs):
+        base_form = self.form
+
+        class InlineForm(base_form):
+            allowed_chain_types = self.allowed_chain_types
+
+        kwargs["form"] = InlineForm
+        formset = super().get_formset(request, obj, **kwargs)
+        formset.form.base_fields["chain_type"].choices = [
+            choice
+            for choice in ChainType.choices
+            if choice[0] in self.allowed_chain_types
+        ]
+        return formset
 
 
 class PaymentAddressInline(_RecipientAddressInline):
     model = RecipientAddress
     usage_field = "used_for_invoice"
     opposite_usage_field = "used_for_deposit"
+    allowed_chain_types = (
+        ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
+    )
     verbose_name = _("支付地址")
     verbose_name_plural = _("支付地址")
 
@@ -176,6 +197,9 @@ class CollectionAddressInline(_RecipientAddressInline):
     model = RecipientAddress
     usage_field = "used_for_deposit"
     opposite_usage_field = "used_for_invoice"
+    allowed_chain_types = (
+        ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
+    )
     verbose_name = _("归集地址")
     verbose_name_plural = _("归集地址")
 

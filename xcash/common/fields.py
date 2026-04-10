@@ -8,6 +8,7 @@ from web3 import Web3
 from common.consts import LENGTH_OF_EVM_HASH
 from common.consts import UPPER_ALPHABET
 from common.utils.bitcoin import is_valid_bitcoin_address
+from tron.codec import TronAddressCodec
 
 
 class HashField(models.CharField):
@@ -77,6 +78,7 @@ class AddressField(models.CharField):
             (
                 Web3.is_checksum_address(value),
                 is_valid_bitcoin_address(value),
+                TronAddressCodec.is_valid_base58(value),
             )
         ):
             msg = f"{value} is not a valid address"

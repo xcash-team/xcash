@@ -896,6 +896,34 @@ class UpdateLatestBlockTaskConfigTests(TestCase):
         # Bitcoin RPC 当前客户端超时是 30s，任务硬超时必须更长，避免 worker 先杀死任务。
         self.assertGreater(update_the_latest_block.time_limit, 30)
 
+    @patch("chains.tasks.block_number_updated.delay")
+    def test_update_the_latest_block_keeps_tron_height_without_rpc_polling(
+        self,
+        block_number_updated_delay_mock,
+    ):
+        from chains.tasks import update_the_latest_block
+
+        trx = Crypto.objects.create(
+            name="Tron Native Height Guard",
+            symbol="TRXH",
+            coingecko_id="tron-native-height-guard",
+        )
+        chain = Chain.objects.create(
+            name="Tron Height Guard",
+            code="tron-height-guard",
+            type=ChainType.TRON,
+            native_coin=trx,
+            rpc="http://tron.invalid",
+            active=True,
+            latest_block_number=456,
+        )
+
+        update_the_latest_block.run(chain.pk)
+
+        chain.refresh_from_db()
+        self.assertEqual(chain.latest_block_number, 456)
+        block_number_updated_delay_mock.assert_not_called()
+
 
 class TransferServiceCreateObservedTests(TestCase):
     """覆盖 TransferService.create_observed_transfer 的幂等与冲突场景。"""

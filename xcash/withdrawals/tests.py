@@ -40,6 +40,7 @@ from withdrawals.models import WithdrawalReviewLog
 from withdrawals.models import WithdrawalStatus
 from withdrawals.service import WithdrawalService
 from withdrawals.viewsets import WithdrawalViewSet
+from withdrawals.serializers import CreateWithdrawalSerializer
 
 
 class WithdrawalBroadcastTaskTests(TestCase):
@@ -285,6 +286,90 @@ class WithdrawalBalanceReservationTests(TestCase):
             )
 
         self.assertFalse(enough)
+
+
+class CreateWithdrawalSerializerCapabilityTests(TestCase):
+    def test_validate_rejects_tron_usdt_before_balance_check(self):
+        wallet = Wallet.objects.create()
+        project = Project.objects.create(
+            name="Tron Withdrawal Guard Project",
+            wallet=wallet,
+        )
+        trx = Crypto.objects.create(
+            name="Tron Native Withdrawal",
+            symbol="TRXW",
+            coingecko_id="tron-native-withdrawal",
+        )
+        usdt = Crypto.objects.create(
+            name="Tether Withdrawal",
+            symbol="USDT",
+            coingecko_id="tether-withdrawal",
+            decimals=6,
+        )
+        chain = Chain.objects.create(
+            name="Tron Withdrawal",
+            code="tron-withdrawal",
+            type=ChainType.TRON,
+            native_coin=trx,
+            rpc="http://tron.invalid",
+            active=True,
+        )
+        request = APIRequestFactory().post(
+            "/v1/withdrawal/",
+            {},
+            format="json",
+            HTTP_XC_APPID=project.appid,
+        )
+        serializer = CreateWithdrawalSerializer(
+            context={"request": request},
+        )
+
+        with (
+            patch("withdrawals.serializers.Project.retrieve", return_value=project),
+            patch(
+                "withdrawals.serializers.CryptoService.is_supported_on_chain",
+                return_value=True,
+            ),
+            patch(
+                "withdrawals.serializers.ChainProductCapabilityService.supports_withdrawal",
+                return_value=False,
+            ) as supports_withdrawal_mock,
+            patch(
+                "withdrawals.serializers.AdapterFactory.get_adapter",
+                return_value=SimpleNamespace(validate_address=Mock(return_value=True)),
+            ),
+            patch(
+                "withdrawals.serializers.AddressService.find_by_address",
+                return_value=None,
+            ),
+            patch.object(
+                CreateWithdrawalSerializer,
+                "_is_valid_address",
+                return_value=True,
+            ),
+            patch(
+                "withdrawals.serializers.WithdrawalService.has_sufficient_balance",
+                side_effect=AssertionError("余额检查不应执行"),
+            ) as has_balance_mock,
+        ):
+            with self.assertRaises(APIError) as ctx:
+                serializer.validate(
+                    {
+                        "out_no": "tron-order",
+                        "to": "TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
+                        "uid": None,
+                        "crypto": usdt.symbol,
+                        "chain": chain.code,
+                        "amount": Decimal("1"),
+                    }
+                )
+
+        self.assertEqual(
+            ctx.exception.error_code.code,
+            ErrorCode.INVALID_CHAIN.code,
+        )
+        supports_withdrawal_mock.assert_called_once_with(chain=chain, crypto=usdt)
+        has_balance_mock.assert_not_called()
 
 
 class WithdrawalPolicyTests(TestCase):

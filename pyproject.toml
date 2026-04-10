@@ -5,6 +5,7 @@ description = "Crypto finance."
 requires-python = "==3.13.*"
 dependencies = [
     "web3==7.14.1",
+    "base58==2.1.1",
     "bip-utils==2.9.3",
     # Bitcoin：P2WPKH SegWit 交易构建与 secp256k1 签名
     "bitcoin-utils==0.8.1",

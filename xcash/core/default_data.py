@@ -15,6 +15,7 @@ from currencies.models import Fiat
 from evm.local_erc20 import LOCAL_EVM_ERC20_ABI
 from evm.local_erc20 import LOCAL_EVM_ERC20_BYTECODE
 from evm.local_erc20 import has_standard_erc20_interface
+from tron.codec import TronAddressCodec
 
 env = environ.Env()
 
@@ -73,6 +74,14 @@ PRODUCTION_MAINNET_CHAINS = (
         "name": "Bitcoin",
         "type": ChainType.BITCOIN,
         "native_symbol": "BTC",
+        "chain_id": None,
+        "is_poa": None,
+    },
+    {
+        "code": "tron-mainnet",
+        "name": "Tron",
+        "type": ChainType.TRON,
+        "native_symbol": "TRX",
         "chain_id": None,
         "is_poa": None,
     },
@@ -145,6 +154,12 @@ PRODUCTION_MAINNET_TOKEN_MAPPINGS = (
         "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
         "decimals": 6,
     },
+    {
+        "chain_code": "tron-mainnet",
+        "crypto_symbol": "USDT",
+        "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        "decimals": 6,
+    },
 )
 
 
@@ -168,6 +183,12 @@ def ensure_base_currencies(*, using: str = "default", stdout=None) -> None:
         symbol="BTC",
         coingecko_id="bitcoin",
         decimals=8,
+    )
+    crypto_manager.get_or_create(
+        name="TRON",
+        symbol="TRX",
+        coingecko_id="tron",
+        decimals=6,
     )
     crypto_manager.get_or_create(
         name="Tether",
@@ -234,21 +255,25 @@ def ensure_chain_token_mapping(
     decimals: int | None = None,
 ) -> None:
     """为链上 ERC20/同类合约资产补齐 ChainToken 映射。"""
+    chain_obj = Chain.objects.using(using).get(code=chain_code)
     normalized_address = address.strip()
     if not normalized_address:
         return
-    if not Web3.is_address(normalized_address):
-        raise ValueError(
-            f"{chain_code} 的 {crypto_symbol} 合约地址非法: {normalized_address}"
-        )
+    if chain_obj.type == ChainType.TRON:
+        normalized_address = TronAddressCodec.normalize_base58(normalized_address)
+    else:
+        if not Web3.is_address(normalized_address):
+            raise ValueError(
+                f"{chain_code} 的 {crypto_symbol} 合约地址非法: {normalized_address}"
+            )
+        normalized_address = Web3.to_checksum_address(normalized_address)
 
-    chain_obj = Chain.objects.using(using).get(code=chain_code)
     crypto_obj = Crypto.objects.using(using).get(symbol=crypto_symbol)
     ChainToken.objects.using(using).update_or_create(
         crypto=crypto_obj,
         chain=chain_obj,
         defaults={
-            "address": Web3.to_checksum_address(normalized_address),
+            "address": normalized_address,
             "decimals": decimals,
         },
     )

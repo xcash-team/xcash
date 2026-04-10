@@ -8,6 +8,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from chains.models import Chain
+from chains.capabilities import ChainProductCapabilityService
 from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
@@ -70,6 +71,11 @@ class DepositViewSet(viewsets.GenericViewSet):
                 ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT,
                 detail=f"{crypto_symbol} 不支持 {chain_code} 链",
             )
+        if not ChainProductCapabilityService.supports_deposit_address(
+            chain=chain,
+            crypto=crypto,
+        ):
+            raise APIError(ErrorCode.INVALID_CHAIN)
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
 
