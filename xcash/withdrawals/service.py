@@ -550,16 +550,10 @@ class WithdrawalService:
 
     @staticmethod
     @db_transaction.atomic
-    def try_match_withdrawal(transfer: "OnchainTransfer"):
-        from chains.models import BroadcastTask
-
-        broadcast_task = BroadcastTask.resolve_by_hash(
-            chain=transfer.chain,
-            tx_hash=transfer.hash,
-        )
-        if broadcast_task is None:
-            return False
-
+    def try_match_withdrawal(
+        transfer: "OnchainTransfer",
+        broadcast_task: "BroadcastTask",
+    ):
         try:
             # 对 Withdrawal 加行锁，防止重复推送导致并发匹配同一笔提币
             withdrawal = Withdrawal.objects.select_for_update().get(

@@ -284,37 +284,28 @@ class DepositService:
         return sum((d.transfer.amount for d in grouped_deposits), Decimal("0"))
 
     @staticmethod
-    def try_match_gas_recharge(transfer: OnchainTransfer) -> bool:
+    def try_match_gas_recharge(
+        transfer: OnchainTransfer, broadcast_task: "BroadcastTask"
+    ) -> bool:
         """通过 BroadcastTask 识别 Vault → 充币地址的 Gas 补充转账，并关联到 GasRecharge 记录。"""
-        from chains.models import BroadcastTask
-
-        task = BroadcastTask.resolve_by_hash(
-            chain=transfer.chain, tx_hash=transfer.hash
-        )
-        if task is None or task.transfer_type != TransferType.GasRecharge:
-            return False
         transfer.type = TransferType.GasRecharge
         transfer.save(update_fields=["type"])
 
         # 将链上转账关联到 GasRecharge 审计记录
         GasRecharge.objects.filter(
-            broadcast_task=task,
+            broadcast_task=broadcast_task,
             transfer__isnull=True,
         ).update(transfer=transfer, updated_at=timezone.now())
         return True
 
     @classmethod
     @db_transaction.atomic
-    def try_match_collection(cls, transfer: OnchainTransfer) -> bool:
+    def try_match_collection(
+        cls,
+        transfer: OnchainTransfer,
+        broadcast_task: "BroadcastTask",
+    ) -> bool:
         """通过 BroadcastTask 将链上归集转账与 DepositCollection 记录关联。"""
-        from chains.models import BroadcastTask
-
-        broadcast_task = BroadcastTask.resolve_by_hash(
-            chain=transfer.chain, tx_hash=transfer.hash
-        )
-        if broadcast_task is None:
-            return False
-
         collection = (
             DepositCollection.objects.select_for_update()
             .filter(broadcast_task=broadcast_task)

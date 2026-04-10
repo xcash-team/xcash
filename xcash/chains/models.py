@@ -939,19 +939,23 @@ class OnchainTransfer(models.Model):
         if self.processed_at:
             return
 
-        from deposits.service import DepositService
-        from invoices.service import InvoiceService
-        from withdrawals.service import WithdrawalService
-
-        # 资金类转账应在首个业务成功匹配后立即停止，避免同一笔转账被多条业务路径重复消费。
-        (
-            InvoiceService.try_match_invoice(self)
-            or DepositService.try_create_deposit(self)
-            or DepositService.try_match_gas_recharge(self)
-            or DepositService.try_match_collection(self)
-            or WithdrawalService.try_match_withdrawal(self)
-            or WithdrawalService.try_match_withdrawal_funding(self)
+        # 优先通过 TxHash 匹配内部广播交易（gas补充、归集、提币），
+        # 一次 resolve 即可定位业务类型，避免逐一 try_match 重复查询。
+        broadcast_task = BroadcastTask.resolve_by_hash(
+            chain=self.chain, tx_hash=self.hash
         )
+        if broadcast_task is None or not self._match_internal(broadcast_task):
+            # 非内部广播交易，按外部收款逻辑逐一尝试匹配
+            from invoices.service import InvoiceService
+            from withdrawals.service import WithdrawalService
+
+            from deposits.service import DepositService
+
+            (
+                InvoiceService.try_match_invoice(self)
+                or DepositService.try_create_deposit(self)
+                or WithdrawalService.try_match_withdrawal_funding(self)
+            )
         self.processed_at = timezone.now()
         # Transfer 处理完成标记不依赖 save() 信号，直接 update 可减少无关字段回写。
         OnchainTransfer.objects.filter(pk=self.pk).update(
@@ -962,6 +966,20 @@ class OnchainTransfer(models.Model):
             from .tasks import confirm_transfer
 
             confirm_transfer.delay(self.pk)
+
+    def _match_internal(self, broadcast_task: "BroadcastTask") -> bool:
+        """通过已解析的 BroadcastTask 直接分发到对应内部业务处理器。"""
+        from deposits.service import DepositService
+        from withdrawals.service import WithdrawalService
+
+        tt = broadcast_task.transfer_type
+        if tt == TransferType.GasRecharge:
+            return DepositService.try_match_gas_recharge(self, broadcast_task)
+        if tt == TransferType.DepositCollection:
+            return DepositService.try_match_collection(self, broadcast_task)
+        if tt == TransferType.Withdrawal:
+            return WithdrawalService.try_match_withdrawal(self, broadcast_task)
+        return False
 
     @db_transaction.atomic
     def confirm(self):
