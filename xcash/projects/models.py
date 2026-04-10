@@ -249,7 +249,7 @@ class RecipientAddress(models.Model):
             allowed_chain_types = (
                 ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
             )
-            error_message = _("当前版本归集地址仅支持 EVM / Bitcoin。")
+            error_message = _("当前版本归集地址仅支持 EVM。")
 
         if self.chain_type not in allowed_chain_types:
             raise ValidationError({"chain_type": error_message})

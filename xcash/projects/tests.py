@@ -215,3 +215,7 @@ class RecipientAddressCapabilityTests(TestCase):
             recipient.clean()
 
         self.assertIn("chain_type", ctx.exception.message_dict)
+        self.assertEqual(
+            ctx.exception.message_dict["chain_type"],
+            ["当前版本归集地址仅支持 EVM。"],
+        )
