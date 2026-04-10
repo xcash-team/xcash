@@ -11,8 +11,6 @@ __pycache__/
 # 根目录 docker-compose.yml 作为公开自托管入口，需要纳入版本控制。
 scripts/merchant_hmac/
 
-# stress app 仅用于开发/测试环境，不纳入版本管理
-xcash/stress/
 
 # AI tools
 .claude/
