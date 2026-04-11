@@ -10,7 +10,7 @@ from django.utils import timezone
 logger = structlog.get_logger()
 
 from chains.adapters import AdapterFactory
-from chains.models import AddressUsage
+from chains.models import AddressUsage, BroadcastTask
 from chains.models import ChainType
 from chains.models import TransferType
 from chains.service import AddressService
