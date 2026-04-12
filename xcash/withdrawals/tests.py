@@ -44,6 +44,44 @@ from withdrawals.serializers import CreateWithdrawalSerializer
 
 
 class WithdrawalBroadcastTaskTests(TestCase):
+    def test_build_webhook_payload_omits_uid_when_customer_missing(self):
+        project = Project.objects.create(
+            name="DemoPayload",
+            wallet=Wallet.objects.create(),
+        )
+        crypto = Crypto.objects.create(
+            name="Ethereum Payload",
+            symbol="ETHP",
+            coingecko_id="ethereum-withdrawal-payload",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Payload",
+            code="eth-payload",
+            type=ChainType.EVM,
+            native_coin=crypto,
+            chain_id=21,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        withdrawal = Withdrawal.objects.create(
+            project=project,
+            out_no="order-payload",
+            chain=chain,
+            crypto=crypto,
+            amount=Decimal("1"),
+            to="0x0000000000000000000000000000000000000021",
+            status=WithdrawalStatus.CONFIRMING,
+        )
+
+        payload = WithdrawalService.build_webhook_payload(withdrawal)
+
+        self.assertEqual(payload["type"], "withdrawal")
+        self.assertEqual(payload["data"]["sys_no"], withdrawal.sys_no)
+        self.assertEqual(payload["data"]["out_no"], withdrawal.out_no)
+        self.assertEqual(payload["data"]["chain"], chain.code)
+        self.assertFalse(payload["data"]["confirmed"])
+        self.assertNotIn("uid", payload["data"])
+
     @patch("chains.tasks.process_transfer.apply_async")
     def test_try_match_withdrawal_requires_broadcast_task_anchor(
         self,
@@ -1325,7 +1363,7 @@ class WithdrawalRemoteSignerFlowTests(TestCase):
 
 
 class WithdrawalRejectTests(TestCase):
-    """reject_withdrawal 的完整测试覆盖：状态流转、权限校验、日志记录、Webhook 触发。"""
+    """reject_withdrawal 的完整测试覆盖：状态流转、权限校验、日志记录。"""
 
     def setUp(self):
         self.owner = User.objects.create_superuser(
@@ -1354,8 +1392,8 @@ class WithdrawalRejectTests(TestCase):
         return build_admin_approval_context(source="test_reject")
 
     @patch("withdrawals.service.WebhookService.create_event")
-    def test_reject_withdrawal_sets_status_and_notifies(self, webhook_mock):
-        """拒绝审核中提币后：状态改为 REJECTED，记录审核人，触发 Webhook。"""
+    def test_reject_withdrawal_sets_status_without_webhook(self, webhook_mock):
+        """拒绝审核中提币后：状态改为 REJECTED，记录审核人，但不触发 Webhook。"""
         withdrawal = Withdrawal.objects.create(
             project=self.project,
             out_no="reject-order-1",
@@ -1378,7 +1416,7 @@ class WithdrawalRejectTests(TestCase):
         self.assertEqual(result.status, WithdrawalStatus.REJECTED)
         self.assertEqual(result.reviewed_by, self.owner)
         self.assertIsNotNone(result.reviewed_at)
-        webhook_mock.assert_called_once()
+        webhook_mock.assert_not_called()
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_reject_withdrawal_writes_review_log(self, _webhook_mock):
@@ -1721,7 +1759,7 @@ class WithdrawalStateTransitionTests(TestCase):
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_fail_pending_sets_failed(self, webhook_mock):
-        """PENDING 状态的提币在 BroadcastTask 确认失败后应终局为 FAILED。"""
+        """PENDING 状态的提币在 BroadcastTask 确认失败后应终局为 FAILED，且不发 Webhook。"""
         withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
             status=WithdrawalStatus.PENDING, out_no="fail-pending"
         )
@@ -1731,11 +1769,11 @@ class WithdrawalStateTransitionTests(TestCase):
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
         self.assertIsNone(withdrawal.transfer_id)
-        webhook_mock.assert_called_once()
+        webhook_mock.assert_not_called()
 
     @patch("withdrawals.service.WebhookService.create_event")
     def test_fail_confirming_sets_failed(self, webhook_mock):
-        """CONFIRMING 状态的提币在 BroadcastTask 确认失败后应终局为 FAILED。"""
+        """CONFIRMING 状态的提币在 BroadcastTask 确认失败后应终局为 FAILED，且不发 Webhook。"""
         withdrawal, broadcast_task = self._make_withdrawal_with_broadcast_task(
             status=WithdrawalStatus.CONFIRMING, out_no="fail-confirming"
         )
@@ -1744,7 +1782,7 @@ class WithdrawalStateTransitionTests(TestCase):
 
         withdrawal.refresh_from_db()
         self.assertEqual(withdrawal.status, WithdrawalStatus.FAILED)
-        webhook_mock.assert_called_once()
+        webhook_mock.assert_not_called()
 
     def test_fail_completed_is_idempotent(self):
         """已完成的提币收到 fail 应幂等跳过。"""

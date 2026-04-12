@@ -14,6 +14,7 @@ from chains.models import AddressUsage
 from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import TransferType
+from common.utils.math import format_decimal_stripped
 from deposits.exceptions import DepositStatusError
 from deposits.models import Deposit
 from deposits.models import DepositAddress
@@ -26,6 +27,29 @@ from webhooks.service import WebhookService
 
 class DepositService:
     """High level orchestration around deposit lifecycle and collection."""
+
+    @staticmethod
+    def build_webhook_payload(
+        deposit: Deposit, *, confirmed: bool | None = None
+    ) -> dict:
+        """统一构造 deposit webhook payload，避免业务层各自拼装。"""
+        if confirmed is None:
+            confirmed = deposit.status == DepositStatus.COMPLETED
+
+        customer = getattr(deposit, "customer", None)
+        return {
+            "type": "deposit",
+            "data": {
+                "sys_no": deposit.sys_no,
+                "uid": customer.uid if customer else None,
+                "chain": deposit.transfer.chain.code,
+                "block": deposit.transfer.block,
+                "hash": deposit.transfer.hash,
+                "crypto": deposit.transfer.crypto.symbol,
+                "amount": format_decimal_stripped(deposit.transfer.amount),
+                "confirmed": confirmed,
+            },
+        }
 
     @staticmethod
     def refresh_worth(deposit: Deposit) -> None:
@@ -46,12 +70,13 @@ class DepositService:
 
     @classmethod
     def _notify(cls, deposit: Deposit, status: str) -> None:
-        """发送 deposit webhook 通知，status 放入 data 层级，与 invoice 格式统一。"""
-        content = deposit.content
-        content["data"]["status"] = status
+        """发送 deposit webhook 通知，统一经 service builder 生成 payload。"""
+        payload = cls.build_webhook_payload(
+            deposit, confirmed=status == DepositStatus.COMPLETED
+        )
         try:
             WebhookService.create_event(
-                project=deposit.customer.project, payload=content
+                project=deposit.customer.project, payload=payload
             )
         except Exception:
             logger.exception("发送充币 webhook 通知失败", deposit_id=deposit.pk)

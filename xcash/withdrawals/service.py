@@ -16,6 +16,7 @@ from chains.models import TransferType
 from chains.service import AddressService
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from common.utils.math import format_decimal_stripped
 from users.otp import validate_admin_approval_context
 from webhooks.service import WebhookService
 from withdrawals.models import VaultFunding
@@ -37,6 +38,29 @@ class WithdrawalService:
         WithdrawalStatus.CONFIRMING,
         WithdrawalStatus.COMPLETED,
     )
+
+    @staticmethod
+    def build_webhook_payload(withdrawal: Withdrawal) -> dict:
+        """统一构造 withdrawal webhook payload，仅表达链上两阶段通知。"""
+        data = {
+            "sys_no": withdrawal.sys_no,
+            "out_no": withdrawal.out_no,
+            "chain": withdrawal.chain.code if withdrawal.chain else "",
+            "hash": (
+                withdrawal.broadcast_task.tx_hash
+                if withdrawal.broadcast_task_id
+                else withdrawal.hash
+            ),
+            "amount": format_decimal_stripped(withdrawal.amount),
+            "crypto": withdrawal.crypto.symbol,
+            "confirmed": withdrawal.status == WithdrawalStatus.COMPLETED,
+        }
+        if withdrawal.customer_id:
+            data["uid"] = withdrawal.customer.uid
+        return {
+            "type": "withdrawal",
+            "data": data,
+        }
 
     @staticmethod
     def estimate_current_network_fee_raw(*, chain, crypto) -> int:
@@ -476,7 +500,7 @@ class WithdrawalService:
         note: str = "",
         approval_context: dict[str, object] | None = None,
     ) -> Withdrawal:
-        """后台拒绝审核中的提币请求，直接终局为 REJECTED 并通知商户。"""
+        """后台拒绝审核中的提币请求，直接终局为 REJECTED。"""
         # 加锁顺序：先 Project 再 Withdrawal，与 approve_withdrawal 对齐，防止死锁。
         project_id = Withdrawal.objects.values_list("project_id", flat=True).get(
             pk=withdrawal_id
@@ -521,18 +545,17 @@ class WithdrawalService:
     def notify_status_changed(withdrawal: Withdrawal) -> None:
         """注册事务提交后的 Webhook 通知，保证事务回滚时不会发出错误通知。
 
+        仅对 CONFIRMING / COMPLETED 两个链上阶段发通知；
         必须在 @db_transaction.atomic 块内调用；事务提交后才真正创建 Webhook Event。
         """
         if withdrawal.status not in (
             WithdrawalStatus.CONFIRMING,
             WithdrawalStatus.COMPLETED,
-            WithdrawalStatus.REJECTED,
-            WithdrawalStatus.FAILED,
         ):
             return
         # 缓存当前值，避免闭包捕获 ORM 对象在 on_commit 时已过期
         project = withdrawal.project
-        payload = withdrawal.content
+        payload = WithdrawalService.build_webhook_payload(withdrawal)
         withdrawal_pk = withdrawal.pk
         withdrawal_status = withdrawal.status
 

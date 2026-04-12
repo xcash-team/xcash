@@ -313,10 +313,16 @@ class DepositServiceCoreTests(TestCase):
         )
 
         # 直接调用 Deposit.content.fget 绕过 Django 描述符
-        fake_deposit = SimpleNamespace(customer=None, transfer=transfer)
+        fake_deposit = SimpleNamespace(
+            sys_no="DXC-test",
+            customer=None,
+            transfer=transfer,
+            status=DepositStatus.CONFIRMING,
+        )
         content = Deposit.content.fget(fake_deposit)
 
         self.assertIsNone(content["data"]["uid"])
+        self.assertEqual(content["data"]["sys_no"], "DXC-test")
         self.assertEqual(content["data"]["chain"], "eth")
 
 
@@ -756,6 +762,11 @@ class DepositTransferRematchTests(TestCase):
         DepositService.confirm_deposit(transfer.deposit)
 
         create_event_mock.assert_called_once()
+        payload = create_event_mock.call_args.kwargs["payload"]
+        self.assertEqual(payload["type"], "deposit")
+        self.assertEqual(payload["data"]["sys_no"], transfer.deposit.sys_no)
+        self.assertEqual(payload["data"]["uid"], customer.uid)
+        self.assertTrue(payload["data"]["confirmed"])
 
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch.object(DepositService, "_ensure_gas_and_check", return_value=True)

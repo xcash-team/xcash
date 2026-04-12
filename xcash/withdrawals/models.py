@@ -4,7 +4,6 @@ from django.utils.translation import gettext_lazy as _
 from common.fields import AddressField
 from common.fields import HashField
 from common.fields import SysNoField
-from common.utils.math import format_decimal_stripped
 
 
 class VaultFunding(models.Model):
@@ -131,25 +130,9 @@ class Withdrawal(models.Model):
 
     @property
     def content(self):
-        """Webhook payload，包含提币关键信息供商户侧消费。"""
-        data = {
-            "sys_no": self.sys_no,
-            "out_no": self.out_no,
-            "chain": self.chain.code if self.chain else "",
-            "hash": (
-                self.broadcast_task.tx_hash if self.broadcast_task_id else self.hash
-            ),
-            "amount": format_decimal_stripped(self.amount),
-            "crypto": self.crypto.symbol,
-            "status": self.status,
-        }
-        # customer 为可选字段（API 侧未必传入）
-        if self.customer_id:
-            data["uid"] = self.customer.uid
-        return {
-            "type": "withdrawal",
-            "data": data,
-        }
+        from withdrawals.service import WithdrawalService
+
+        return WithdrawalService.build_webhook_payload(self)
 
 
 class WithdrawalReviewLog(models.Model):

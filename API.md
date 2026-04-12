@@ -1,6 +1,5 @@
 # Xcash API 对接文档
 
-Base URL: `https://pay.xca.sh/v1/`
 
 ---
 
@@ -441,7 +440,12 @@ GET /v1/deposit/address?uid=user123&chain=ethereum-mainnet&crypto=USDT
 
 ## Webhook 回调
 
-当业务状态发生变化时（账单支付成功、充币到账、提币状态更新），Xcash 会向项目配置的 Webhook URL 发送 POST 请求。
+当业务进入 Webhook 触发点时，Xcash 会向项目配置的 Webhook URL 发送 `POST` 请求。
+当前覆盖三类事件：
+
+- `invoice`：API 创建的账单进入确认中 / 已完成
+- `deposit`：充币进入确认中 / 已完成
+- `withdrawal`：提币进入链上确认中 / 已完成
 
 ### 回调请求头
 
@@ -466,27 +470,43 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 
 - 返回 HTTP `200`，响应体为 `ok`（字符串）
 - 非 200 或响应体不为 `ok` 视为投递失败
+- 单次请求超时为 `5` 秒
 
 ### 重试机制
 
 - 5xx 错误或网络异常：自动重试，退避间隔 `2^(n+1)` 秒
-- 4xx 错误：不重试
+- `2xx`（非 `200`）、`3xx`、`4xx`：不重试
+- HTTP `200` 但响应体不是 `ok`：不重试
 - 连续失败超限后自动禁用 Webhook
 
 ### 统一格式
 
-所有 Webhook 回调均使用 `type` + `data` 的统一结构：
+所有 Webhook 回调均使用 `type` + `data` 的统一结构，通过 `confirmed` 布尔字段区分“尚未最终确认”和“已最终确认”：
 
 ```json
 {
   "type": "invoice | deposit | withdrawal",
-  "data": { ... }
+  "data": {
+    "confirmed": false,
+    ...
+  }
 }
 ```
 
+| `confirmed` | 含义 | 商户动作 |
+|:---:|------|------|
+| `false` | 当前事件尚未达到最终确认 | 仅供展示或轮询，不应触发最终业务动作 |
+| `true` | 当前事件已达到最终确认 | 可安全执行后续业务动作 |
+
+> `confirmed: false` 的具体触发条件因业务而异，以下以各业务小节中的“触发逻辑”为准。
+
 ### 账单回调（Invoice）
 
-当账单进入 `confirming`（开启预通知时）或 `completed` 状态时推送：
+触发逻辑：
+
+- 仅 `API` 创建的账单会发送 Webhook
+- `confirmed: false`：账单已匹配到链上付款、进入 `confirming`，且项目开启了预通知，并且该账单走完整区块确认模式
+- `confirmed: true`：账单进入 `completed`
 
 ```json
 {
@@ -499,7 +519,8 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
     "pay_address": "0x1234...abcd",
     "pay_amount": "29.87",
     "hash": "0xabcd...1234",
-    "block": 12345678
+    "block": 12345678,
+    "confirmed": true
   }
 }
 ```
@@ -514,41 +535,51 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 | `pay_amount` | string \| null | 应付金额 |
 | `hash` | string \| null | 链上交易哈希，未匹配链上交易时为 null |
 | `block` | integer \| null | 区块高度，未匹配链上交易时为 null |
-
-> **预通知条件**：`confirming` 状态的回调仅在项目开启了预通知、且账单通过 API 创建、且使用完整区块确认模式时触发。
+| `confirmed` | boolean | 链上交易是否已确认 |
 
 ### 充币回调（Deposit）
 
-用户充币到账后推送：
+触发逻辑：
+
+- `confirmed: false`：检测到充币并创建记录后，若项目开启了预通知，则立即发送一次预通知
+- `confirmed: true`：充币确认完成，进入 `completed`
 
 ```json
 {
   "type": "deposit",
   "data": {
+    "sys_no": "DXCxxxxxxxx",
     "uid": "user123",
     "chain": "ethereum-mainnet",
     "block": 12345678,
     "hash": "0xabcd...1234",
     "crypto": "USDT",
     "amount": "500",
-    "status": "completed"
+    "confirmed": true
   }
 }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| `sys_no` | string | 系统充币单号 |
 | `uid` | string \| null | 用户标识，无关联用户时为 null |
 | `chain` | string | 链码 |
 | `block` | integer | 区块高度 |
 | `hash` | string | 链上交易哈希 |
 | `crypto` | string | 币种符号 |
 | `amount` | string | 充币金额 |
-| `status` | string | `confirming`（开启预通知时）或 `completed` |
+| `confirmed` | boolean | 链上交易是否已确认 |
 
 ### 提币回调（Withdrawal）
 
-提币状态变更时推送：
+触发逻辑：
+
+- `confirmed: false`：提币已匹配到链上转账，进入 `confirming`
+- `confirmed: true`：提币确认完成，进入 `completed`
+- `reviewing`、`pending`、`rejected`、`failed` 状态不会发送 Webhook
+
+提币链上广播后推送（仅链上确认中和已确认两个阶段）：
 
 ```json
 {
@@ -560,7 +591,7 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
     "hash": "0xabcd...1234",
     "amount": "100",
     "crypto": "USDT",
-    "status": "completed",
+    "confirmed": true,
     "uid": "user123"
   }
 }
@@ -574,7 +605,7 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 | `hash` | string | 链上交易哈希 |
 | `amount` | string | 提币金额 |
 | `crypto` | string | 币种符号 |
-| `status` | string | 提币状态（见"提币状态说明"） |
+| `confirmed` | boolean | 提币是否已达到最终确认 |
 | `uid` | string | 用户标识，仅在创建提币时传入了 `uid` 的情况下才出现 |
 
 ---

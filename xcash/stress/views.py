@@ -71,7 +71,7 @@ def _parse_request(request):
         return None
 
     data = payload.get("data", {})
-    # deposit webhook 没有 sys_no，用 hash 标识；其他类型用 sys_no
+    # stress case 对 deposit 仍以 hash 标识；其他类型以 sys_no 标识
     event_type = payload.get("type", "")
     if event_type == "deposit":
         if not data.get("hash"):
@@ -221,10 +221,10 @@ def _handle_invoice_webhook(*, nonce, timestamp_str, signature, body_str, payloa
     """处理 Invoice 类型的 Webhook 回调。"""
     data = payload.get("data", {})
     sys_no = data.get("sys_no", "")
-    is_final = data.get("status") == "completed" or bool(data.get("hash"))
+    is_final = data.get("confirmed", False)
     if not is_final:
         logger.info(
-            "stress.webhook.skipped_non_final", sys_no=sys_no, status=data.get("status")
+            "stress.webhook.skipped_non_final", sys_no=sys_no, confirmed=data.get("confirmed")
         )
         return
 
@@ -270,14 +270,12 @@ def _handle_withdrawal_webhook(*, nonce, timestamp_str, signature, body_str, pay
     """处理 Withdrawal 类型的 Webhook 回调。"""
     data = payload.get("data", {})
     sys_no = data.get("sys_no", "")
-    wd_status = data.get("status", "")
-
     # 只处理终态 webhook
-    if wd_status not in ("completed", "failed"):
+    if not data.get("confirmed"):
         logger.info(
             "stress.withdrawal_webhook.skipped_non_final",
             sys_no=sys_no,
-            status=wd_status,
+            confirmed=data.get("confirmed"),
         )
         return
 
@@ -425,14 +423,12 @@ def _handle_deposit_webhook(*, nonce, timestamp_str, signature, body_str, payloa
     """处理 Deposit 类型的 Webhook 回调。"""
     data = payload.get("data", {})
     tx_hash = data.get("hash", "")
-    deposit_status = data.get("status", "")
-
     # 只处理 completed 终态 webhook
-    if deposit_status != "completed":
+    if not data.get("confirmed"):
         logger.info(
             "stress.deposit_webhook.skipped_non_final",
             tx_hash=tx_hash,
-            status=deposit_status,
+            confirmed=data.get("confirmed"),
         )
         return
 

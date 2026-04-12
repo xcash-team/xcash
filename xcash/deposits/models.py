@@ -8,7 +8,6 @@ from chains.models import ChainType
 from chains.types import AddressStr
 from common.fields import HashField
 from common.fields import SysNoField
-from common.utils.math import format_decimal_stripped
 from users.models import Customer
 
 
@@ -213,14 +212,6 @@ class Deposit(models.Model):
 
     @property
     def content(self):
-        return {
-            "type": "deposit",
-            "data": {
-                "uid": self.customer.uid if self.customer else None,
-                "chain": self.transfer.chain.code,
-                "block": self.transfer.block,
-                "hash": self.transfer.hash,
-                "crypto": self.transfer.crypto.symbol,
-                "amount": format_decimal_stripped(self.transfer.amount),
-            },
-        }
+        from deposits.service import DepositService
+
+        return DepositService.build_webhook_payload(self)
