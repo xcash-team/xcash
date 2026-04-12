@@ -4,7 +4,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-ENV_FILE="${ENV_FILE:-.env.dev}"
+ENV_FILE="${ENV_FILE:-.env}"
 
 if [[ -f "${ENV_FILE}" ]]; then
   # 独立 signer 也统一走同一套环境加载入口，避免宿主机 shell 差异导致配置漂移。

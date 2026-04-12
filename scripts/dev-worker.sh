@@ -4,10 +4,10 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-ENV_FILE="${ENV_FILE:-.env.dev}"
+ENV_FILE="${ENV_FILE:-.env}"
 
 if [[ -f "${ENV_FILE}" ]]; then
-  # 本地开发统一加载 .env.dev，保证 Django 与 Celery 使用相同依赖配置。
+  # 本地开发统一加载 .env，保证 Django 与 Celery 使用相同依赖配置。
   set -a
   # shellcheck disable=SC1090
   source "${ENV_FILE}"

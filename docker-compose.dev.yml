@@ -11,7 +11,7 @@ services:
     container_name: xcash_dev_django_db
     restart: unless-stopped
     env_file:
-      - .env.dev
+      - .env
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -116,11 +116,11 @@ services:
       # signer 开发容器只挂载 signer 项目自身代码，避免把整仓源码和宿主机 .venv 暴露进去。
       - ./signer:/app/signer:z
     env_file:
-      - .env.dev
+      - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
       UV_PROJECT_ENVIRONMENT: /app/signer/.venv
-      # 容器内通过服务名连接，覆盖 .env.dev 中的 127.0.0.1
+      # 容器内通过服务名连接，覆盖 .env 中的 127.0.0.1
       POSTGRES_HOST: signer-db
       REDIS_HOST: redis
       SIGNER_POSTGRES_HOST: signer-db

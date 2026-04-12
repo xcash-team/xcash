@@ -4,7 +4,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-ENV_FILE="${ENV_FILE:-.env.dev}"
+ENV_FILE="${ENV_FILE:-.env}"
 
 if [[ -f "${ENV_FILE}" ]]; then
   # 修复：将管理命令统一挂到同一环境加载入口，避免 shell 会话差异导致配置错误。

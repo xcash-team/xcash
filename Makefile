@@ -1,13 +1,14 @@
-ENV_FILE ?= .env.dev
+ENV_FILE ?= .env
 DC = docker compose --env-file $(ENV_FILE) -f docker-compose.dev.yml
 
-.PHONY: help dev-sync dev-up dev-up-deps dev-up-chain dev-up-signer dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test dev-local-init dev-local-bitcoin dev-signer-migrate dev-signer-check dev-signer-e2e dev-bootstrap
+.PHONY: help dev-sync dev-up dev-up-pro dev-up-deps dev-up-chain dev-up-signer dev-down dev-logs dev-chain-logs dev-ps dev-web dev-worker dev-worker-stress dev-worker-scan dev-beat dev-manage dev-mm dev-migrate dev-clear-migrations dev-shell dev-test dev-local-init dev-local-bitcoin dev-signer-migrate dev-signer-check dev-signer-e2e dev-bootstrap
 
 help:
 	@echo "可用命令："
-	@echo "  开发环境准备：cp .env.example .env.dev 后按需改成开发值"
+	@echo "  开发环境准备：cp .env.example .env 后按需改成开发值"
 	@echo "  make dev-sync         同步本地开发依赖（uv dev group）"
-	@echo "  make dev-up           前台运行 Django + Celery"
+	@echo "  make dev-up           前台运行 Django + Celery（开发模式）"
+	@echo "  make dev-up-pro       生产级方式运行（gunicorn + 高并发 worker，适合压测）"
 	@echo "  make dev-up-deps      仅启动 django-db/redis/signer-db/signer"
 	@echo "  make dev-up-chain     启动 django-db/redis/signer-db/signer/anvil/bitcoin"
 	@echo "  make dev-down         停止开发依赖容器"
@@ -38,6 +39,9 @@ dev-sync:
 
 dev-up:
 	ENV_FILE=$(ENV_FILE) ./scripts/dev-up.sh
+
+dev-up-pro:
+	ENV_FILE=$(ENV_FILE) ./scripts/dev-up-pro.sh
 
 dev-up-deps:
 	$(DC) up -d django-db redis signer-db signer

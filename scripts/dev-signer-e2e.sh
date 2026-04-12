@@ -4,7 +4,7 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-ENV_FILE="${ENV_FILE:-.env.dev}"
+ENV_FILE="${ENV_FILE:-.env}"
 DC="docker compose --env-file ${ENV_FILE} -f docker-compose.dev.yml"
 
 if [[ -f "${ENV_FILE}" ]]; then

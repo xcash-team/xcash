@@ -4,10 +4,10 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-ENV_FILE="${ENV_FILE:-.env.dev}"
+ENV_FILE="${ENV_FILE:-.env}"
 
 if [[ -f "${ENV_FILE}" ]]; then
-  # 修复：本地开发统一从 .env.dev 注入环境，避免宿主机启动 Django 时手工 export。
+  # 修复：本地开发统一从 .env 注入环境，避免宿主机启动 Django 时手工 export。
   set -a
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
