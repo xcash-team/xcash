@@ -147,7 +147,7 @@ class Withdrawal(models.Model):
         if self.customer_id:
             data["uid"] = self.customer.uid
         return {
-            "action": "withdraw",
+            "type": "withdrawal",
             "data": data,
         }
 

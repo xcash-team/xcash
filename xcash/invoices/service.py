@@ -105,21 +105,22 @@ class InvoiceService:
 
         将 payload 结构集中在 service 层管理，便于未来版本化或按场景差异化。
         """
-        data: dict = {
-            "sys_no": invoice.sys_no,
-            "out_no": invoice.out_no,
-            "crypto": invoice.crypto.symbol if invoice.crypto else None,
-            "pay_address": invoice.pay_address,
-            "pay_amount": (
-                format_decimal_stripped(invoice.pay_amount)
-                if invoice.pay_amount is not None
-                else None
-            ),
-        }
         return {
             "type": "invoice",
-            "data": data,
-            "tx": invoice.transfer.content if invoice.transfer_id else None,
+            "data": {
+                "sys_no": invoice.sys_no,
+                "out_no": invoice.out_no,
+                "crypto": invoice.crypto.symbol if invoice.crypto else None,
+                "chain": invoice.transfer.chain.code if invoice.transfer_id else None,
+                "pay_address": invoice.pay_address,
+                "pay_amount": (
+                    format_decimal_stripped(invoice.pay_amount)
+                    if invoice.pay_amount is not None
+                    else None
+                ),
+                "hash": invoice.transfer.hash if invoice.transfer_id else None,
+                "block": invoice.transfer.block if invoice.transfer_id else None,
+            },
         }
 
     @staticmethod

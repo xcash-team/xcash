@@ -116,7 +116,7 @@ class TelegramAlertServiceTests(TestCase):
     def _create_stalled_webhook(self) -> WebhookEvent:
         event = WebhookEvent.objects.create(
             project=self.project,
-            payload={"action": "withdraw"},
+            payload={"type": "withdrawal"},
             status=WebhookEvent.Status.PENDING,
         )
         WebhookEvent.objects.filter(pk=event.pk).update(

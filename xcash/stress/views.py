@@ -72,8 +72,8 @@ def _parse_request(request):
 
     data = payload.get("data", {})
     # deposit webhook 没有 sys_no，用 hash 标识；其他类型用 sys_no
-    action = payload.get("action", "")
-    if action == "deposit":
+    event_type = payload.get("type", "")
+    if event_type == "deposit":
         if not data.get("hash"):
             logger.warning("stress.webhook.missing_hash")
             return None
@@ -186,8 +186,8 @@ def _handle_webhook(request):
     nonce, timestamp_str, signature, body_str, payload = parsed
 
     # 按 payload 顶层字段区分业务类型
-    action = payload.get("action", "")
-    if action == "withdraw":
+    event_type = payload.get("type", "")
+    if event_type == "withdrawal":
         _handle_withdrawal_webhook(
             nonce=nonce,
             timestamp_str=timestamp_str,
@@ -197,7 +197,7 @@ def _handle_webhook(request):
         )
         return
 
-    if action == "deposit":
+    if event_type == "deposit":
         _handle_deposit_webhook(
             nonce=nonce,
             timestamp_str=timestamp_str,
@@ -221,16 +221,10 @@ def _handle_invoice_webhook(*, nonce, timestamp_str, signature, body_str, payloa
     """处理 Invoice 类型的 Webhook 回调。"""
     data = payload.get("data", {})
     sys_no = data.get("sys_no", "")
-    tx = payload.get("tx") or {}
-    invoice_status = data.get("status", "")
-    is_final = invoice_status == "completed" or (
-        payload.get("type") == "invoice"
-        and tx.get("status") == "confirmed"
-        and tx.get("is_confirmed") is True
-    )
+    is_final = data.get("status") == "completed" or bool(data.get("hash"))
     if not is_final:
         logger.info(
-            "stress.webhook.skipped_non_final", sys_no=sys_no, status=invoice_status
+            "stress.webhook.skipped_non_final", sys_no=sys_no, status=data.get("status")
         )
         return
 

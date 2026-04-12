@@ -179,7 +179,7 @@ class InvoiceCreateSerializer(Serializer):
 class InvoicePublicSerializer(serializers.ModelSerializer):
     """公开 API（无需鉴权的 retrieve 端点）专用序列化器。
 
-    仅暴露买家付款所需的最小字段集，不包含 appid、out_no、methods 等商户内部信息。
+    仅暴露买家付款所需的最小字段集，不包含 appid、out_no 等商户内部信息。
     """
 
     crypto = serializers.CharField(

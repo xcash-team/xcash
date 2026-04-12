@@ -739,7 +739,10 @@ class InvoiceWebhookPayloadTests(TestCase):
         self.assertEqual(payload["type"], "invoice")
         self.assertIsNone(payload["data"]["crypto"])
         self.assertIsNone(payload["data"]["pay_amount"])
-        self.assertIsNone(payload["tx"])
+        self.assertIsNone(payload["data"]["chain"])
+        self.assertIsNone(payload["data"]["hash"])
+        self.assertIsNone(payload["data"]["block"])
+        self.assertNotIn("tx", payload)
 
 
 class InvoiceExpiredMatchTests(TestCase):

@@ -933,15 +933,11 @@ class StressWebhookTests(TestCase):
                 "sys_no": self.case.invoice_sys_no,
                 "out_no": self.case.invoice_out_no,
                 "crypto": "ETH",
+                "chain": "ethereum-local",
                 "pay_address": "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
                 "pay_amount": "1.23",
-            },
-            "tx": {
                 "hash": "0xa04a8394076c7f7ad4a974fc462ba2a0e08e83c820f99bbe1ea7c8f3da6e7f52",
                 "block": 1,
-                "chain": "ethereum-local",
-                "status": "confirmed",
-                "is_confirmed": True,
             },
         }
         body = json.dumps(payload)

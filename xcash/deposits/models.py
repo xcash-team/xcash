@@ -214,7 +214,7 @@ class Deposit(models.Model):
     @property
     def content(self):
         return {
-            "action": "deposit",
+            "type": "deposit",
             "data": {
                 "uid": self.customer.uid if self.customer else None,
                 "chain": self.transfer.chain.code,

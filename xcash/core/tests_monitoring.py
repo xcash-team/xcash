@@ -100,7 +100,7 @@ class OperationalRiskServiceTests(TestCase):
         )
         WebhookEvent.objects.create(
             project=self.project,
-            payload={"action": "withdraw", "data": {"sys_no": "x"}},
+            payload={"type": "withdrawal", "data": {"sys_no": "x"}},
             status=WebhookEvent.Status.PENDING,
         )
 

@@ -921,16 +921,6 @@ class OnchainTransfer(models.Model):
     def __str__(self):
         return self.hash
 
-    @property
-    def content(self):
-        return {
-            "chain": self.chain.code,
-            "block": self.block,
-            "hash": self.hash,
-            "status": self.status,
-            "is_confirmed": self.status == TransferStatus.CONFIRMED,
-        }
-
     @db_transaction.atomic
     def process(self):
         # 先加行锁再刷新，防止两个 Celery worker 并发处理同一笔转账
