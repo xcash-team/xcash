@@ -173,7 +173,7 @@ const headers = {
 **methods 说明：**
 
 - 不传：使用项目已配置的全部支付方式
-- 指定：仅允许指定的币种+链组合，如 `{"USDT": ["eth", "tron"], "ETH": ["eth"]}`
+- 指定：仅允许指定的币种+链组合，如 `{"USDT": ["ethereum-mainnet", "tron-mainnet"], "ETH": ["ethereum-mainnet"]}`
 - 当 `currency` 为加密货币时，`methods` 会被自动限定为该币种
 
 ### 请求示例
@@ -186,8 +186,8 @@ const headers = {
   "amount": "29.99",
   "duration": 15,
   "methods": {
-    "USDT": ["eth", "tron"],
-    "ETH": ["eth"]
+    "USDT": ["ethereum-mainnet", "tron-mainnet"],
+    "ETH": ["ethereum-mainnet"]
   },
   "redirect_url": "https://example.com/payment/success"
 }
@@ -204,8 +204,8 @@ const headers = {
   "currency": "USD",
   "amount": "29.99",
   "methods": {
-    "USDT": ["eth", "tron"],
-    "ETH": ["eth"]
+    "USDT": ["ethereum-mainnet", "tron-mainnet"],
+    "ETH": ["ethereum-mainnet"]
   },
   "chain": null,
   "crypto": null,
@@ -223,6 +223,10 @@ const headers = {
 ```
 
 创建后 `chain`、`crypto`、`pay_address`、`pay_amount` 为空，需要买家选择支付方式后才会分配。
+
+### 限流
+
+256 次/分钟（默认全局限流）
 
 ---
 
@@ -247,9 +251,9 @@ const headers = {
   "currency": "USD",
   "amount": "29.99",
   "methods": {
-    "USDT": ["eth", "tron"]
+    "USDT": ["ethereum-mainnet", "tron-mainnet"]
   },
-  "chain": "eth",
+  "chain": "ethereum-mainnet",
   "crypto": "USDT",
   "crypto_address": "0x1234...abcd",
   "pay_address": "0x1234...abcd",
@@ -291,14 +295,14 @@ const headers = {
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `crypto` | string | 是 | 加密货币符号，如 `USDT` |
-| `chain` | string | 是 | 链码，如 `eth`、`tron`、`bsc` |
+| `chain` | string | 是 | 链码，如 `ethereum-mainnet`、`tron-mainnet` |
 
 ### 请求示例
 
 ```json
 {
   "crypto": "USDT",
-  "chain": "tron"
+  "chain": "tron-mainnet"
 }
 ```
 
@@ -315,9 +319,9 @@ const headers = {
   "currency": "USD",
   "amount": "29.99",
   "methods": {
-    "USDT": ["eth", "tron"]
+    "USDT": ["ethereum-mainnet", "tron-mainnet"]
   },
-  "chain": "tron",
+  "chain": "tron-mainnet",
   "crypto": "USDT",
   "crypto_address": "TXyz...1234",
   "pay_address": "TXyz...1234",
@@ -350,14 +354,14 @@ const headers = {
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `uid` | string | 是 | 用户标识，1~128 位字母数字 |
-| `chain` | string | 是 | 链码，如 `eth`、`tron`、`bsc` |
+| `uid` | string | 是 | 用户标识，1~128 位字母数字及 `_-` |
+| `chain` | string | 是 | 链码，如 `ethereum-mainnet`、`tron-mainnet` |
 | `crypto` | string | 是 | 加密货币符号，如 `USDT` |
 
 ### 请求示例
 
 ```
-GET /v1/deposit/address?uid=user123&chain=eth&crypto=USDT
+GET /v1/deposit/address?uid=user123&chain=ethereum-mainnet&crypto=USDT
 ```
 
 > GET 请求签名时，`request_body` 为空字符串 `""`。
@@ -392,7 +396,7 @@ GET /v1/deposit/address?uid=user123&chain=eth&crypto=USDT
 | `to` | string | 是 | 收款地址（不可为平台内部地址，不可为合约地址） |
 | `uid` | string | 否 | 用户标识，最长 32 位 |
 | `crypto` | string | 是 | 加密货币符号，如 `USDT` |
-| `chain` | string | 是 | 链码，如 `eth`、`tron` |
+| `chain` | string | 是 | 链码，如 `ethereum-mainnet`、`tron-mainnet` |
 | `amount` | string | 是 | 提币金额，范围 0.00000001 ~ 1000000 |
 
 ### 请求示例
@@ -403,7 +407,7 @@ GET /v1/deposit/address?uid=user123&chain=eth&crypto=USDT
   "to": "0x9876...fedc",
   "uid": "user123",
   "crypto": "USDT",
-  "chain": "eth",
+  "chain": "ethereum-mainnet",
   "amount": "100"
 }
 ```
@@ -469,6 +473,17 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 - 4xx 错误：不重试
 - 连续失败超限后自动禁用 Webhook
 
+### 统一格式
+
+所有 Webhook 回调均使用 `type` + `data` 的统一结构：
+
+```json
+{
+  "type": "invoice | deposit | withdrawal",
+  "data": { ... }
+}
+```
+
 ### 账单回调（Invoice）
 
 当账单进入 `confirming`（开启预通知时）或 `completed` 状态时推送：
@@ -480,20 +495,27 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
     "sys_no": "INV-xxxxxxxx",
     "out_no": "order-20240101-001",
     "crypto": "USDT",
+    "chain": "ethereum-mainnet",
     "pay_address": "0x1234...abcd",
-    "pay_amount": "29.87"
-  },
-  "tx": {
+    "pay_amount": "29.87",
     "hash": "0xabcd...1234",
-    "block": 12345678,
-    "chain": "eth",
-    "amount": "29.87",
-    "crypto": "USDT"
+    "block": 12345678
   }
 }
 ```
 
-> `tx` 在确认中为链上交易信息，在特殊情况下可能为 `null`。
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `sys_no` | string | 系统账单号 |
+| `out_no` | string | 商户订单号 |
+| `crypto` | string \| null | 币种符号，未选支付方式时为 null |
+| `chain` | string \| null | 链码，未选支付方式时为 null |
+| `pay_address` | string \| null | 收款地址 |
+| `pay_amount` | string \| null | 应付金额 |
+| `hash` | string \| null | 链上交易哈希，未匹配链上交易时为 null |
+| `block` | integer \| null | 区块高度，未匹配链上交易时为 null |
+
+> **预通知条件**：`confirming` 状态的回调仅在项目开启了预通知、且账单通过 API 创建、且使用完整区块确认模式时触发。
 
 ### 充币回调（Deposit）
 
@@ -501,17 +523,28 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 
 ```json
 {
-  "action": "deposit",
+  "type": "deposit",
   "data": {
     "uid": "user123",
-    "chain": "eth",
+    "chain": "ethereum-mainnet",
     "block": 12345678,
     "hash": "0xabcd...1234",
     "crypto": "USDT",
-    "amount": "500"
+    "amount": "500",
+    "status": "completed"
   }
 }
 ```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `uid` | string \| null | 用户标识，无关联用户时为 null |
+| `chain` | string | 链码 |
+| `block` | integer | 区块高度 |
+| `hash` | string | 链上交易哈希 |
+| `crypto` | string | 币种符号 |
+| `amount` | string | 充币金额 |
+| `status` | string | `confirming`（开启预通知时）或 `completed` |
 
 ### 提币回调（Withdrawal）
 
@@ -519,11 +552,11 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 
 ```json
 {
-  "action": "withdraw",
+  "type": "withdrawal",
   "data": {
     "sys_no": "WDR-xxxxxxxx",
     "out_no": "withdraw-20240101-001",
-    "chain": "eth",
+    "chain": "ethereum-mainnet",
     "hash": "0xabcd...1234",
     "amount": "100",
     "crypto": "USDT",
@@ -533,7 +566,16 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 }
 ```
 
-> `uid` 字段仅在创建提币时传入了 `uid` 的情况下才出现。
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `sys_no` | string | 系统提币单号 |
+| `out_no` | string | 商户提币单号 |
+| `chain` | string | 链码 |
+| `hash` | string | 链上交易哈希 |
+| `amount` | string | 提币金额 |
+| `crypto` | string | 币种符号 |
+| `status` | string | 提币状态（见"提币状态说明"） |
+| `uid` | string | 用户标识，仅在创建提币时传入了 `uid` 的情况下才出现 |
 
 ---
 
@@ -552,17 +594,20 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 
 | 链码 | 链名 |
 |------|------|
-| `eth` | Ethereum |
-| `bsc` | BNB Smart Chain |
-| `tron` | TRON |
-| `sol` | Solana |
-| `btc` | Bitcoin |
+| `ethereum-mainnet` | Ethereum |
+| `bsc-mainnet` | BNB Smart Chain |
+| `polygon-mainnet` | Polygon |
+| `base-mainnet` | Base |
+| `tron-mainnet` | TRON |
+| `bitcoin-mainnet` | Bitcoin |
 
 > 实际可用链取决于项目配置。
 
 ---
 
 ## 错误码
+
+### 通用错误（1xxx）
 
 | 错误码 | 说明 | HTTP 状态码 |
 |--------|------|-------------|
@@ -572,22 +617,53 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
 | 1003 | 签名错误 | 403 |
 | 1004 | 项目未配置 | 400 |
 | 1005 | 无访问权限 | 403 |
+| 1006 | 手续费不足 | 403 |
 | 1007 | out_no 重复 | 400 |
 | 1008 | Timestamp 未设置或过期 | 400 |
 | 1009 | 请求重复（Nonce 重放） | 400 |
+
+### 链与加密货币错误（2xxx）
+
+| 错误码 | 说明 | HTTP 状态码 |
+|--------|------|-------------|
 | 2000 | 无效链 | 400 |
 | 2001 | 无效加密货币 | 400 |
 | 2002 | 链不支持此加密货币 | 400 |
 | 2003 | 地址格式错误 | 400 |
+| 2004 | 不能为合约地址 | 400 |
+| 2005 | 链与加密货币设置错误 | 400 |
+
+### 提币错误（3xxx）
+
+| 错误码 | 说明 | HTTP 状态码 |
+|--------|------|-------------|
 | 3000 | 提币地址不合法 | 400 |
 | 3001 | 余额不足 | 400 |
+| 3002 | 链上资源不足 | 400 |
 | 3004 | 超出单笔提币限额 | 400 |
 | 3005 | 超出当日提币限额 | 400 |
+
+### 充币错误（4xxx）
+
+| 错误码 | 说明 | HTTP 状态码 |
+|--------|------|-------------|
 | 4000 | 无效 UID | 400 |
+
+### 账单错误（5xxx）
+
+| 错误码 | 说明 | HTTP 状态码 |
+|--------|------|-------------|
 | 5000 | 账单币种错误 | 400 |
+| 5002 | 差额账单数值错误 | 400 |
+| 5003 | 支付时间错误 | 400 |
+| 5004 | 差额不足 | 400 |
+| 5005 | 无效 sys_no | 400 |
 | 5006 | 账单状态错误 | 400 |
+| 5007 | 不允许的链与加密货币 | 400 |
 | 5008 | 无可用支付方式 | 400 |
 | 5009 | 待支付账单过多 | 400 |
+| 5010 | 无效的支付方式 | 400 |
+| 5011 | 账单不存在 | 400 |
 | 5012 | 账单已过期 | 400 |
 
 ---
@@ -640,6 +716,6 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
     |                              |-- 链上广播
     |                              |-- 链上确认
     |                              |
-    |<-- Webhook: withdraw --------|
+    |<-- Webhook: withdrawal -------|
     |-- 响应 "ok" ---------------->|
 ```
