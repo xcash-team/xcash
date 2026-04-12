@@ -20,8 +20,6 @@ from common.logger import shared_processors  # noqa: E402
 
 configure_structlog()
 
-SENTRY_DSN = env.str("SENTRY_DSN", default="")
-
 # Redis
 # ------------------------------------------------------------------------------
 # 修复：支持“依赖容器化、应用宿主机运行”的开发模式，避免 Redis 地址被硬编码为容器服务名。

@@ -2,7 +2,6 @@
 import logging
 
 from .base import *  # noqa
-from .base import SENTRY_DSN
 from .base import env
 from .base import shared_processors
 
@@ -11,7 +10,21 @@ from .base import shared_processors
 # https://docs.djangoproject.com/en/dev/ref/settings/#secret-key
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DOMAIN = env("SITE_DOMAIN", default="").strip().lower()
-USE_HTTPS = env.bool("USE_HTTPS", default=True)
+
+
+def _is_ip(host: str) -> bool:
+    """判断 host 是否为 IP 地址（IPv4 / IPv6 / [IPv6]）。"""
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
+# SITE_DOMAIN 为域名时自动启用 HTTPS；为 IP 地址或未设置时使用 HTTP。
+USE_HTTPS = bool(DOMAIN) and not _is_ip(DOMAIN)
 SCHEME = "https" if USE_HTTPS else "http"
 
 # 改动原因：SITE_DOMAIN 允许为空且只提供主机名，生产配置需要分别适配 ALLOWED_HOSTS 与 CSRF_TRUSTED_ORIGINS 的格式要求。
@@ -81,23 +94,3 @@ LOGGING = {
         },
     },
 }
-
-# Sentry（可选）：设置 SENTRY_DSN 环境变量后自动启用
-if SENTRY_DSN:
-    import sentry_sdk
-    from sentry_sdk.integrations.celery import CeleryIntegration
-    from sentry_sdk.integrations.django import DjangoIntegration
-    from sentry_sdk.integrations.logging import LoggingIntegration
-
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        integrations=[
-            DjangoIntegration(),
-            CeleryIntegration(),
-            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
-        ],
-        traces_sample_rate=0.0,
-        auto_session_tracking=False,
-        send_default_pii=False,
-        environment="production",
-    )
