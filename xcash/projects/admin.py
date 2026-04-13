@@ -612,6 +612,8 @@ class ProjectAdmin(
     def display_vault_addresses(self, instance: Project):
         rows = []
         for chain_type, chain_label in ChainType.choices:
+            if chain_type != ChainType.EVM:
+                continue
             chain_names = list(
                 Chain.objects.filter(type=chain_type).values_list("name", flat=True)
             )

@@ -17,6 +17,9 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # Load task modules from all registered Django app configs.
 app.autodiscover_tasks()
 
+# 调度文件放 /tmp，避免持久化旧调度表导致新增任务不被 Beat 派发。
+app.conf.beat_schedule_filename = "/tmp/celerybeat-schedule"
+
 EVM_SCAN_SCHEDULE_SECONDS = 5
 TRON_SCAN_SCHEDULE_SECONDS = 10
 
