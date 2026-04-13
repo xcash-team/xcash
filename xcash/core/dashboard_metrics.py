@@ -262,6 +262,8 @@ def build_dashboard_metrics() -> dict:
             "failed_withdrawal_count_30d": withdrawal_30d_failed,
             "webhook_attempt_total_7d": int(delivery_metrics["total"] or 0),
             "webhook_attempt_ok_7d": int(delivery_metrics["ok"] or 0),
+            "webhook_attempt_failed_7d": int(delivery_metrics["total"] or 0)
+            - int(delivery_metrics["ok"] or 0),
             "webhook_success_rate_7d": _rate(
                 int(delivery_metrics["ok"] or 0),
                 int(delivery_metrics["total"] or 0),

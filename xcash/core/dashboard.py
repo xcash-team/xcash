@@ -9,6 +9,7 @@ from django.views.generic import RedirectView
 
 from core.dashboard_metrics import build_dashboard_metrics
 from core.dashboard_metrics import build_signer_dashboard_summary
+from core.monitoring import OperationalRiskService
 from users.forms import OTPVerifyForm
 from users.models import AdminAccessLog
 from users.otp import AdminOTPRequiredError
@@ -24,8 +25,34 @@ class HomeView(RedirectView):
     pattern_name = "admin:index"
 
 
+def _build_environment_badge(signer_summary: dict | None, risk_summary: dict) -> list[str]:
+    """为后台顶部角标生成轻量状态摘要，避免复用完整首页聚合。"""
+    if not signer_summary or not signer_summary.get("available"):
+        return [_("Signer异常"), "danger"]
+
+    health = signer_summary.get("health") or {}
+    if not health.get("healthy", True) or not _signer_auth_configured(signer_summary):
+        return [_("Signer异常"), "danger"]
+
+    if risk_summary["stalled_webhook_event_count"] > 0:
+        return [_("存在高风险告警"), "danger"]
+
+    pending_count = (
+        risk_summary["stalled_withdrawal_count"]
+        + risk_summary["stalled_deposit_collection_count"]
+    )
+    if pending_count > 0:
+        return [_("%(count)s项待处理") % {"count": pending_count}, "warning"]
+
+    return [_("运行正常"), "success"]
+
+
 def environment_callback(request):
-    return ["版本: 1.0.1", "info"]
+    signer_summary = build_signer_dashboard_summary()
+    # 顶部 environment badge 只需要判断是否可安全操作后台，
+    # 这里仅读取 signer 健康与巡检计数，避免触发完整首页统计查询。
+    risk_summary = OperationalRiskService.build_summary(limit=0)
+    return _build_environment_badge(signer_summary, risk_summary)
 
 
 def _fmt_usd(amount) -> str:
@@ -337,20 +364,17 @@ def dashboard_callback(request, context):
         {
             "title": _("待确认收款"),
             "metric": _fmt_usd(snapshot["confirming_worth"]),
-            "subtitle": _("确认中 %(count)s 笔，临近超时 %(soon)s 笔")
-            % {
-                "count": snapshot["confirming_count"],
-                "soon": snapshot["expiring_soon_count"],
-            },
+            "subtitle": _("确认中 %(count)s 笔")
+            % {"count": snapshot["confirming_count"]},
             "tone": "bg-orange-50",
         },
         {
             "title": _("Webhook 健康度"),
             "metric": f"{snapshot['webhook_success_rate_7d']}%",
-            "subtitle": _("近7日投递 %(total)s 次，失败事件 %(failed)s 条")
+            "subtitle": _("近7日投递 %(total)s 次，失败投递 %(failed)s 次")
             % {
                 "total": snapshot["webhook_attempt_total_7d"],
-                "failed": snapshot["failed_events_count"],
+                "failed": snapshot["webhook_attempt_failed_7d"],
             },
             "tone": "bg-rose-50",
         },

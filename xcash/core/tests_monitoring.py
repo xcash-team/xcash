@@ -18,6 +18,8 @@ from chains.models import TransferStatus
 from chains.models import Wallet
 from chains.signer import SignerAdminSummary
 from chains.signer import SignerServiceError
+from core.dashboard import dashboard_callback
+from core.dashboard import environment_callback
 from core.dashboard import signer_overview_view
 from core.dashboard_metrics import build_dashboard_metrics
 from core.models import PLATFORM_SETTINGS_CACHE_KEY
@@ -314,3 +316,191 @@ class DashboardSignerSummaryTests(TestCase):
         self.assertEqual(response["Location"], "/signer/overview/")
         self.assertTrue(request.session.get("otp_device_id"))
         self.assertTrue(request.session.get(ADMIN_OTP_VERIFIED_AT_SESSION_KEY))
+
+
+class DashboardEnvironmentStatusTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @patch("core.monitoring.OperationalRiskService.build_summary")
+    @patch("core.dashboard.build_signer_dashboard_summary")
+    def test_environment_callback_returns_signer_error_when_signer_unavailable(
+        self,
+        build_signer_dashboard_summary_mock,
+        build_summary_mock,
+    ):
+        build_signer_dashboard_summary_mock.return_value = {
+            "available": False,
+            "detail": "signer down",
+        }
+        build_summary_mock.return_value = {
+            "stalled_withdrawal_count": 0,
+            "stalled_deposit_collection_count": 0,
+            "stalled_webhook_event_count": 0,
+        }
+
+        badge = environment_callback(self.factory.get("/admin/"))
+
+        self.assertEqual(badge, ["Signer异常", "danger"])
+
+    @patch("core.monitoring.OperationalRiskService.build_summary")
+    @patch("core.dashboard.build_signer_dashboard_summary")
+    def test_environment_callback_returns_danger_when_high_risk_exists(
+        self,
+        build_signer_dashboard_summary_mock,
+        build_summary_mock,
+    ):
+        build_signer_dashboard_summary_mock.return_value = {
+            "available": True,
+            "health": {
+                "healthy": True,
+                "auth_configured": True,
+            },
+        }
+        build_summary_mock.return_value = {
+            "stalled_withdrawal_count": 0,
+            "stalled_deposit_collection_count": 0,
+            "stalled_webhook_event_count": 1,
+        }
+
+        badge = environment_callback(self.factory.get("/admin/"))
+
+        self.assertEqual(badge, ["存在高风险告警", "danger"])
+
+    @patch("core.monitoring.OperationalRiskService.build_summary")
+    @patch("core.dashboard.build_signer_dashboard_summary")
+    def test_environment_callback_returns_warning_when_pending_items_exist(
+        self,
+        build_signer_dashboard_summary_mock,
+        build_summary_mock,
+    ):
+        build_signer_dashboard_summary_mock.return_value = {
+            "available": True,
+            "health": {
+                "healthy": True,
+                "auth_configured": True,
+            },
+        }
+        build_summary_mock.return_value = {
+            "stalled_withdrawal_count": 2,
+            "stalled_deposit_collection_count": 1,
+            "stalled_webhook_event_count": 0,
+        }
+
+        badge = environment_callback(self.factory.get("/admin/"))
+
+        self.assertEqual(badge, ["3项待处理", "warning"])
+
+    @patch("core.monitoring.OperationalRiskService.build_summary")
+    @patch("core.dashboard.build_signer_dashboard_summary")
+    def test_environment_callback_returns_success_when_everything_is_healthy(
+        self,
+        build_signer_dashboard_summary_mock,
+        build_summary_mock,
+    ):
+        build_signer_dashboard_summary_mock.return_value = {
+            "available": True,
+            "health": {
+                "healthy": True,
+                "auth_configured": True,
+            },
+        }
+        build_summary_mock.return_value = {
+            "stalled_withdrawal_count": 0,
+            "stalled_deposit_collection_count": 0,
+            "stalled_webhook_event_count": 0,
+        }
+
+        badge = environment_callback(self.factory.get("/admin/"))
+
+        self.assertEqual(badge, ["运行正常", "success"])
+
+
+class DashboardCallbackPresentationTests(TestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def _metrics(self):
+        return {
+            "snapshot": {
+                "today_completed_worth": Decimal("120.5"),
+                "today_completed_count": 3,
+                "rolling_7d_completed_worth": Decimal("520.5"),
+                "rolling_7d_completed_count": 8,
+                "rolling_30d_completed_worth": Decimal("920.5"),
+                "rolling_30d_completed_count": 15,
+                "created_30d_count": 20,
+                "conversion_rate_30d": Decimal("75.0"),
+                "confirming_worth": Decimal("42"),
+                "confirming_count": 2,
+                "expiring_soon_count": 7,
+                "waiting_count": 9,
+                "waiting_worth": Decimal("11"),
+                "reviewing_withdrawal_count": 1,
+                "pending_withdrawal_count": 2,
+                "confirming_withdrawal_count": 3,
+                "pending_events_count": 4,
+                "failed_events_count": 5,
+                "webhook_attempt_failed_7d": 3,
+                "stalled_withdrawal_count": 1,
+                "stalled_deposit_collection_count": 0,
+                "stalled_webhook_event_count": 2,
+                "completed_withdrawal_worth_30d": Decimal("66"),
+                "completed_withdrawal_count_30d": 6,
+                "rejected_withdrawal_count_30d": 1,
+                "webhook_attempt_total_7d": 10,
+                "webhook_attempt_ok_7d": 7,
+                "webhook_success_rate_7d": Decimal("70.0"),
+            },
+            "chart_rows": [],
+            "top_projects": [],
+            "payment_methods": [],
+            "recent_failed_attempts": [],
+            "recent_stalled_invoices": [],
+            "recent_stalled_withdrawals": [],
+            "recent_stalled_deposit_collections": [],
+            "recent_stalled_webhook_events": [],
+            "signer_summary": None,
+        }
+
+    @patch("core.dashboard._build_operational_inspection_payload")
+    @patch("core.dashboard.build_dashboard_metrics")
+    def test_pending_receipt_card_does_not_mix_waiting_timeout_into_confirming_subtitle(
+        self,
+        build_dashboard_metrics_mock,
+        inspection_payload_mock,
+    ):
+        build_dashboard_metrics_mock.return_value = self._metrics()
+        inspection_payload_mock.return_value = {
+            "attention_items": [],
+            "inspection_sections": [],
+        }
+
+        context = dashboard_callback(self.factory.get("/admin/"), {})
+
+        pending_receipt_card = next(
+            card for card in context["snapshot_cards"] if card["title"] == "待确认收款"
+        )
+
+        self.assertEqual(pending_receipt_card["subtitle"], "确认中 2 笔")
+
+    @patch("core.dashboard._build_operational_inspection_payload")
+    @patch("core.dashboard.build_dashboard_metrics")
+    def test_webhook_health_card_uses_failed_attempts_in_same_7d_window(
+        self,
+        build_dashboard_metrics_mock,
+        inspection_payload_mock,
+    ):
+        build_dashboard_metrics_mock.return_value = self._metrics()
+        inspection_payload_mock.return_value = {
+            "attention_items": [],
+            "inspection_sections": [],
+        }
+
+        context = dashboard_callback(self.factory.get("/admin/"), {})
+
+        webhook_card = next(
+            card for card in context["snapshot_cards"] if card["title"] == "Webhook 健康度"
+        )
+
+        self.assertEqual(webhook_card["subtitle"], "近7日投递 10 次，失败投递 3 次")
