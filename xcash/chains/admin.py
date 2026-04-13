@@ -10,6 +10,7 @@ from chains.models import Wallet
 from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
 
+
 # Register your models here.
 
 
@@ -38,16 +39,16 @@ class ChainAdmin(ModelAdmin):
                     "code",
                     "type",
                     "native_coin",
+                    "rpc",
                     "confirm_block_count",
                     "active",
                 )
             },
         ),
         (
-            "EVM / Bitcoin",
+            "EVM",
             {
                 "fields": (
-                    "rpc",
                     "chain_id",
                     "base_transfer_gas",
                     "erc20_transfer_gas",

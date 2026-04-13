@@ -1,3 +1,5 @@
+name: xcash-dev
+
 volumes:
   xcash_dev_django_db_data: {}
   xcash_dev_redis_data: {}
@@ -104,7 +106,6 @@ services:
     build:
       context: .
       dockerfile: ./signer/compose/dev/Dockerfile
-    image: xcash_dev_signer
     container_name: xcash_dev_signer
     restart: unless-stopped
     depends_on:

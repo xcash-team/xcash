@@ -118,7 +118,7 @@ SITE_DOMAIN=xcash.example.com
 
 ```env
 SITE_DOMAIN=10.0.0.5
-TRAEFIK_BIND=0.0.0.0
+LISTEN_TO=0.0.0.0
 ```
 
 ### 4. 启动服务
