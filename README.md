@@ -136,7 +136,13 @@ password: Admin@123456
 
 首次登录后台后，系统会继续引导你绑定 OTP；完成登录后请立即修改默认密码。
 
-### 5. 更新项目
+### 5. 配置链 RPC
+
+系统已预置主流链的基础信息，但 **RPC 节点地址需要你自行填写**，网关才能与区块链通信。
+
+登录管理后台，进入 **链管理** 页面，为你需要使用的链填写 RPC 地址。推荐使用 [QuickNode](https://www.quicknode.com/)、[Alchemy](https://www.alchemy.com/) 或 [Infura](https://www.infura.io/) 等节点服务商。
+
+### 6. 更新项目
 
 拉取最新代码后重新构建镜像并重启容器。
 
