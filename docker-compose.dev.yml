@@ -1,11 +1,11 @@
 name: xcash-dev
 
 volumes:
-  xcash_dev_django_db_data: {}
-  xcash_dev_redis_data: {}
-  xcash_dev_ethereum_data: {}
-  xcash_dev_bitcoin_data: {}
-  xcash_dev_signer_db_data: {}
+  django_db_data: {}
+  redis_data: {}
+  ethereum_data: {}
+  bitcoin_data: {}
+  signer_db_data: {}
 
 services:
   django-db:
@@ -17,7 +17,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - xcash_dev_django_db_data:/var/lib/postgresql
+      - django_db_data:/var/lib/postgresql
 
   redis:
     image: redis:8.2.1
@@ -27,7 +27,7 @@ services:
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
-      - xcash_dev_redis_data:/data
+      - redis_data:/data
 
   flower:
     image: mher/flower:2.0
@@ -57,7 +57,7 @@ services:
     ports:
       - "${LOCAL_EVM_PORT:-8545}:8545"
     volumes:
-      - xcash_dev_ethereum_data:/data
+      - ethereum_data:/data
     command:
       - --host
       - 0.0.0.0
@@ -83,7 +83,7 @@ services:
     ports:
       - "${LOCAL_BTC_RPC_PORT:-18443}:18443"
     volumes:
-      - xcash_dev_bitcoin_data:/root/.bitcoin
+      - bitcoin_data:/root/.bitcoin
       - ./compose/dev/bitcoin/bitcoin.conf:/root/.bitcoin/bitcoin.conf:ro
       - ./compose/dev/bitcoin/start:/usr/local/bin/start-bitcoin:ro
     command: ["sh", "/usr/local/bin/start-bitcoin"]
@@ -100,7 +100,7 @@ services:
       - "${SIGNER_POSTGRES_PORT:-5433}:5432"
     # signer 数据库必须独立持久化，避免与主应用数据库卷语义混淆。
     volumes:
-      - xcash_dev_signer_db_data:/var/lib/postgresql
+      - signer_db_data:/var/lib/postgresql
 
   signer:
     build:

@@ -87,7 +87,7 @@ graph LR
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/xcash-team/xcash.git
+git clone https://github.com/xca-sh/xcash.git
 cd xcash
 ```
 

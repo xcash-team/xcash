@@ -67,7 +67,6 @@ CORS_ALLOW_ALL_ORIGINS = True
 # ------------------------------------------------------------------------------
 # 开发环境默认直连本机暴露的 signer 端口，保证 fresh init 时无需先手工补环境变量。
 SIGNER_BASE_URL = "http://127.0.0.1:8010"
-SIGNER_SHARED_SECRET = ""
 
 # Stress test 配置（仅开发环境）
 STRESS_EVM_RPC_URL = "http://localhost:8545"
