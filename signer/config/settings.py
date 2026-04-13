@@ -12,7 +12,7 @@ SECRET_KEY = env.str(
     default="signer-dev-secret-key-change-me",
 )
 DEBUG = env.bool("SIGNER_DEBUG", default=False)
-ALLOWED_HOSTS = env.list("SIGNER_ALLOWED_HOSTS", default=["127.0.0.1", "localhost"])
+ALLOWED_HOSTS = env.list("SIGNER_ALLOWED_HOSTS", default=["signer", "127.0.0.1", "localhost"])
 LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = "UTC"
 USE_I18N = True
