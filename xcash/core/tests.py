@@ -60,6 +60,7 @@ from invoices.models import Invoice
 from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 from users.models import Customer
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalStatus
@@ -308,6 +309,7 @@ class LocalChainBootstrapCommandTests(TestCase):
             project=project,
             chain_type=ChainType.BITCOIN,
             address="mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn",
+            usage=RecipientAddressUsage.INVOICE,
         )
 
         root_client = Mock()
@@ -799,8 +801,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             project=project,
             chain_type=ChainType.EVM,
             address=Web3.to_checksum_address(w3.eth.accounts[2]),
-            used_for_invoice=False,
-            used_for_deposit=True,
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         customer = Customer.objects.create(project=project, uid="evm-collector-1")
         deposit_address = DepositAddress.get_address(chain, customer)
@@ -1098,8 +1099,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             project=project,
             chain_type=ChainType.EVM,
             address=Web3.to_checksum_address(w3.eth.accounts[4]),
-            used_for_invoice=False,
-            used_for_deposit=True,
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         customer = Customer.objects.create(project=project, uid="erc20-collector-1")
         deposit_address = DepositAddress.get_address(chain, customer)
@@ -1589,8 +1589,7 @@ class LocalBitcoinIntegrationTests(LocalChainIntegrationMixin, TestCase):
                 label="btc-invoice-recipient",
                 address_type="legacy",
             ),
-            used_for_invoice=True,
-            used_for_deposit=False,
+            usage=RecipientAddressUsage.INVOICE,
         )
         invoice = Invoice.objects.create(
             project=project,

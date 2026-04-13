@@ -21,6 +21,7 @@ from deposits.models import DepositAddress
 from deposits.models import DepositCollection
 from deposits.models import DepositStatus
 from deposits.models import GasRecharge
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 from webhooks.service import WebhookService
 
@@ -379,7 +380,7 @@ class DepositService:
             RecipientAddress.objects.filter(
                 project_id=project_id,
                 chain_type=chain_type,
-                used_for_deposit=True,
+                usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
             )
             .order_by("id")
             .first()

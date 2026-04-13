@@ -40,6 +40,7 @@ from currencies.models import Crypto
 from invoices.models import Invoice
 from projects.models import Project
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 
 
 @override_settings(STRESS_WEBHOOK_BASE_URL="http://localhost")
@@ -725,7 +726,7 @@ class StressRecipientSetupTests(TestCase):
         recipients = list(
             RecipientAddress.objects.filter(project=self.project)
             .order_by("chain_type", "address")
-            .values("chain_type", "address", "used_for_invoice", "used_for_deposit")
+            .values("chain_type", "address", "usage")
         )
 
         # BTC 充币已砍掉，只保留 BTC Invoice 收款地址
@@ -735,20 +736,17 @@ class StressRecipientSetupTests(TestCase):
                 {
                     "chain_type": ChainType.BITCOIN.value,
                     "address": btc_invoice_address,
-                    "used_for_invoice": True,
-                    "used_for_deposit": False,
+                    "usage": RecipientAddressUsage.INVOICE,
                 },
                 {
                     "chain_type": ChainType.EVM.value,
                     "address": _ANVIL_RECIPIENT_ADDRESSES[1],
-                    "used_for_invoice": False,
-                    "used_for_deposit": True,
+                    "usage": RecipientAddressUsage.DEPOSIT_COLLECTION,
                 },
                 {
                     "chain_type": ChainType.EVM.value,
                     "address": _ANVIL_RECIPIENT_ADDRESSES[0],
-                    "used_for_invoice": True,
-                    "used_for_deposit": False,
+                    "usage": RecipientAddressUsage.INVOICE,
                 },
             ],
         )

@@ -43,6 +43,7 @@ from invoices.tasks import fallback_invoice_expired
 from invoices.viewsets import InvoiceViewSet
 from projects.models import Project
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 from users.models import User
 
 
@@ -93,6 +94,7 @@ class InvoiceTestMixin:
                 project=self.project,
                 chain_type=ChainType.EVM,
                 address=self.recipient_address,
+                usage=RecipientAddressUsage.INVOICE,
             )
 
     def create_test_invoice(self, *, out_no: str = "test-order", **kwargs) -> Invoice:
@@ -213,6 +215,7 @@ class InvoiceInitializationTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000b1"
             ),
+            usage=RecipientAddressUsage.INVOICE,
         )
         invoice = Invoice.objects.create(
             project=project,
@@ -324,6 +327,7 @@ class InvoicePaySlotTests(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x00000000000000000000000000000000000000A1",
+            usage=RecipientAddressUsage.INVOICE,
         )
 
     def create_invoice(self, *, out_no: str = "slot-order") -> Invoice:
@@ -494,6 +498,7 @@ class InvoicePaySlotConcurrencyTests(TransactionTestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address="0x00000000000000000000000000000000000000A1",
+            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_select_method_allocates_distinct_slots_under_concurrency(self):
@@ -659,8 +664,7 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
             project=project,
             chain_type=ChainType.TRON,
             address="TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb",
-            used_for_invoice=True,
-            used_for_deposit=False,
+            usage=RecipientAddressUsage.INVOICE,
         )
 
         methods = Invoice.available_methods(project)
@@ -783,6 +787,7 @@ class InvoiceExpiredMatchTests(TestCase):
             project=self.project,
             chain_type=ChainType.EVM,
             address=self.recipient_address,
+            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_expired_invoice_can_still_be_matched_by_transfer(self):
@@ -884,6 +889,7 @@ class FallbackInvoiceExpiredTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000F1"
             ),
+            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_fallback_expires_waiting_invoices_and_discards_slots(self):
@@ -965,6 +971,7 @@ class CheckExpiredAtomicityTests(TransactionTestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000A7"
             ),
+            usage=RecipientAddressUsage.INVOICE,
         )
 
     def test_check_expired_skips_already_matched_invoice(self):

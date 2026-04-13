@@ -14,6 +14,11 @@ from common.consts import UPPER_ALPHABET
 from common.fields import AddressField
 
 
+class RecipientAddressUsage(models.TextChoices):
+    INVOICE = "invoice", _("账单收款")
+    DEPOSIT_COLLECTION = "deposit_collection", _("归集充币")
+
+
 class Project(models.Model):
     appid = ShortUUIDField(
         verbose_name=_("Appid"),
@@ -144,7 +149,7 @@ class Project(models.Model):
         if not self.active:
             errors.append(_("项目未启用"))
         if not RecipientAddress.objects.filter(
-            project=self, used_for_invoice=True
+            project=self, usage=RecipientAddressUsage.INVOICE
         ).exists():
             errors.append(_("本项目未设置支付地址"))
         return (not errors), errors
@@ -154,7 +159,7 @@ class Project(models.Model):
             RecipientAddress.objects.filter(
                 project=self,
                 chain_type=chain.type,
-                used_for_invoice=True,
+                usage=RecipientAddressUsage.INVOICE,
             ).values_list(
                 "address",
                 flat=True,
@@ -179,8 +184,11 @@ class RecipientAddress(models.Model):
         help_text="EVM: Ethereum, BSC, Polygon, Base...<br>Bitcoin: Bitcoin",
     )
     address = AddressField(verbose_name=_("收币地址"))
-    used_for_invoice = models.BooleanField(_("用于账单收款"), default=True)
-    used_for_deposit = models.BooleanField(_("用于归集充币"), default=False)
+    usage = models.CharField(
+        _("用途"),
+        choices=RecipientAddressUsage,
+        max_length=32,
+    )
     history = HistoricalRecords()
     created_at = models.DateTimeField(auto_now_add=True, verbose_name=_("创建时间"))
 
@@ -192,11 +200,13 @@ class RecipientAddress(models.Model):
                 name="uniq_recipient_address_chain_type_address",
             ),
             models.CheckConstraint(
-                condition=(
-                    models.Q(used_for_invoice=True, used_for_deposit=False)
-                    | models.Q(used_for_invoice=False, used_for_deposit=True)
+                condition=models.Q(
+                    usage__in=(
+                        RecipientAddressUsage.INVOICE,
+                        RecipientAddressUsage.DEPOSIT_COLLECTION,
+                    )
                 ),
-                name="recipient_address_single_usage",
+                name="recipient_address_valid_usage",
             ),
         ]
         verbose_name = _("收币地址")
@@ -233,23 +243,23 @@ class RecipientAddress(models.Model):
     def clean(self) -> None:
         """按用途校验项目收币地址允许进入的链类型。"""
         super().clean()
-        if self.used_for_invoice == self.used_for_deposit:
-            raise ValidationError(
-                _("项目地址必须且只能用于一种用途：支付地址或归集地址。")
-            )
-        if not self.chain_type:
+        # admin inline 不直接暴露 usage 字段，会在 save_related 时按 inline 类型补齐；
+        # 这里允许未注入 usage 的临时表单实例先通过校验，真正保存时再由字段必填兜底。
+        if not self.usage or not self.chain_type:
             return
 
-        if self.used_for_invoice:
+        if self.usage == RecipientAddressUsage.INVOICE:
             allowed_chain_types = (
                 ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
             )
             error_message = _("当前版本支付地址仅支持 EVM / Bitcoin / Tron。")
-        else:
+        elif self.usage == RecipientAddressUsage.DEPOSIT_COLLECTION:
             allowed_chain_types = (
                 ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
             )
             error_message = _("当前版本归集地址仅支持 EVM。")
+        else:
+            raise ValidationError({"usage": _("项目地址用途必须是支付地址或归集地址。")})
 
         if self.chain_type not in allowed_chain_types:
             raise ValidationError({"chain_type": error_message})

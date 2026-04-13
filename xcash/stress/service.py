@@ -20,6 +20,7 @@ from common.consts import SIGNATURE_HEADER
 from common.consts import TIMESTAMP_HEADER
 from invoices.models import Invoice
 from projects.models import Project
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 
 from .models import DepositStressCase
@@ -351,8 +352,7 @@ def _setup_recipient_addresses(project: Project) -> None:
         name: str,
         chain_type: str,
         address: str,
-        used_for_invoice: bool,
-        used_for_deposit: bool,
+        usage: str,
     ) -> None:
         RecipientAddress.objects.update_or_create(
             chain_type=chain_type,
@@ -360,8 +360,7 @@ def _setup_recipient_addresses(project: Project) -> None:
             defaults={
                 "name": name,
                 "project": project,
-                "used_for_invoice": used_for_invoice,
-                "used_for_deposit": used_for_deposit,
+                "usage": usage,
             },
         )
 
@@ -369,15 +368,13 @@ def _setup_recipient_addresses(project: Project) -> None:
         name=f"Stress-{project.pk}-evm-invoice",
         chain_type=ChainType.EVM,
         address=_ANVIL_RECIPIENT_ADDRESSES[0],
-        used_for_invoice=True,
-        used_for_deposit=False,
+        usage=RecipientAddressUsage.INVOICE,
     )
     upsert_recipient(
         name=f"Stress-{project.pk}-evm-deposit",
         chain_type=ChainType.EVM,
         address=_ANVIL_RECIPIENT_ADDRESSES[1],
-        used_for_invoice=False,
-        used_for_deposit=True,
+        usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
     )
 
     try:
@@ -390,8 +387,7 @@ def _setup_recipient_addresses(project: Project) -> None:
             name=f"Stress-{project.pk}-btc-invoice",
             chain_type=ChainType.BITCOIN,
             address=btc_invoice_address,
-            used_for_invoice=True,
-            used_for_deposit=False,
+            usage=RecipientAddressUsage.INVOICE,
         )
         # BTC 充币已砍掉，只保留 Invoice 收款地址。
 
@@ -700,5 +696,4 @@ def _fund_evm_vault(project: Project) -> None:
         amount="10000000",
         tx_hash=tx_hash.hex(),
     )
-
 

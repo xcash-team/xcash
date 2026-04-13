@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from chains.models import ChainType
+from projects.models import RecipientAddressUsage
 
 
 def load_watch_set() -> frozenset[str]:
@@ -8,8 +9,8 @@ def load_watch_set() -> frozenset[str]:
     from projects.models import RecipientAddress
 
     return frozenset(
-        RecipientAddress.objects.filter(chain_type=ChainType.BITCOIN).values_list(
-            "address",
-            flat=True,
-        )
+        RecipientAddress.objects.filter(
+            chain_type=ChainType.BITCOIN,
+            usage=RecipientAddressUsage.INVOICE,
+        ).values_list("address", flat=True)
     )

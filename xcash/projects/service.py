@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
 from chains.service import ChainService
 from projects.models import Project
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 
 
@@ -27,9 +28,12 @@ class ProjectService:
         *,
         chain_type: str | None = None,
     ) -> QuerySet[RecipientAddress]:
-        # 修复：账单支付只能使用显式标记为 used_for_invoice 的地址，
-        # 否则会误把仅用于归集的地址暴露给付款用户。
-        qs = RecipientAddress.objects.filter(project=project, used_for_invoice=True)
+        # 账单支付只允许读取显式标记为 invoice 的收款地址，
+        # 避免把仅用于归集的地址暴露给付款用户。
+        qs = RecipientAddress.objects.filter(
+            project=project,
+            usage=RecipientAddressUsage.INVOICE,
+        )
         if chain_type:
             qs = qs.filter(chain_type=chain_type)
         return qs

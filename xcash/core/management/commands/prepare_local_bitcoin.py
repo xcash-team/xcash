@@ -7,6 +7,7 @@ from bitcoin.rpc import BitcoinRpcError
 from chains.models import Address
 from chains.models import ChainType
 from core.default_data import build_local_bitcoin_root_rpc
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 
 
@@ -142,7 +143,8 @@ class Command(BaseCommand):
         recipient_imports = [
             (address, f"addr({address})")
             for address in RecipientAddress.objects.filter(
-                chain_type=ChainType.BITCOIN
+                chain_type=ChainType.BITCOIN,
+                usage=RecipientAddressUsage.INVOICE,
             ).values_list(
                 "address",
                 flat=True,

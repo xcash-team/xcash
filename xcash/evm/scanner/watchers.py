@@ -8,6 +8,7 @@ from chains.models import Address
 from chains.models import Chain
 from chains.models import ChainType
 from currencies.models import ChainToken
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 
 
@@ -32,6 +33,10 @@ def load_watch_set(*, chain: Chain) -> EvmWatchSet:
     ).values_list("address", flat=True)
     recipient_addresses = RecipientAddress.objects.filter(
         chain_type=ChainType.EVM,
+        usage__in=(
+            RecipientAddressUsage.INVOICE,
+            RecipientAddressUsage.DEPOSIT_COLLECTION,
+        ),
     ).values_list("address", flat=True)
 
     watched_addresses = frozenset(

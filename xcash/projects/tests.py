@@ -22,6 +22,7 @@ from projects.admin import CollectionAddressInline
 from projects.admin import PaymentAddressInline
 from projects.admin import ProjectAdmin
 from projects.models import Project
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 from users.models import User
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
@@ -169,6 +170,23 @@ class ProjectAdminTests(TestCase):
         self.assertNotIn(ChainType.TRON, choices)
         self.assertNotIn(ChainType.BITCOIN, choices)
 
+    def test_payment_address_inline_form_validates_without_usage_field(self):
+        request = self.factory.get("/admin/projects/project/add/")
+        request.user = self.user
+
+        inline = PaymentAddressInline(Project, admin.site)
+        formset_class = inline.get_formset(request, self.project)
+        form = formset_class.form(
+            data={
+                "name": "Invoice Inline",
+                "chain_type": ChainType.EVM,
+                "address": "0x52908400098527886E0F7030069857D2E4169EE7",
+            },
+            instance=RecipientAddress(project=self.project),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+
 
 class RecipientAddressCapabilityTests(TestCase):
     def setUp(self):
@@ -180,8 +198,7 @@ class RecipientAddressCapabilityTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            used_for_invoice=True,
-            used_for_deposit=False,
+            usage=RecipientAddressUsage.INVOICE,
         )
 
         recipient.clean()
@@ -192,8 +209,7 @@ class RecipientAddressCapabilityTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            used_for_invoice=False,
-            used_for_deposit=True,
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
 
         with self.assertRaises(ValidationError) as ctx:
@@ -207,8 +223,7 @@ class RecipientAddressCapabilityTests(TestCase):
             project=self.project,
             chain_type=ChainType.BITCOIN,
             address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-            used_for_invoice=False,
-            used_for_deposit=True,
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
 
         with self.assertRaises(ValidationError) as ctx:
@@ -219,3 +234,26 @@ class RecipientAddressCapabilityTests(TestCase):
             ctx.exception.message_dict["chain_type"],
             ["当前版本归集地址仅支持 EVM。"],
         )
+
+    def test_invoice_recipient_queryset_filters_by_usage(self):
+        from projects.service import ProjectService
+
+        RecipientAddress.objects.create(
+            name="Invoice Recipient",
+            project=self.project,
+            chain_type=ChainType.EVM,
+            address="0x52908400098527886E0F7030069857D2E4169EE7",
+            usage=RecipientAddressUsage.INVOICE,
+        )
+        RecipientAddress.objects.create(
+            name="Collection Recipient",
+            project=self.project,
+            chain_type=ChainType.EVM,
+            address="0x8617E340B3D01FA5F11F306F4090FD50E238070D",
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
+
+        qs = ProjectService.invoice_recipients(self.project)
+
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(qs.first().usage, RecipientAddressUsage.INVOICE)

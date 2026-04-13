@@ -34,6 +34,7 @@ from deposits.tasks import gather_deposits
 from evm.models import EvmBroadcastTask
 from projects.models import Project
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 from users.models import Customer
 from users.models import User
 from common.error_codes import ErrorCode
@@ -1687,7 +1688,7 @@ class DepositCollectionAnvilTests(TestCase):
         RecipientAddress.objects.create(
             project=self.project, chain_type=ChainType.EVM,
             address=self.RECIPIENT_ADDR, name="vault",
-            used_for_invoice=False, used_for_deposit=True,
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
 
         # 为 vault 预充 10 ETH（作为 gas 补充资金池）

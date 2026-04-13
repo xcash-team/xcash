@@ -23,6 +23,7 @@ from chains.models import Chain
 from chains.models import ChainType
 from common.admin import ModelAdmin
 from projects.models import Project
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 from users.forms import OTPVerifyForm
 from users.models import AdminAccessLog
@@ -160,12 +161,11 @@ class _RecipientAddressInline(TabularInline):
     form = RecipientAddressInlineForm
     extra = 0
     fields = ("name", "chain_type", "address")
-    usage_field = ""
-    opposite_usage_field = ""
+    usage = ""
     allowed_chain_types = frozenset(ChainType.values)
 
     def get_queryset(self, request):
-        return super().get_queryset(request).filter(**{self.usage_field: True})
+        return super().get_queryset(request).filter(usage=self.usage)
 
     def get_formset(self, request, obj=None, **kwargs):
         base_form = self.form
@@ -185,8 +185,7 @@ class _RecipientAddressInline(TabularInline):
 
 class PaymentAddressInline(_RecipientAddressInline):
     model = RecipientAddress
-    usage_field = "used_for_invoice"
-    opposite_usage_field = "used_for_deposit"
+    usage = RecipientAddressUsage.INVOICE
     allowed_chain_types = (
         ChainProductCapabilityService.INVOICE_RECIPIENT_CHAIN_TYPES
     )
@@ -196,8 +195,7 @@ class PaymentAddressInline(_RecipientAddressInline):
 
 class CollectionAddressInline(_RecipientAddressInline):
     model = RecipientAddress
-    usage_field = "used_for_deposit"
-    opposite_usage_field = "used_for_invoice"
+    usage = RecipientAddressUsage.DEPOSIT_COLLECTION
     allowed_chain_types = (
         ChainProductCapabilityService.COLLECTION_RECIPIENT_CHAIN_TYPES
     )
@@ -468,14 +466,11 @@ class ProjectAdmin(
         form.save_m2m()
         inline_instances = self.get_inline_instances(request, form.instance)
         for formset, inline in zip(formsets, inline_instances, strict=False):
-            usage_field = getattr(inline, "usage_field", None)
-            if usage_field:
+            usage = getattr(inline, "usage", None)
+            if usage:
                 instances = formset.save(commit=False)
                 for instance in instances:
-                    setattr(instance, usage_field, True)
-                    opposite = getattr(inline, "opposite_usage_field", "")
-                    if opposite:
-                        setattr(instance, opposite, False)
+                    instance.usage = usage
                     instance.save()
                 for obj in formset.deleted_objects:
                     obj.delete()

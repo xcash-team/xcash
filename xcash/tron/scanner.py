@@ -15,6 +15,7 @@ from chains.models import TransferStatus
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from currencies.models import ChainToken
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 from tron.client import TronClientError
 from tron.client import TronHttpClient
@@ -60,7 +61,7 @@ class TronUsdtPaymentScanner:
         filter_addresses = set(
             RecipientAddress.objects.filter(
                 chain_type=chain.type,
-                used_for_invoice=True,
+                usage=RecipientAddressUsage.INVOICE,
             ).values_list("address", flat=True)
         )
         cursor = cls._get_or_create_cursor(

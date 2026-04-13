@@ -331,7 +331,7 @@ class AdminOTPTests(TestCase):
 
 @override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
 class RecipientAddressAdminTests(TestCase):
-    def test_recipient_address_rejects_dual_usage(self):
+    def test_recipient_address_rejects_unknown_usage(self):
         from projects.models import Project
 
         project = Project.objects.create(name="Recipient Validate Project")
@@ -342,6 +342,5 @@ class RecipientAddressAdminTests(TestCase):
                 project=project,
                 chain_type="evm",
                 address="0x5AAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
-                used_for_invoice=True,
-                used_for_deposit=True,
+                usage="unknown",
             )

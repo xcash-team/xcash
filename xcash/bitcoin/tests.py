@@ -21,6 +21,7 @@ from chains.models import ChainType
 from currencies.models import Crypto
 from projects.models import Project
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 from users.models import Customer
 
 
@@ -138,7 +139,10 @@ class BitcoinScannerTests(TestCase):
         watched = load_watch_set()
 
         self.assertIn("bc1qexample", watched)
-        recipient_qs_mock.filter.assert_called_once_with(chain_type=ChainType.BITCOIN)
+        recipient_qs_mock.filter.assert_called_once_with(
+            chain_type=ChainType.BITCOIN,
+            usage=RecipientAddressUsage.INVOICE,
+        )
 
     def test_chain_scanner_service_wraps_receipt_scan_result(self):
         # 链级入口只负责编排 Bitcoin 收款扫描，并把结果折叠成统一摘要对象。
@@ -447,8 +451,7 @@ class BitcoinWatchSyncTests(TestCase):
                 project=self.project,
                 chain_type=ChainType.BITCOIN,
                 address="1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
-                used_for_invoice=True,
-                used_for_deposit=False,
+                usage=RecipientAddressUsage.INVOICE,
             )
 
         apply_async_mock.assert_called_once()
@@ -468,8 +471,7 @@ class BitcoinWatchSyncTests(TestCase):
             project=self.project,
             chain_type=ChainType.BITCOIN,
             address=test_address,
-            used_for_invoice=True,
-            used_for_deposit=False,
+            usage=RecipientAddressUsage.INVOICE,
         )
 
         import_address_mock.side_effect = BitcoinRpcError(

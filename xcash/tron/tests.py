@@ -24,6 +24,7 @@ from invoices.models import Invoice
 from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 from tron.client import TronHttpClient
 from tron.client import TronClientError
 from tron.codec import TronAddressCodec
@@ -196,8 +197,7 @@ class TronUsdtPaymentScannerTests(TestCase):
             project=self.project,
             chain_type=ChainType.TRON,
             address=self.watch_address,
-            used_for_invoice=True,
-            used_for_deposit=False,
+            usage=RecipientAddressUsage.INVOICE,
         )
         self.sender_address = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
 

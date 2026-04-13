@@ -7,6 +7,7 @@ from bitcoin.rpc import BitcoinRpcClient
 from bitcoin.rpc import BitcoinRpcError
 from chains.models import Chain
 from chains.models import ChainType
+from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
 
 logger = structlog.get_logger()
@@ -24,7 +25,8 @@ class BitcoinWatchSyncService:
         return [
             (address, f"addr({address})")
             for address in RecipientAddress.objects.filter(
-                chain_type=ChainType.BITCOIN
+                chain_type=ChainType.BITCOIN,
+                usage=RecipientAddressUsage.INVOICE,
             ).values_list(
                 "address",
                 flat=True,
