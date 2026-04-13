@@ -1,5 +1,3 @@
-import importlib
-import os
 import threading
 from datetime import timedelta
 from decimal import Decimal
@@ -135,23 +133,9 @@ class EvmScannerDefaultsTests(TestCase):
         self.assertEqual(DEFAULT_NATIVE_SCAN_BATCH_SIZE, 16)
 
     def test_evm_scan_schedule_defaults_to_five_seconds(self):
-        original_value = os.environ.get("EVM_SCAN_SCHEDULE_SECONDS")
-        try:
-            os.environ.pop("EVM_SCAN_SCHEDULE_SECONDS", None)
-            from config import celery as celery_config
+        from config.celery import EVM_SCAN_SCHEDULE_SECONDS
 
-            reloaded = importlib.reload(celery_config)
-            self.assertEqual(reloaded.EVM_SCAN_SCHEDULE_SECONDS, 5)
-            self.assertEqual(
-                reloaded.app.conf.beat_schedule["scan_active_evm_chains"]["schedule"],
-                5,
-            )
-        finally:
-            if original_value is None:
-                os.environ.pop("EVM_SCAN_SCHEDULE_SECONDS", None)
-            else:
-                os.environ["EVM_SCAN_SCHEDULE_SECONDS"] = original_value
-            importlib.reload(celery_config)
+        self.assertEqual(EVM_SCAN_SCHEDULE_SECONDS, 5)
 
 
 class EvmBroadcastTaskTests(TestCase):

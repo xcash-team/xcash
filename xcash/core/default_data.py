@@ -428,20 +428,20 @@ def ensure_public_chains(*, using: str = "default", stdout=None) -> None:
 
 def _build_local_bitcoin_wallet_rpc() -> str:
     """构造钱包级 Bitcoin RPC 地址，保证 watch-only / listunspent 使用同一钱包上下文。"""
-    host = env.str("LOCAL_BTC_RPC_HOST", default="127.0.0.1")
-    port = env.int("LOCAL_BTC_RPC_PORT", default=18443)
-    user = quote(env.str("LOCAL_BTC_RPC_USER", default="xcash"), safe="")
-    password = quote(env.str("LOCAL_BTC_RPC_PASSWORD", default="xcash"), safe="")
-    wallet_name = quote(env.str("LOCAL_BTC_WALLET_NAME", default="xcash"), safe="")
+    host = "127.0.0.1"
+    port = 18443
+    user = quote("xcash", safe="")
+    password = quote("xcash", safe="")
+    wallet_name = quote("xcash", safe="")
     return f"http://{user}:{password}@{host}:{port}/wallet/{wallet_name}"
 
 
 def build_local_bitcoin_root_rpc() -> str:
     """构造无钱包路径的 Bitcoin 根 RPC 地址，供创建/加载钱包使用。"""
-    host = env.str("LOCAL_BTC_RPC_HOST", default="127.0.0.1")
-    port = env.int("LOCAL_BTC_RPC_PORT", default=18443)
-    user = quote(env.str("LOCAL_BTC_RPC_USER", default="xcash"), safe="")
-    password = quote(env.str("LOCAL_BTC_RPC_PASSWORD", default="xcash"), safe="")
+    host = "127.0.0.1"
+    port = 18443
+    user = quote("xcash", safe="")
+    password = quote("xcash", safe="")
     return f"http://{user}:{password}@{host}:{port}"
 
 
@@ -450,9 +450,9 @@ def ensure_local_chains(*, using: str = "default", stdout=None) -> None:
     chain_manager = Chain.objects.using(using)
     eth = Crypto.objects.using(using).get(symbol="ETH")
     btc = Crypto.objects.using(using).get(symbol="BTC")
-    local_evm_chain_code = env.str("LOCAL_EVM_CHAIN_CODE", default="ethereum-local")
-    local_btc_chain_code = env.str("LOCAL_BTC_CHAIN_CODE", default="bitcoin-local")
-    local_evm_rpc = env.str("LOCAL_EVM_RPC", default="http://127.0.0.1:8545")
+    local_evm_chain_code = "ethereum-local"
+    local_btc_chain_code = "bitcoin-local"
+    local_evm_rpc = "http://127.0.0.1:8545"
     local_usdt_address = ensure_local_evm_usdt_contract_address(
         using=using,
         chain_code=local_evm_chain_code,
@@ -463,27 +463,25 @@ def ensure_local_chains(*, using: str = "default", stdout=None) -> None:
         chain_manager.update_or_create(
             code=local_evm_chain_code,
             defaults={
-                "name": env.str("LOCAL_EVM_CHAIN_NAME", default="Ethereum Local"),
+                "name": "Ethereum Local",
                 "type": ChainType.EVM,
                 "native_coin": eth,
-                "chain_id": env.int("LOCAL_EVM_CHAIN_ID", default=31337),
-                "is_poa": env.bool("LOCAL_EVM_IS_POA", default=False),
+                "chain_id": 31337,
+                "is_poa": False,
                 "rpc": local_evm_rpc,
                 # 本地联调要尽快推进状态，默认只要求 1 个确认块。
-                "confirm_block_count": env.int("LOCAL_EVM_CONFIRM_BLOCKS", default=1),
+                "confirm_block_count": 1,
                 "active": True,
             },
         )
         chain_manager.update_or_create(
             code=local_btc_chain_code,
             defaults={
-                "name": env.str("LOCAL_BTC_CHAIN_NAME", default="Bitcoin Local"),
+                "name": "Bitcoin Local",
                 "type": ChainType.BITCOIN,
                 "native_coin": btc,
-                "rpc": env.str(
-                    "LOCAL_BTC_RPC", default=_build_local_bitcoin_wallet_rpc()
-                ),
-                "confirm_block_count": env.int("LOCAL_BTC_CONFIRM_BLOCKS", default=1),
+                "rpc": _build_local_bitcoin_wallet_rpc(),
+                "confirm_block_count": 1,
                 "active": True,
             },
         )
@@ -517,17 +515,9 @@ def ensure_local_chains(*, using: str = "default", stdout=None) -> None:
 def resolve_chain_bootstrap_profile() -> str:
     """解析默认链初始化方案。
 
-    auto 策略遵循当前项目约定：
     - 开发/联调环境默认走本地 anvil + regtest
     - 其他环境默认走生产主网骨架配置
     """
-    profile = env.str("DEFAULT_CHAIN_BOOTSTRAP_PROFILE", default="auto").strip().lower()
-    if profile in {"off", "none"}:
-        return "off"
-    if profile in {"public", "local"}:
-        return profile
-    if profile != "auto":
-        raise ValueError("DEFAULT_CHAIN_BOOTSTRAP_PROFILE 仅支持 auto/public/local/off")
     if settings.DEBUG or env.str("BITCOIN_NETWORK", default="mainnet") == "regtest":
         return "local"
     return "public"

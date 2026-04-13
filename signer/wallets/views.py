@@ -22,7 +22,7 @@ from wallets.models import SignerRequestAudit
 from wallets.models import SignerWallet
 from web3 import Web3
 
-from core.error_codes import ErrorCode
+from wallets.error_codes import ErrorCode
 
 SIGNER_REQUEST_ID_HEADER = "X-Signer-Request-Id"
 SIGNER_SIGNATURE_HEADER = "X-Signer-Signature"
@@ -145,15 +145,6 @@ class SignerAPIView(APIView):
 
     def _request_meta(self, request) -> dict:
         data = self._request_json_data(request)
-        # 仅当 REMOTE_ADDR 属于可信代理时才读取 X-Forwarded-For，防止客户端伪造。
-        real_remote = request.META.get("REMOTE_ADDR", "")
-        trusted_proxies = getattr(settings, "SIGNER_TRUSTED_PROXY_IPS", [])
-        if trusted_proxies and real_remote in trusted_proxies:
-            forwarded = request.headers.get("x-forwarded-for", "")
-            # 取最右侧第一个非代理 IP（即代理链中离服务器最近的客户端 IP）。
-            remote_ip = forwarded.split(",")[-1].strip() if forwarded else real_remote
-        else:
-            remote_ip = real_remote
         return {
             "request_id": request.headers.get(SIGNER_REQUEST_ID_HEADER, "").strip(),
             "endpoint": request.path,
@@ -161,7 +152,7 @@ class SignerAPIView(APIView):
             "chain_type": str(data.get("chain_type", "")),
             "bip44_account": data.get("bip44_account"),
             "address_index": data.get("address_index"),
-            "remote_ip": remote_ip,
+            "remote_ip": request.META.get("REMOTE_ADDR", ""),
         }
 
     def _record_audit(

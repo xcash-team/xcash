@@ -10,6 +10,7 @@ services:
     image: redis:8.2.1
     container_name: xcash_redis
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
 
@@ -72,6 +73,7 @@ services:
     <<: *django
     container_name: xcash_worker
     labels: []
+    stop_grace_period: 60s
     command: /start-worker
 
   beat:

@@ -35,16 +35,10 @@ REDIS_URL = env.str(
 CORS_ALLOW_ALL_ORIGINS = False
 
 # Admin OTP
-OTP_TOTP_ISSUER = env.str("OTP_TOTP_ISSUER", default="Xcash Admin")
+OTP_TOTP_ISSUER = "Xcash Admin"
 # 高风险后台动作要求近期完成过 OTP 验证，避免长期存活会话直接放行资金审批。
-ADMIN_SENSITIVE_ACTION_OTP_MAX_AGE_SECONDS = env.int(
-    "ADMIN_SENSITIVE_ACTION_OTP_MAX_AGE_SECONDS",
-    default=900,
-)
-DEFAULT_SUPERUSER_USERNAME = env.str(
-    "DJANGO_DEFAULT_SUPERUSER_USERNAME",
-    default="admin",
-)
+ADMIN_SENSITIVE_ACTION_OTP_MAX_AGE_SECONDS = 900
+DEFAULT_SUPERUSER_USERNAME = "admin"
 DEFAULT_SUPERUSER_PASSWORD = env.str(
     "DJANGO_DEFAULT_SUPERUSER_PASSWORD",
     default="Admin@123456",
@@ -53,12 +47,12 @@ DEFAULT_SUPERUSER_PASSWORD = env.str(
 # Signer
 # ------------------------------------------------------------------------------
 # 主应用默认通过独立 signer 服务完成地址派生和签名；local 仅保留给显式开发场景。
-SIGNER_BACKEND = env.str("SIGNER_BACKEND", default="remote")
-SIGNER_BASE_URL = env.str("SIGNER_BASE_URL", default="http://signer:8000")
-SIGNER_TIMEOUT = env.float("SIGNER_TIMEOUT", default=8.0)
+SIGNER_BACKEND = "remote"
+SIGNER_BASE_URL = "http://signer:8000"
+SIGNER_TIMEOUT = 8.0
 SIGNER_SHARED_SECRET = env.str("SIGNER_SHARED_SECRET", default="")
-SIGNER_REQUEST_TTL = env.int("SIGNER_REQUEST_TTL", default=300)
-TRON_RPC_TIMEOUT = env.float("TRON_RPC_TIMEOUT", default=8.0)
+SIGNER_REQUEST_TTL = 300
+TRON_RPC_TIMEOUT = 8.0
 TRON_API_KEY = env.str("TRON_API_KEY", default="")
 
 # 只有当 TCP 对端本身属于受信代理网段时，才接受其转发的 X-Real-IP。
@@ -98,10 +92,7 @@ USE_TZ = True
 LOCALE_PATHS = [str(BASE_DIR / "locale")]
 
 # 系统启动后是否自动补齐基础主数据（法币/加密货币/默认链/默认映射）。
-AUTO_BOOTSTRAP_REFERENCE_DATA = env.bool(
-    "AUTO_BOOTSTRAP_REFERENCE_DATA",
-    default=True,
-)
+AUTO_BOOTSTRAP_REFERENCE_DATA = True
 
 # DATABASES
 # ------------------------------------------------------------------------------
@@ -122,7 +113,7 @@ DATABASES = {
     "default": default_db,
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
-DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
+DATABASES["default"]["CONN_MAX_AGE"] = 60
 # https://docs.djangoproject.com/en/stable/ref/settings/#std:setting-DEFAULT_AUTO_FIELD
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -195,15 +186,9 @@ AUTHENTICATION_BACKENDS = ("django.contrib.auth.backends.ModelBackend",)
 # ------------------------------------------------------------------------------
 # Telegram Bot Token 由平台统一托管；项目负责人只配置自己的 chat/thread 目标，不接触平台密钥。
 ALERTS_TELEGRAM_BOT_TOKEN = env.str("ALERTS_TELEGRAM_BOT_TOKEN", default="")
-ALERTS_TELEGRAM_API_BASE = env.str(
-    "ALERTS_TELEGRAM_API_BASE",
-    default="https://api.telegram.org",
-)
-ALERTS_TELEGRAM_TIMEOUT = env.float("ALERTS_TELEGRAM_TIMEOUT", default=5.0)
-ALERTS_REPEAT_INTERVAL_MINUTES = env.int(
-    "ALERTS_REPEAT_INTERVAL_MINUTES",
-    default=30,
-)
+ALERTS_TELEGRAM_API_BASE = "https://api.telegram.org"
+ALERTS_TELEGRAM_TIMEOUT = 5.0
+ALERTS_REPEAT_INTERVAL_MINUTES = 30
 # Session Settings
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True  # False表示关闭浏览器后session仍然有效
 SESSION_SAVE_EVERY_REQUEST = True  # 每次请求都更新session的过期时间
@@ -360,7 +345,7 @@ LOGGING = {
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-timezone
 CELERY_TIMEZONE = TIME_ZONE
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-broker_url
-CELERY_BROKER_URL = env.str("CELERY_BROKER_URL", default=REDIS_URL)
+CELERY_BROKER_URL = REDIS_URL
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_backend
 CELERY_RESULT_BACKEND = "django-db"
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-extended
@@ -389,25 +374,13 @@ CELERY_TASK_SEND_SENT_EVENT = True
 
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
-CELERY_WORKER_MAX_TASKS_PER_CHILD = env.int(
-    "CELERY_WORKER_MAX_TASKS_PER_CHILD",
-    default=256,  # 降低每个子进程处理的任务数，减少内存累积
-)
-CELERY_WORKER_CONCURRENCY = env.int(
-    "CELERY_WORKER_CONCURRENCY",
-    default=4,  # 固定使用 4 个进程，适合轻量级任务
-)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 256
+CELERY_WORKER_CONCURRENCY = 4
 
-# Worker 内存管理配置 - 激进的内存控制
-CELERY_WORKER_MAX_MEMORY_PER_CHILD = env.int(
-    "CELERY_WORKER_MAX_MEMORY_PER_CHILD",
-    default=256 * 1024,  # 256MB 内存限制，更严格控制
-)
-CELERY_WORKER_DISABLE_RATE_LIMITS = True  # 禁用速率限制减少开销
-CELERY_WORKER_PREFETCH_MULTIPLIER = env.int(
-    "CELERY_WORKER_PREFETCH_MULTIPLIER",
-    default=1,  # 每次只预取一个任务
-)
+# Worker 内存管理配置
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = 256 * 1024  # 256MB
+CELERY_WORKER_DISABLE_RATE_LIMITS = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_WORKER_POOL_RESTARTS = True  # 允许 Worker 池重启
 CELERY_WORKER_HIJACK_ROOT_LOGGER = False  # 减少日志开销
 

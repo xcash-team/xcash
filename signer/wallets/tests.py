@@ -18,7 +18,7 @@ from wallets.views import SIGNER_SIGNATURE_HEADER
 from wallets.views import build_signer_signature_payload
 from web3 import Web3
 
-from core.error_codes import ErrorCode
+from wallets.error_codes import ErrorCode
 
 
 @override_settings(

@@ -20,7 +20,7 @@ from django.conf import settings
 from django.db import models
 from web3 import Web3
 
-from core.crypto import AESCipher
+from wallets.crypto import AESCipher
 
 
 class ChainType(models.TextChoices):

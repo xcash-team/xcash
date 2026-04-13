@@ -21,14 +21,7 @@ class ReferenceDataBootstrapSignalTests(TestCase):
         super().tearDown()
 
     @override_settings(DEBUG=False, AUTO_BOOTSTRAP_REFERENCE_DATA=True)
-    @patch.dict(
-        os.environ,
-        {
-            "DEFAULT_CHAIN_BOOTSTRAP_PROFILE": "auto",
-            "BITCOIN_NETWORK": "mainnet",
-        },
-        clear=False,
-    )
+    @patch.dict(os.environ, {"BITCOIN_NETWORK": "mainnet"}, clear=False)
     def test_post_migrate_bootstraps_public_reference_data_by_default(self):
         bootstrap_reference_data_after_migrate(sender=None, using="default")
 
@@ -192,15 +185,6 @@ class ReferenceDataBootstrapSignalTests(TestCase):
     @patch.dict(
         os.environ,
         {
-            "DEFAULT_CHAIN_BOOTSTRAP_PROFILE": "auto",
-            "BITCOIN_NETWORK": "mainnet",
-            "LOCAL_EVM_CHAIN_CODE": "ethereum-local",
-            "LOCAL_EVM_CHAIN_NAME": "Ethereum Local",
-            "LOCAL_EVM_RPC": "http://127.0.0.1:8545",
-            "LOCAL_EVM_CHAIN_ID": "31337",
-            "LOCAL_BTC_CHAIN_CODE": "bitcoin-local",
-            "LOCAL_BTC_CHAIN_NAME": "Bitcoin Local",
-            "LOCAL_BTC_RPC": "http://xcash:xcash@127.0.0.1:18443/wallet/xcash",
             "LOCAL_EVM_USDT_ADDRESS": "0x00000000000000000000000000000000000000B1",
             "LOCAL_EVM_USDC_ADDRESS": "0x00000000000000000000000000000000000000B2",
             "LOCAL_EVM_DAI_ADDRESS": "0x00000000000000000000000000000000000000B3",

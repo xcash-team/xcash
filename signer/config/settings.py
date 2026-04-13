@@ -12,7 +12,7 @@ SECRET_KEY = env.str(
     default="signer-dev-secret-key-change-me",
 )
 DEBUG = env.bool("SIGNER_DEBUG", default=False)
-ALLOWED_HOSTS = env.list("SIGNER_ALLOWED_HOSTS", default=["signer", "127.0.0.1", "localhost"])
+ALLOWED_HOSTS = ["signer", "127.0.0.1", "localhost"]
 LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = "UTC"
 USE_I18N = True
@@ -28,50 +28,34 @@ SIGNER_MNEMONIC_ENCRYPTION_KEY = env.str(
 )
 
 SIGNER_SHARED_SECRET = env.str("SIGNER_SHARED_SECRET", default="")
-SIGNER_REQUEST_TTL = env.int("SIGNER_REQUEST_TTL", default=60)
+SIGNER_REQUEST_TTL = 60
 # BIP44 address_index 上界，单个 bip44_account 下最多派生的地址数量。
-SIGNER_MAX_ADDRESS_INDEX = env.int("SIGNER_MAX_ADDRESS_INDEX", default=100_000_000)
+SIGNER_MAX_ADDRESS_INDEX = 100_000_000
 # BIP44 account 上界，限制可使用的 BIP44 account' 层级数量。
-SIGNER_MAX_BIP44_ACCOUNT = env.int("SIGNER_MAX_BIP44_ACCOUNT", default=10)
-SIGNER_RATE_LIMIT_WINDOW = env.int("SIGNER_RATE_LIMIT_WINDOW", default=60)
-SIGNER_RATE_LIMIT_MAX_REQUESTS = env.int("SIGNER_RATE_LIMIT_MAX_REQUESTS", default=120)
-SIGNER_WALLET_SIGN_RATE_LIMIT_WINDOW = env.int(
-    "SIGNER_WALLET_SIGN_RATE_LIMIT_WINDOW",
-    default=60,
-)
-SIGNER_WALLET_SIGN_RATE_LIMIT_MAX_REQUESTS = env.int(
-    "SIGNER_WALLET_SIGN_RATE_LIMIT_MAX_REQUESTS",
-    default=30,
-)
+SIGNER_MAX_BIP44_ACCOUNT = 10
+SIGNER_RATE_LIMIT_WINDOW = 60
+SIGNER_RATE_LIMIT_MAX_REQUESTS = 120
+SIGNER_WALLET_SIGN_RATE_LIMIT_WINDOW = 60
+SIGNER_WALLET_SIGN_RATE_LIMIT_MAX_REQUESTS = 30
 BITCOIN_NETWORK = env.str("BITCOIN_NETWORK", default="mainnet")
 
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": env.str("SIGNER_POSTGRES_DB", default="xcash_signer"),
-        "USER": env.str("SIGNER_POSTGRES_USER", default="postgres"),
+        "NAME": "xcash_signer",
+        "USER": "postgres",
         "PASSWORD": env.str("SIGNER_POSTGRES_PASSWORD", default="postgres"),
-        # 本地直接运行 signer 管理命令时优先复用现有 PostgreSQL 主机环境，避免默认容器主机名无法解析。
-        "HOST": env.str(
-            "SIGNER_POSTGRES_HOST",
-            default=env.str("POSTGRES_HOST", default="signer-db"),
-        ),
-        "PORT": env.int("SIGNER_POSTGRES_PORT", default=5432),
+        "HOST": "signer-db",
+        "PORT": 5432,
     }
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
-DATABASES["default"]["CONN_MAX_AGE"] = env.int("SIGNER_CONN_MAX_AGE", default=60)
+DATABASES["default"]["CONN_MAX_AGE"] = 60
 
-REDIS_HOST = env.str(
-    "SIGNER_REDIS_HOST",
-    default=env.str("REDIS_HOST", default="redis"),
-)
-REDIS_PORT = env.int("SIGNER_REDIS_PORT", default=env.int("REDIS_PORT", default=6379))
-REDIS_DB = env.int("SIGNER_REDIS_DB", default=env.int("REDIS_DB", default=1))
-REDIS_URL = env.str(
-    "SIGNER_REDIS_URL",
-    default=f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}",
-)
+REDIS_HOST = "redis"
+REDIS_PORT = 6379
+REDIS_DB = 1
+REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
@@ -109,6 +93,3 @@ if (
 
 if not DEBUG and not SIGNER_SHARED_SECRET:
     raise ImproperlyConfigured("非开发环境必须显式配置 SIGNER_SHARED_SECRET")
-
-# signer 内部可信代理 IP 列表；仅当 REMOTE_ADDR 属于此列表时才读取 X-Forwarded-For。
-SIGNER_TRUSTED_PROXY_IPS = env.list("SIGNER_TRUSTED_PROXY_IPS", default=[])

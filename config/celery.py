@@ -17,9 +17,8 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # Load task modules from all registered Django app configs.
 app.autodiscover_tasks()
 
-# EVM 自扫描属于基础设施级轮询任务；周期独立成环境变量，便于不同环境按节点能力调优。
-EVM_SCAN_SCHEDULE_SECONDS = int(os.getenv("EVM_SCAN_SCHEDULE_SECONDS", "5"))
-TRON_SCAN_SCHEDULE_SECONDS = int(os.getenv("TRON_SCAN_SCHEDULE_SECONDS", "15"))
+EVM_SCAN_SCHEDULE_SECONDS = 5
+TRON_SCAN_SCHEDULE_SECONDS = 10
 
 
 # ---------------------------
