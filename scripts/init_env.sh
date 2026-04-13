@@ -58,4 +58,3 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$ENV_EXAMPLE" > "$ENV_FILE"
 
 echo "已根据 .env.example 生成 .env，并填充随机密码。"
-echo "请自行编辑 .env，将 SITE_DOMAIN 设置为正式服实际域名。"
