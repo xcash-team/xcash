@@ -13,6 +13,10 @@ router.register("chains", InternalChainViewSet, basename="internal-chain")
 # 嵌套在 /projects/{appid}/ 下的业务端点
 from internal_api.viewsets.deposits import InternalDepositViewSet
 from internal_api.viewsets.invoices import InternalInvoiceViewSet
+from internal_api.viewsets.operations import DepositCollectionViewSet
+from internal_api.viewsets.operations import GasRechargeViewSet
+from internal_api.viewsets.operations import VaultFundingViewSet
+from internal_api.viewsets.recipient_addresses import RecipientAddressViewSet
 from internal_api.viewsets.withdrawals import InternalWithdrawalViewSet
 
 project_router = SimpleRouter(trailing_slash=False)
@@ -20,6 +24,18 @@ project_router.register("invoices", InternalInvoiceViewSet, basename="internal-i
 project_router.register("deposits", InternalDepositViewSet, basename="internal-deposit")
 project_router.register(
     "withdrawals", InternalWithdrawalViewSet, basename="internal-withdrawal"
+)
+project_router.register(
+    "recipient-addresses", RecipientAddressViewSet, basename="internal-recipient-address"
+)
+project_router.register(
+    "deposit-collections", DepositCollectionViewSet, basename="internal-deposit-collection"
+)
+project_router.register(
+    "gas-recharges", GasRechargeViewSet, basename="internal-gas-recharge"
+)
+project_router.register(
+    "vault-fundings", VaultFundingViewSet, basename="internal-vault-funding"
 )
 
 app_name = "internal_api"
