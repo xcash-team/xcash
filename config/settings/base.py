@@ -33,6 +33,7 @@ REDIS_URL = env.str(
 # Internal API
 # ------------------------------------------------------------------------------
 INTERNAL_API_TOKEN = env.str("INTERNAL_API_TOKEN", default="")
+INTERNAL_CALLBACK_URL = env.str("INTERNAL_CALLBACK_URL", default="")
 
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts
 # CORS 默认关闭，由各环境配置显式开启或配置白名单。
