@@ -29,6 +29,9 @@ urlpatterns = [
     ),
 ]
 
+if settings.INTERNAL_API_TOKEN:
+    urlpatterns += [path("internal/v1/", include("internal_api.urls"))]
+
 if settings.DEBUG and "stress" in settings.INSTALLED_APPS:
     # stress webhook 必须优先于 admin catch-all 注册，否则 /stress/webhook/ 会被后台路由吞掉。
     urlpatterns += [path("stress/", include("stress.urls"))]
