@@ -1,9 +1,8 @@
 import pytest
 from django.test import RequestFactory
-from rest_framework.exceptions import AuthenticationFailed
-
 from internal_api.authentication import InternalServiceUser
 from internal_api.authentication import InternalTokenAuthentication
+from rest_framework.exceptions import AuthenticationFailed
 
 
 @pytest.fixture

@@ -20,6 +20,9 @@ class InternalTokenAuthentication(BaseAuthentication):
 
     keyword = "Bearer"
 
+    def authenticate_header(self, request):
+        return self.keyword
+
     def authenticate(self, request):
         auth_header = request.META.get("HTTP_AUTHORIZATION", "")
         if not auth_header.startswith(f"{self.keyword} "):
