@@ -23,6 +23,7 @@ from deposits.models import DepositStatus
 from deposits.models import GasRecharge
 from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
+from common.internal_callback import send_internal_callback
 from webhooks.service import WebhookService
 
 
@@ -149,6 +150,13 @@ class DepositService:
     def confirm_deposit(cls, deposit: Deposit) -> None:
         if cls._transition_status(deposit, DepositStatus.COMPLETED):
             cls.notify_completed(deposit)
+            send_internal_callback(
+                event="deposit.confirmed",
+                appid=deposit.customer.project.appid,
+                sys_no=deposit.sys_no,
+                worth=str(deposit.worth),
+                currency=deposit.transfer.crypto.symbol,
+            )
 
     @classmethod
     @db_transaction.atomic

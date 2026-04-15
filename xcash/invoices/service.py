@@ -17,6 +17,7 @@ from chains.service import TransferService
 from common.utils.math import format_decimal_stripped
 from currencies.service import CryptoService
 from currencies.service import FiatService
+from common.internal_callback import send_internal_callback
 from webhooks.service import WebhookService
 
 from .exceptions import InvoiceStatusError
@@ -262,6 +263,14 @@ class InvoiceService:
             )
         # 设计决策：开源版本不计算内部手续费或月成交量统计，
         # 账单状态机在 COMPLETED 即为终局，无需后续财务核算步骤。
+
+        send_internal_callback(
+            event="invoice.confirmed",
+            appid=invoice.project.appid,
+            sys_no=invoice.sys_no,
+            worth=str(invoice.worth),
+            currency=invoice.crypto.symbol,
+        )
 
     @classmethod
     @transaction.atomic

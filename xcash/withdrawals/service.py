@@ -18,6 +18,7 @@ from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.utils.math import format_decimal_stripped
 from users.otp import validate_admin_approval_context
+from common.internal_callback import send_internal_callback
 from webhooks.service import WebhookService
 from withdrawals.models import VaultFunding
 from withdrawals.models import Withdrawal
@@ -651,6 +652,14 @@ class WithdrawalService:
         withdrawal.save(update_fields=["status", "updated_at"])
         cls.notify_status_changed(withdrawal)
         # 开源版不再累计内部费率统计，提币确认仅保留业务状态变更。
+
+        send_internal_callback(
+            event="withdrawal.confirmed",
+            appid=withdrawal.project.appid,
+            sys_no=withdrawal.sys_no,
+            worth=str(withdrawal.worth),
+            currency=withdrawal.crypto.symbol,
+        )
 
     @staticmethod
     @db_transaction.atomic
