@@ -59,3 +59,40 @@ class StressQueueIsolationTests(SimpleTestCase):
         self.assertIn('"${SCRIPT_DIR}/dev-worker.sh"', script)
         self.assertIn('"${SCRIPT_DIR}/dev-worker-scan.sh"', script)
         self.assertIn('"${SCRIPT_DIR}/dev-worker-stress.sh"', script)
+
+    def test_dev_worker_and_beat_scripts_use_error_log_level_and_silence_stdout(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        scripts = (
+            "dev-worker.sh",
+            "dev-worker-stress.sh",
+            "dev-worker-scan.sh",
+            "dev-beat.sh",
+        )
+
+        for script_name in scripts:
+            with self.subTest(script=script_name):
+                content = (repo_root / "scripts" / script_name).read_text()
+                self.assertIn("-l ERROR", content)
+                self.assertIn(">/dev/null", content)
+                self.assertNotIn("2>&1", content)
+
+        web_content = (repo_root / "scripts" / "dev-web.sh").read_text()
+        self.assertNotIn(">/dev/null", web_content)
+        self.assertNotIn("-l ERROR", web_content)
+
+    def test_dev_celery_scripts_do_not_export_django_log_level(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        scripts = (
+            "dev-worker.sh",
+            "dev-worker-stress.sh",
+            "dev-worker-scan.sh",
+            "dev-beat.sh",
+        )
+
+        for script_name in scripts:
+            with self.subTest(script=script_name):
+                content = (repo_root / "scripts" / script_name).read_text()
+                self.assertNotIn("export DJANGO_LOG_LEVEL=ERROR", content)
+
+        web_content = (repo_root / "scripts" / "dev-web.sh").read_text()
+        self.assertNotIn("export DJANGO_LOG_LEVEL=ERROR", web_content)

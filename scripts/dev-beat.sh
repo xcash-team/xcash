@@ -63,7 +63,7 @@ trap cleanup EXIT INT TERM
 # 每次开发启动前清理调度状态文件，避免上次异常退出后遗留旧的 sqlite shm/wal 文件继续参与调度。
 rm -f "${SCHEDULE_FILE}" "${SCHEDULE_FILE}-shm" "${SCHEDULE_FILE}-wal"
 
-uv run celery -A config.celery beat -l INFO -s "${SCHEDULE_FILE}" &
+uv run celery -A config.celery beat -l ERROR -s "${SCHEDULE_FILE}" >/dev/null &
 child_pid=$!
 echo "${child_pid}" > "${PID_FILE}"
 wait "${child_pid}"

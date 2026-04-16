@@ -22,4 +22,4 @@ export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 export CELERY_STRESS_WORKER_CONCURRENCY="${CELERY_STRESS_WORKER_CONCURRENCY:-8}"
 
 # 压测任务独占队列，避免一次性调度海量 case 时把普通业务 worker 撑满。
-exec uv run watchfiles --filter python celery.__main__.main --args "-A config.celery worker -l INFO --pool=threads --concurrency=${CELERY_STRESS_WORKER_CONCURRENCY} -Q stress"
+exec uv run watchfiles --filter python celery.__main__.main --args "-A config.celery worker -l ERROR --pool=threads --concurrency=${CELERY_STRESS_WORKER_CONCURRENCY} -Q stress" >/dev/null

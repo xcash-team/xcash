@@ -24,4 +24,4 @@ export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 export CELERY_BUSINESS_WORKER_CONCURRENCY="${CELERY_BUSINESS_WORKER_CONCURRENCY:-8}"
 
 # 默认业务队列只消费 celery，scan / stress 由独立 worker 负责，避免相互饥饿。
-exec uv run watchfiles --filter python celery.__main__.main --args "-A config.celery worker -l INFO --pool=threads --concurrency=${CELERY_BUSINESS_WORKER_CONCURRENCY} -Q celery"
+exec uv run watchfiles --filter python celery.__main__.main --args "-A config.celery worker -l ERROR --pool=threads --concurrency=${CELERY_BUSINESS_WORKER_CONCURRENCY} -Q celery" >/dev/null
