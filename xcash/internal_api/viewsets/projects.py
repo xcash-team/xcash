@@ -1,13 +1,14 @@
-from internal_api.authentication import InternalTokenAuthentication
-from internal_api.serializers.projects import ProjectCreateSerializer
-from internal_api.serializers.projects import ProjectDetailSerializer
-from internal_api.serializers.projects import ProjectUpdateSerializer
+from rest_framework import status as drf_status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
 from chains.models import Wallet
+from internal_api.authentication import InternalTokenAuthentication
+from internal_api.serializers.projects import ProjectCreateSerializer
+from internal_api.serializers.projects import ProjectDetailSerializer
+from internal_api.serializers.projects import ProjectUpdateSerializer
 from projects.models import Project
 
 
@@ -27,6 +28,13 @@ class ProjectViewSet(ModelViewSet):
     def perform_create(self, serializer):
         wallet = Wallet.generate()
         serializer.save(wallet=wallet)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        detail = ProjectDetailSerializer(serializer.instance)
+        return Response(detail.data, status=drf_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def activate(self, request, appid=None):

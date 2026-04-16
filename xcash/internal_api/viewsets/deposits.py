@@ -34,10 +34,15 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
 
     @action(detail=False, methods=["get"])
     def address(self, request, project_appid=None):
-        """获取充币地址，复用现有 DepositAddress.get_address 逻辑。"""
+        """获取充币地址，复用现有 DepositAddress.get_address 逻辑。
+
+        支持两种查链方式（二选一）：
+        - chain_type: 按链类型查（如 evm），取该类型下任意活跃链
+        - chain: 按链 code 精确查（如 ethereum-local）
+        """
         uid = request.query_params.get("uid", "")
+        chain_type = request.query_params.get("chain_type", "")
         chain_code = request.query_params.get("chain", "")
-        crypto_symbol = request.query_params.get("crypto", "")
 
         if not uid or not UID_PATTERN.match(uid):
             raise APIError(ErrorCode.INVALID_UID)
@@ -46,19 +51,19 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         if project is None:
             raise APIError(ErrorCode.PROJECT_NOT_FOUND)
 
-        try:
-            chain = Chain.objects.get(code=chain_code, active=True)
-        except Chain.DoesNotExist:
-            raise APIError(ErrorCode.INVALID_CHAIN) from None
-
-        try:
-            crypto = Crypto.objects.get(symbol=crypto_symbol, active=True)
-        except Crypto.DoesNotExist:
-            raise APIError(ErrorCode.INVALID_CRYPTO) from None
-
-        if not crypto.chains.filter(pk=chain.pk).exists():
-            raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
+        if chain_type:
+            # 按链类型查，取任意活跃链（同类型链共享地址）
+            chain = Chain.objects.filter(type=chain_type, active=True).first()
+            if chain is None:
+                raise APIError(ErrorCode.INVALID_CHAIN)
+        elif chain_code:
+            try:
+                chain = Chain.objects.get(code=chain_code, active=True)
+            except Chain.DoesNotExist:
+                raise APIError(ErrorCode.INVALID_CHAIN) from None
+        else:
+            raise APIError(ErrorCode.INVALID_CHAIN)
 
         customer, _ = Customer.objects.get_or_create(project=project, uid=uid)
         deposit_address = DepositAddress.get_address(chain=chain, customer=customer)
-        return Response({"deposit_address": deposit_address.address.address})
+        return Response({"deposit_address": deposit_address})

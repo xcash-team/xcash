@@ -16,7 +16,10 @@ from internal_api.viewsets.invoices import InternalInvoiceViewSet
 from internal_api.viewsets.operations import DepositCollectionViewSet
 from internal_api.viewsets.operations import GasRechargeViewSet
 from internal_api.viewsets.operations import VaultFundingViewSet
+from internal_api.viewsets.operations import WithdrawalReviewLogViewSet
 from internal_api.viewsets.recipient_addresses import RecipientAddressViewSet
+from internal_api.viewsets.webhooks import DeliveryAttemptViewSet
+from internal_api.viewsets.webhooks import WebhookEventViewSet
 from internal_api.viewsets.withdrawals import InternalWithdrawalViewSet
 
 project_router = SimpleRouter(trailing_slash=False)
@@ -36,6 +39,17 @@ project_router.register(
 )
 project_router.register(
     "vault-fundings", VaultFundingViewSet, basename="internal-vault-funding"
+)
+project_router.register(
+    "withdrawal-review-logs",
+    WithdrawalReviewLogViewSet,
+    basename="internal-withdrawal-review-log",
+)
+project_router.register(
+    "webhook-events", WebhookEventViewSet, basename="internal-webhook-event"
+)
+project_router.register(
+    "delivery-attempts", DeliveryAttemptViewSet, basename="internal-delivery-attempt"
 )
 
 app_name = "internal_api"

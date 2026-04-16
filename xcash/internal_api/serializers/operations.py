@@ -4,6 +4,7 @@ from chains.serializers import TransferSerializer
 from deposits.models import DepositCollection
 from deposits.models import GasRecharge
 from withdrawals.models import VaultFunding
+from withdrawals.models import WithdrawalReviewLog
 
 
 class DepositCollectionSerializer(serializers.ModelSerializer):
@@ -47,4 +48,22 @@ class VaultFundingSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "tx",
+        ]
+
+
+class WithdrawalReviewLogSerializer(serializers.ModelSerializer):
+    withdrawal_sys_no = serializers.CharField(source="withdrawal.sys_no", read_only=True)
+    actor = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = WithdrawalReviewLog
+        fields = [
+            "id",
+            "withdrawal_sys_no",
+            "actor",
+            "action",
+            "from_status",
+            "to_status",
+            "note",
+            "created_at",
         ]
