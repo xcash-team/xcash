@@ -6,7 +6,7 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("projects", "0003_alter_historicalrecipientaddress_name_and_more"),
+        ("projects", "0004_allow_blank_webhook"),
     ]
 
     operations = [

@@ -36,6 +36,7 @@ class Project(models.Model):
     wallet = models.OneToOneField("chains.Wallet", on_delete=models.CASCADE)
     ip_white_list = models.TextField(
         _("IP白名单"),
+        default="*",
         help_text=mark_safe(  # noqa: S308 — admin help_text，内容为硬编码中文字符串，无 XSS 风险
             _("只有符合白名单的 IP 才可以与本网关交互，支持 IP 地址或 IP 网段")
             + "<br>"
@@ -46,6 +47,8 @@ class Project(models.Model):
     )
     webhook = models.URLField(
         _("通知地址"),
+        blank=True,
+        default="",
         help_text=_("用于本网关发送通知到项目后端"),
     )
     webhook_open = models.BooleanField(verbose_name=_("通知状态"), default=True)
@@ -256,7 +259,9 @@ class RecipientAddress(models.Model):
             )
             error_message = _("当前版本归集地址仅支持 EVM。")
         else:
-            raise ValidationError({"usage": _("项目地址用途必须是支付地址或归集地址。")})
+            raise ValidationError(
+                {"usage": _("项目地址用途必须是支付地址或归集地址。")}
+            )
 
         if self.chain_type not in allowed_chain_types:
             raise ValidationError({"chain_type": error_message})
