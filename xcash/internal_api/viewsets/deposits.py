@@ -28,9 +28,13 @@ class InternalDepositViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
     lookup_field = "sys_no"
 
     def get_queryset(self):
-        return Deposit.objects.filter(
-            customer__project__appid=self.kwargs["project_appid"]
-        ).select_related("customer", "transfer__crypto", "transfer__chain")
+        return (
+            Deposit.objects.filter(
+                customer__project__appid=self.kwargs["project_appid"]
+            )
+            .select_related("customer", "transfer__crypto", "transfer__chain")
+            .order_by("-created_at", "-pk")
+        )
 
     @action(detail=False, methods=["get"])
     def address(self, request, project_appid=None):

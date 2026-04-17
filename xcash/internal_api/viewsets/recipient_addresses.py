@@ -27,7 +27,7 @@ class RecipientAddressViewSet(
     def get_queryset(self):
         return RecipientAddress.objects.filter(
             project__appid=self.kwargs["project_appid"]
-        )
+        ).order_by("-created_at", "-pk")
 
     def get_serializer_class(self):
         if self.action == "create":

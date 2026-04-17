@@ -28,9 +28,13 @@ class InternalWithdrawalViewSet(ModelViewSet):
     lookup_field = "sys_no"
 
     def get_queryset(self):
-        return Withdrawal.objects.filter(
-            project__appid=self.kwargs["project_appid"]
-        ).select_related("crypto", "chain", "transfer", "customer", "reviewed_by")
+        return (
+            Withdrawal.objects.filter(
+                project__appid=self.kwargs["project_appid"]
+            )
+            .select_related("crypto", "chain", "transfer", "customer", "reviewed_by")
+            .order_by("-created_at", "-pk")
+        )
 
     def get_serializer_class(self):
         if self.action == "create":

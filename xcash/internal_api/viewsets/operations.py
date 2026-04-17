@@ -20,9 +20,14 @@ class DepositCollectionViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSe
     serializer_class = DepositCollectionSerializer
 
     def get_queryset(self):
-        return DepositCollection.objects.filter(
-            deposits__customer__project__appid=self.kwargs["project_appid"]
-        ).select_related("transfer__crypto", "transfer__chain").distinct()
+        return (
+            DepositCollection.objects.filter(
+                deposits__customer__project__appid=self.kwargs["project_appid"]
+            )
+            .select_related("transfer__crypto", "transfer__chain")
+            .distinct()
+            .order_by("-created_at", "-pk")
+        )
 
 
 class GasRechargeViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
@@ -31,10 +36,14 @@ class GasRechargeViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
     serializer_class = GasRechargeSerializer
 
     def get_queryset(self):
-        return GasRecharge.objects.filter(
-            deposit_address__customer__project__appid=self.kwargs["project_appid"]
-        ).select_related(
-            "deposit_address__address", "transfer__crypto", "transfer__chain"
+        return (
+            GasRecharge.objects.filter(
+                deposit_address__customer__project__appid=self.kwargs["project_appid"]
+            )
+            .select_related(
+                "deposit_address__address", "transfer__crypto", "transfer__chain"
+            )
+            .order_by("-created_at", "-pk")
         )
 
 
@@ -44,9 +53,14 @@ class VaultFundingViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
     serializer_class = VaultFundingSerializer
 
     def get_queryset(self):
-        return VaultFunding.objects.filter(
-            project__appid=self.kwargs["project_appid"]
-        ).select_related("transfer__crypto", "transfer__chain")
+        # VaultFunding 模型没有 created_at 字段，回退到 -pk 作为稳定排序。
+        return (
+            VaultFunding.objects.filter(
+                project__appid=self.kwargs["project_appid"]
+            )
+            .select_related("transfer__crypto", "transfer__chain")
+            .order_by("-pk")
+        )
 
 
 class WithdrawalReviewLogViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
