@@ -15,7 +15,9 @@ from projects.models import Project
 class ProjectViewSet(ModelViewSet):
     authentication_classes = [InternalTokenAuthentication]
     permission_classes = [IsAuthenticated]
-    queryset = Project.objects.all()
+    # Project 模型本身未在 Meta 里声明 ordering，启用全局分页后必须显式排序，
+    # 否则 DRF 分页器会警告翻页结果可能重复/缺失。按创建时间倒序是列表页直觉顺序。
+    queryset = Project.objects.all().order_by("-created_at", "-pk")
     lookup_field = "appid"
 
     def get_serializer_class(self):

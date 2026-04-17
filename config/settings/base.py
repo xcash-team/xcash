@@ -443,6 +443,11 @@ REST_FRAMEWORK = {
         "withdrawal_create": "30/minute",
         "deposit_address": "60/minute",
     },
+    # 统一分页策略：GenericAPIView 及其子类（ModelViewSet/GenericViewSet 等）默认启用
+    # page/size 分页，响应形如 {count, next, previous, results}。
+    # 小而固定的参考数据（currencies/chains）在 ViewSet 内显式 pagination_class = None 排除。
+    "DEFAULT_PAGINATION_CLASS": "common.pagination.PageNumberSizePagination",
+    "PAGE_SIZE": 20,
 }
 
 # Your stuff...
