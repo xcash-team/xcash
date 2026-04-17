@@ -252,7 +252,10 @@ class AddressChainState(models.Model):
         try:
             state, _created = cls.objects.get_or_create(address=address, chain=chain)
         except IntegrityError:
-            state = cls.objects.get(address=address, chain=chain)
+            # 并发首次创建撞唯一约束时：对方事务已写索引但尚未对本事务可见，
+            # 无锁 get() 会误判 DoesNotExist。用 select_for_update 加锁回查，
+            # 等对方事务提交后命中记录。调用方必须已在 atomic 事务中。
+            return cls.objects.select_for_update().get(address=address, chain=chain)
         return cls.objects.select_for_update().get(pk=state.pk)
 
 
@@ -351,13 +354,17 @@ class Wallet(UndeletableModel):
             ) from exc
         except IntegrityError as exc:
             # 只有地址身份唯一键竞争时才允许回查；其他唯一约束错误要继续暴露。
+            # 并发首次派生同一 HD 身份时，RC 隔离下对方事务的 INSERT 可能已写入
+            # 索引（触发 unique 冲突）但尚未对本事务可见；用 select_for_update 加锁
+            # 回查，等对方事务提交后再读，避免误判 DoesNotExist。
             try:
-                addr_obj = Address.objects.get(
-                    wallet=self,
-                    chain_type=chain_type,
-                    usage=usage,
-                    address_index=address_index,
-                )
+                with db_transaction.atomic():
+                    addr_obj = Address.objects.select_for_update().get(
+                        wallet=self,
+                        chain_type=chain_type,
+                        usage=usage,
+                        address_index=address_index,
+                    )
             except Address.DoesNotExist as not_exist_exc:
                 raise exc from not_exist_exc
 

@@ -16,6 +16,7 @@ from django.utils import timezone
 from web3 import Web3
 
 from chains.models import Address
+from chains.models import AddressChainState
 from chains.models import AddressUsage
 from chains.models import BroadcastTask
 from chains.models import BroadcastTaskFailureReason
@@ -362,6 +363,135 @@ class AddressIdentityTests(TestCase):
                 chain_type=ChainType.EVM,
                 usage=AddressUsage.Deposit,
                 address_index=0,
+            )
+
+    @patch("chains.signer.get_signer_backend")
+    def test_get_address_falls_back_to_locked_read_after_integrity_error(
+        self, get_signer_backend_mock
+    ):
+        # 模拟并发事务已落库但 get_or_create 撞 unique 约束失败的场景：
+        # IntegrityError 后必须用 select_for_update 加锁回查，等对方事务提交后命中记录。
+        expected_address = Web3.to_checksum_address(
+            "0x00000000000000000000000000000000000000cc"
+        )
+        signer_backend = Mock(spec=RemoteSignerBackend)
+        signer_backend.derive_address.return_value = expected_address
+        get_signer_backend_mock.return_value = signer_backend
+        wallet = Wallet.objects.create()
+        # 预创建等价于"对方事务已提交"的身份记录；bip44_account 必须与 Deposit
+        # 的 BIP44 映射一致，否则会触发 get_address 的身份完整性检查。
+        bip44_account = Wallet.get_bip44_account(AddressUsage.Deposit)
+        Address.objects.create(
+            wallet=wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=bip44_account,
+            address_index=0,
+            address=expected_address,
+        )
+
+        def fake_get_or_create(**_kwargs):
+            raise IntegrityError("duplicate key value violates unique constraint")
+
+        with patch.object(
+            Address.objects, "get_or_create", side_effect=fake_get_or_create
+        ):
+            addr = wallet.get_address(
+                chain_type=ChainType.EVM,
+                usage=AddressUsage.Deposit,
+                address_index=0,
+            )
+
+        self.assertEqual(addr.address, expected_address)
+
+    @patch("chains.signer.get_signer_backend")
+    def test_get_address_reraises_integrity_error_when_fallback_misses(
+        self, get_signer_backend_mock
+    ):
+        # 回查 DoesNotExist 时必须把原 IntegrityError 抛出，避免吞掉真错误。
+        signer_backend = Mock(spec=RemoteSignerBackend)
+        signer_backend.derive_address.return_value = Web3.to_checksum_address(
+            "0x00000000000000000000000000000000000000dd"
+        )
+        get_signer_backend_mock.return_value = signer_backend
+        wallet = Wallet.objects.create()
+
+        def fake_get_or_create(**_kwargs):
+            raise IntegrityError("unrelated unique constraint")
+
+        with patch.object(
+            Address.objects, "get_or_create", side_effect=fake_get_or_create
+        ), self.assertRaises(IntegrityError):
+            wallet.get_address(
+                chain_type=ChainType.EVM,
+                usage=AddressUsage.Deposit,
+                address_index=0,
+            )
+
+
+class AddressChainStateAcquireTests(TestCase):
+    def setUp(self):
+        self.native = Crypto.objects.create(
+            name="Ethereum AddrChain",
+            symbol="ETHACS",
+            coingecko_id="ethereum-acs",
+        )
+        self.chain = Chain.objects.create(
+            code="eth-acs",
+            name="Ethereum AddrChain",
+            type=ChainType.EVM,
+            chain_id=998,
+            rpc="http://localhost:8545",
+            native_coin=self.native,
+            active=True,
+        )
+        self.wallet = Wallet.objects.create()
+        self.address = Address.objects.create(
+            wallet=self.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=0,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000f0"
+            ),
+        )
+
+    def test_acquire_for_update_falls_back_to_locked_read_after_integrity_error(self):
+        # 模拟并发首次创建撞唯一约束的场景：get_or_create 抛 IntegrityError 时
+        # 必须用 select_for_update 加锁回查到已提交的 state，而不是抛 DoesNotExist。
+        existing_state = AddressChainState.objects.create(
+            address=self.address,
+            chain=self.chain,
+            next_nonce=3,
+        )
+
+        def fake_get_or_create(**_kwargs):
+            raise IntegrityError("duplicate key value violates unique constraint")
+
+        with patch.object(
+            AddressChainState.objects, "get_or_create", side_effect=fake_get_or_create
+        ):
+            state = AddressChainState.acquire_for_update(
+                address=self.address,
+                chain=self.chain,
+            )
+
+        self.assertEqual(state.pk, existing_state.pk)
+        self.assertEqual(state.next_nonce, 3)
+
+    def test_acquire_for_update_raises_doesnotexist_when_state_truly_absent(self):
+        # IntegrityError 后 state 确实不存在时（非身份冲突的其他约束错误），
+        # 加锁回查必须抛 DoesNotExist，供上层感知真错误，而不是吞掉。
+        def fake_get_or_create(**_kwargs):
+            raise IntegrityError("unrelated unique constraint")
+
+        with patch.object(
+            AddressChainState.objects, "get_or_create", side_effect=fake_get_or_create
+        ), self.assertRaises(AddressChainState.DoesNotExist):
+            AddressChainState.acquire_for_update(
+                address=self.address,
+                chain=self.chain,
             )
 
 

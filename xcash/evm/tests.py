@@ -43,6 +43,7 @@ from evm.scanner.native import EvmNativeDirectScanner
 from evm.scanner.native import EvmNativeScanResult
 from evm.scanner.rpc import EvmScannerRpcError
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 
 
 class EvmScanCursorAdminTests(TestCase):
@@ -1882,7 +1883,8 @@ class EvmInternalTaskConfirmationTests(TestCase):
             BroadcastTaskFailureReason.EXECUTION_REVERTED,
         )
         self.assertEqual(OnchainTransfer.objects.count(), 0)
-        webhook_mock.assert_called_once()
+        # 当前契约：FAILED 不发 webhook（与 withdrawals.tests 一致）。
+        webhook_mock.assert_not_called()
 
     @patch("withdrawals.service.WebhookService.create_event")
     @patch.object(Chain, "w3", new_callable=PropertyMock)
@@ -2440,6 +2442,7 @@ class EvmErc20ScannerTests(TestCase):
             address=Web3.to_checksum_address(
                 "0x00000000000000000000000000000000000000dd"
             ),
+            usage=RecipientAddressUsage.INVOICE,
         )
 
         from evm.scanner.watchers import load_watch_set

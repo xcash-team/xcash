@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 from typing import TypedDict
 from typing import cast
@@ -58,6 +59,12 @@ class BitcoinRpcClient:
     例如：http://bitcoin:secret@bitcoinnode:8332/
     """
 
+    # 网络层异常重试策略：Bitcoin Core 重启或网络瞬断时短暂不可达是常态，
+    # 用指数退避重试避免扫块游标被一次抖动卡死。业务级 RPC error（JSON error
+    # payload）或 JSON 解析失败不参与重试——那是响应已到达的真错误。
+    _MAX_RETRY_ATTEMPTS = 3
+    _RETRY_BACKOFF_BASE_SECONDS = 1.0
+
     def __init__(self, rpc_url: str) -> None:
         if not rpc_url:
             msg = "Bitcoin RPC URL 未配置"
@@ -74,19 +81,12 @@ class BitcoinRpcClient:
             "method": method,
             "params": params if params is not None else [],
         }
+        resp = self._post_with_retry(method=method, payload=payload)
+
         try:
-            resp = httpx.post(
-                self.rpc_url,
-                json=payload,
-                timeout=30,
-                trust_env=False,
-            )
             data = resp.json()
         except ValueError as exc:
             msg = f"Bitcoin RPC 返回了非法 JSON（{method}）"
-            raise BitcoinRpcError(msg) from exc
-        except httpx.HTTPError as exc:
-            msg = f"Bitcoin RPC 请求失败（{method}）: {exc}"
             raise BitcoinRpcError(msg) from exc
 
         error_payload = data.get("error")
@@ -106,6 +106,33 @@ class BitcoinRpcClient:
                 raise BitcoinRpcError(msg) from exc
 
         return data["result"]
+
+    def _post_with_retry(
+        self, *, method: str, payload: dict[str, Any]
+    ) -> httpx.Response:
+        """POST 请求；仅在网络/超时异常（httpx.HTTPError）时指数退避重试。
+
+        HTTP 5xx 由调用方通过 resp 进一步检查 JSON error payload 或
+        raise_for_status 处理，不在重试范围——因为 Bitcoin Core 的 500
+        通常携带业务级 RPC error（如 loadwallet 不存在），重试没意义。
+        """
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(self._MAX_RETRY_ATTEMPTS):
+            try:
+                return httpx.post(
+                    self.rpc_url,
+                    json=payload,
+                    timeout=30,
+                    trust_env=False,
+                )
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt + 1 >= self._MAX_RETRY_ATTEMPTS:
+                    break
+                time.sleep(self._RETRY_BACKOFF_BASE_SECONDS * (2**attempt))
+        assert last_exc is not None
+        msg = f"Bitcoin RPC 请求失败（{method}）: {last_exc}"
+        raise BitcoinRpcError(msg) from last_exc
 
     def get_block_count(self) -> int:
         return int(self._call("getblockcount"))

@@ -38,6 +38,84 @@ class BitcoinRpcClientTests(SimpleTestCase):
 
         self.assertEqual(post_mock.call_args.kwargs["trust_env"], False)
 
+    def test_rpc_retries_network_error_then_succeeds(self):
+        # Bitcoin Core 重启/网络瞬断是常态，网络层异常应该被指数退避重试兜住。
+        import httpx
+
+        success_response = Mock()
+        success_response.json.return_value = {"result": 42, "error": None}
+        success_response.is_error = False
+
+        with patch("bitcoin.rpc.httpx.post") as post_mock, patch(
+            "bitcoin.rpc.time.sleep"
+        ) as sleep_mock:
+            post_mock.side_effect = [
+                httpx.ConnectError("connection refused"),
+                httpx.TimeoutException("read timeout"),
+                success_response,
+            ]
+            from bitcoin.rpc import BitcoinRpcClient
+
+            result = BitcoinRpcClient("http://bitcoin.local")._call("getblockcount")
+
+        self.assertEqual(result, 42)
+        self.assertEqual(post_mock.call_count, 3)
+        # 指数退避：第 1 次失败后 sleep 1s，第 2 次失败后 sleep 2s；第 3 次直接成功不 sleep。
+        self.assertEqual(sleep_mock.call_count, 2)
+        self.assertEqual(sleep_mock.call_args_list[0].args, (1.0,))
+        self.assertEqual(sleep_mock.call_args_list[1].args, (2.0,))
+
+    def test_rpc_raises_after_exhausting_retries(self):
+        # 重试耗尽后必须把失败明确抛出，扫块上层才能标记游标错误并等下一轮。
+        import httpx
+
+        from bitcoin.rpc import BitcoinRpcClient
+        from bitcoin.rpc import BitcoinRpcError
+
+        with patch("bitcoin.rpc.httpx.post") as post_mock, patch(
+            "bitcoin.rpc.time.sleep"
+        ):
+            post_mock.side_effect = httpx.ConnectError("connection refused")
+            with self.assertRaises(BitcoinRpcError):
+                BitcoinRpcClient("http://bitcoin.local")._call("getblockcount")
+
+        self.assertEqual(post_mock.call_count, 3)
+
+    def test_rpc_does_not_retry_business_rpc_error(self):
+        # JSON error payload 是 RPC 调用真失败（如方法不存在），重试没意义。
+        error_response = Mock()
+        error_response.json.return_value = {
+            "result": None,
+            "error": {"code": -1, "message": "Method not found"},
+        }
+        error_response.is_error = False
+
+        from bitcoin.rpc import BitcoinRpcClient
+        from bitcoin.rpc import BitcoinRpcError
+
+        with patch(
+            "bitcoin.rpc.httpx.post", return_value=error_response
+        ) as post_mock, self.assertRaises(BitcoinRpcError):
+            BitcoinRpcClient("http://bitcoin.local")._call("getblockcount")
+
+        self.assertEqual(post_mock.call_count, 1)
+
+    def test_rpc_does_not_retry_invalid_json(self):
+        # 响应已到达但 JSON 解析失败属于服务端数据问题，不是网络层瞬断。
+        bad_response = Mock()
+        bad_response.json.side_effect = ValueError("not json")
+        bad_response.is_error = False
+
+        from bitcoin.rpc import BitcoinRpcClient
+        from bitcoin.rpc import BitcoinRpcError
+
+        with patch(
+            "bitcoin.rpc.httpx.post", return_value=bad_response
+        ) as post_mock, self.assertRaises(BitcoinRpcError):
+            BitcoinRpcClient("http://bitcoin.local")._call("getblockcount")
+
+        self.assertEqual(post_mock.call_count, 1)
+
 
 class BitcoinScanCursorAdminTests(TestCase):
     def setUp(self):
