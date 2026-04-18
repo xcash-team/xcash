@@ -20,6 +20,7 @@ from internal_api.viewsets.operations import WithdrawalReviewLogViewSet
 from internal_api.viewsets.recipient_addresses import RecipientAddressViewSet
 from internal_api.viewsets.webhooks import DeliveryAttemptViewSet
 from internal_api.viewsets.webhooks import WebhookEventViewSet
+from internal_api.viewsets.stats import StatsViewSet
 from internal_api.viewsets.withdrawals import InternalWithdrawalViewSet
 
 project_router = SimpleRouter(trailing_slash=False)
@@ -51,6 +52,7 @@ project_router.register(
 project_router.register(
     "delivery-attempts", DeliveryAttemptViewSet, basename="internal-delivery-attempt"
 )
+project_router.register("stats", StatsViewSet, basename="internal-stats")
 
 app_name = "internal_api"
 urlpatterns = [
