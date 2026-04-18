@@ -353,7 +353,7 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
             active=True,
         )
         request = APIRequestFactory().post(
-            "/v1/withdrawal/",
+            "/v1/withdrawal",
             {},
             format="json",
             HTTP_XC_APPID=project.appid,
@@ -528,7 +528,7 @@ class WithdrawalViewSetTests(TestCase):
             active=True,
         )
         request = APIRequestFactory().post(
-            "/v1/withdrawal/",
+            "/v1/withdrawal",
             {},
             format="json",
             HTTP_XC_APPID=project.appid,
@@ -595,7 +595,7 @@ class WithdrawalViewSetTests(TestCase):
             active=True,
         )
         request = APIRequestFactory().post(
-            "/v1/withdrawal/",
+            "/v1/withdrawal",
             {},
             format="json",
             HTTP_XC_APPID=project.appid,
@@ -671,7 +671,7 @@ class WithdrawalViewSetTests(TestCase):
             active=True,
         )
         request = APIRequestFactory().post(
-            "/v1/withdrawal/",
+            "/v1/withdrawal",
             {},
             format="json",
             HTTP_XC_APPID=project.appid,
@@ -747,7 +747,7 @@ class WithdrawalViewSetTests(TestCase):
             active=True,
         )
         request = APIRequestFactory().post(
-            "/v1/withdrawal/",
+            "/v1/withdrawal",
             {},
             format="json",
             HTTP_XC_APPID=project.appid,

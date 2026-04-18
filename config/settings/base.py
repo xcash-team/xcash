@@ -130,6 +130,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 ROOT_URLCONF = "config.urls"
 # https://docs.djangoproject.com/en/dev/ref/settings/#wsgi-application
 WSGI_APPLICATION = "config.wsgi.application"
+# 统一无尾斜杠 URL 规范，避免 POST 对带斜杠 URL 自动 301 变 404 或丢 body。
+APPEND_SLASH = False
 
 # APPS
 # ------------------------------------------------------------------------------

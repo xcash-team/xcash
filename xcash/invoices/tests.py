@@ -568,7 +568,7 @@ class InvoiceDuplicateOutNoTests(TestCase):
             wallet=Wallet.objects.create(),
         )
         request = APIRequestFactory().post(
-            "/v1/invoice/",
+            "/v1/invoice",
             {},
             format="json",
             HTTP_XC_APPID=project.appid,

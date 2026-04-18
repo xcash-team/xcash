@@ -273,14 +273,14 @@ class DashboardSignerSummaryTests(TestCase):
             password="secret",
             is_staff=True,
         )
-        request = self.factory.get("/signer/overview/")
+        request = self.factory.get("/signer/overview")
         request.user = staff_user
 
         with self.assertRaises(PermissionDenied):
             signer_overview_view(request)
 
     def test_signer_overview_view_renders_otp_modal_when_otp_expired(self):
-        request = self.factory.get("/signer/overview/")
+        request = self.factory.get("/signer/overview")
         request = self._attach_verified_admin_session(
             request,
             user=self.superuser,
@@ -293,27 +293,27 @@ class DashboardSignerSummaryTests(TestCase):
         self.assertEqual(
             request.session["admin_otp_pending_user_id"], self.superuser.pk
         )
-        self.assertEqual(request.session["admin_otp_next_path"], "/signer/overview/")
+        self.assertEqual(request.session["admin_otp_next_path"], "/signer/overview")
 
     def test_signer_overview_view_accepts_modal_otp_submission(self):
         device = TOTPDevice.objects.create(
             user=self.superuser, name="dashboard-admin-modal"
         )
         request = self.factory.post(
-            "/signer/overview/",
+            "/signer/overview",
             {"token": self._current_token(device)},
         )
         SessionMiddleware(lambda req: None).process_request(request)
         request.user = self.superuser
         request.user.otp_device = device
         request.session["admin_otp_pending_user_id"] = self.superuser.pk
-        request.session["admin_otp_next_path"] = "/signer/overview/"
+        request.session["admin_otp_next_path"] = "/signer/overview"
         request.session.save()
 
         response = signer_overview_view(request)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], "/signer/overview/")
+        self.assertEqual(response["Location"], "/signer/overview")
         self.assertTrue(request.session.get("otp_device_id"))
         self.assertTrue(request.session.get(ADMIN_OTP_VERIFIED_AT_SESSION_KEY))
 

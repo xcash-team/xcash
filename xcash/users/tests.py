@@ -114,7 +114,7 @@ class AdminOTPTests(TestCase):
 
     def test_signup_route_is_removed(self):
         # 账户仅允许后台内部创建后，公开注册路径必须彻底下线。
-        response = self.client.get("/signup/")
+        response = self.client.get("/signup")
 
         self.assertEqual(response.status_code, 404)
 
@@ -122,13 +122,13 @@ class AdminOTPTests(TestCase):
         self,
     ):
         # OTP 绑定/验证不能只按出口 IP 限流，否则同一办公网或本机调试会互相污染。
-        request = RequestFactory().post("/otp/setup/")
+        request = RequestFactory().post("/otp/setup")
         SessionMiddleware(lambda req: None).process_request(request)
         request.session[ADMIN_OTP_PENDING_USER_ID_SESSION_KEY] = 42
         request.session.save()
 
         key = get_admin_otp_ratelimit_key(request)
-        self.assertIn("/otp/setup/", key)
+        self.assertIn("/otp/setup", key)
         self.assertIn("user:42", key)
         self.assertIn(f"session:{request.session.session_key}", key)
 
@@ -140,11 +140,11 @@ class AdminOTPTests(TestCase):
         extra = {"REMOTE_ADDR": "10.0.0.11"}
 
         response = client.post(
-            "/login/?next=/", {"username": user.username, "password": "secret"}, **extra
+            "/login?next=/", {"username": user.username, "password": "secret"}, **extra
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], "/otp/setup/")
+        self.assertEqual(response["Location"], "/otp/setup")
         session = client.session
         self.assertEqual(session["admin_otp_pending_user_id"], user.pk)
         self.assertEqual(
@@ -163,15 +163,15 @@ class AdminOTPTests(TestCase):
         client = Client()
         extra = {"REMOTE_ADDR": "10.0.0.12"}
         client.post(
-            "/login/?next=/", {"username": user.username, "password": "secret"}, **extra
+            "/login?next=/", {"username": user.username, "password": "secret"}, **extra
         )
-        setup_page = client.get("/otp/setup/", **extra)
+        setup_page = client.get("/otp/setup", **extra)
 
         self.assertEqual(setup_page.status_code, 200)
 
         device = TOTPDevice.objects.get(user=user, confirmed=False)
         response = client.post(
-            "/otp/setup/",
+            "/otp/setup",
             {"device_name": "Primary Admin OTP", "token": self._current_token(device)},
             **extra,
         )
@@ -195,14 +195,14 @@ class AdminOTPTests(TestCase):
         extra = {"REMOTE_ADDR": "10.0.0.13"}
 
         response = client.post(
-            "/login/?next=/", {"username": user.username, "password": "secret"}, **extra
+            "/login?next=/", {"username": user.username, "password": "secret"}, **extra
         )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], "/otp/verify/")
-        self.assertEqual(client.get("/otp/verify/", **extra).status_code, 200)
+        self.assertEqual(response["Location"], "/otp/verify")
+        self.assertEqual(client.get("/otp/verify", **extra).status_code, 200)
         verify_response = client.post(
-            "/otp/verify/", {"token": self._current_token(device)}, **extra
+            "/otp/verify", {"token": self._current_token(device)}, **extra
         )
         self.assertEqual(verify_response.status_code, 302)
         self.assertEqual(verify_response["Location"], "/")
@@ -221,11 +221,11 @@ class AdminOTPTests(TestCase):
         response = client.get("/", **extra)
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], "/otp/verify/")
+        self.assertEqual(response["Location"], "/otp/verify")
         session = client.session
         self.assertEqual(session["admin_otp_pending_user_id"], user.pk)
         self.assertFalse("_auth_user_id" in session)
-        self.assertEqual(client.get("/otp/verify/", **extra).status_code, 200)
+        self.assertEqual(client.get("/otp/verify", **extra).status_code, 200)
 
     def test_user_admin_can_rotate_otp_secret_from_custom_page(self):
         admin_user = User.objects.create_superuser(

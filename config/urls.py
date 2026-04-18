@@ -17,13 +17,13 @@ urlpatterns = [
     # 自定义登录 / OTP 路由需要先于 admin.site.urls 注册，才能接管默认 /login/ 入口。
     path("", include("users.urls")),
     path(
-        "operations/inspection/",
+        "operations/inspection",
         # 改动原因：为“异常巡检”提供独立后台页，避免继续复用 admin 首页。
         admin.site.admin_view(operational_inspection_view),
         name="operational-inspection",
     ),
     path(
-        "signer/overview/",
+        "signer/overview",
         admin.site.admin_view(signer_overview_view),
         name="signer-overview",
     ),

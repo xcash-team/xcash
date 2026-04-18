@@ -11,9 +11,9 @@ app_name = "users"
 
 urlpatterns = [
     # 注册入口保留为显式 404，避免未命中 users.urls 后继续被 admin 默认路由兜底。
-    path("signup/", SignupDisabledView.as_view(), name="signup_disabled"),
+    path("signup", SignupDisabledView.as_view(), name="signup_disabled"),
     path(
-        "login/",
+        "login",
         rate_limit(
             key="ip",
             rate="100/h",
@@ -22,7 +22,7 @@ urlpatterns = [
         name="login",
     ),
     path(
-        "otp/setup/",
+        "otp/setup",
         rate_limit(
             key=get_admin_otp_ratelimit_key,
             rate="30/h",
@@ -31,7 +31,7 @@ urlpatterns = [
         name="otp_setup",
     ),
     path(
-        "otp/verify/",
+        "otp/verify",
         rate_limit(
             key=get_admin_otp_ratelimit_key,
             rate="60/h",

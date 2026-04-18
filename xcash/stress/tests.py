@@ -285,7 +285,7 @@ class StressServiceTests(SimpleTestCase):
 
         reloaded_urls = importlib.reload(project_urls)
 
-        match = resolve("/stress/webhook/", urlconf=reloaded_urls)
+        match = resolve("/stress/webhook", urlconf=reloaded_urls)
 
         self.assertEqual(match.view_name, "stress:webhook")
 
@@ -709,7 +709,7 @@ class StressRecipientSetupTests(TestCase):
         self.project = Project.objects.create(
             name="Stress Target Project",
             wallet=Wallet.objects.create(),
-            webhook="http://localhost/stress/webhook/",
+            webhook="http://localhost/stress/webhook",
             ip_white_list="*",
             active=True,
         )
@@ -903,7 +903,7 @@ class StressWebhookTests(TestCase):
         self.project = Project.objects.create(
             name="Stress Webhook Project",
             wallet=Wallet.objects.create(),
-            webhook="http://localhost:8000/stress/webhook/",
+            webhook="http://localhost:8000/stress/webhook",
             ip_white_list="*",
             active=True,
             hmac_key="stress-secret-key",
@@ -948,7 +948,7 @@ class StressWebhookTests(TestCase):
         ).hexdigest()
 
         request = self.factory.post(
-            "/stress/webhook/",
+            "/stress/webhook",
             data=body,
             content_type="application/json",
             HTTP_XC_NONCE=nonce,

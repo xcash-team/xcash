@@ -434,7 +434,7 @@ def _cleanup_orphan_stress_project(stress: StressRun) -> None:
 
 def _create_stress_project(stress: StressRun) -> Project:
     """创建当前 StressRun 专用 Project。"""
-    webhook_url = f"{settings.STRESS_WEBHOOK_BASE_URL}/stress/webhook/"
+    webhook_url = f"{settings.STRESS_WEBHOOK_BASE_URL}/stress/webhook"
     return Project.objects.create(
         name=f"Stress-{stress.pk}",
         webhook=webhook_url,

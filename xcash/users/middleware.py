@@ -11,7 +11,8 @@ class AdminOTPRequiredMiddleware:
         self.exempt_prefixes = tuple(
             prefix
             for prefix in (
-                "/login/",
+                # 登录端点已统一为无尾斜杠，豁免判定使用无斜杠前缀以覆盖 /login 本身。
+                "/login",
                 "/otp/",
                 "/logout/",
                 "/i18n/",
