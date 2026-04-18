@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
 from chains.serializers import TransferSerializer
+from common.consts import MAX_INVOICE_DURATION
+from common.consts import MIN_INVOICE_DURATION
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from invoices.models import Invoice
@@ -15,8 +17,8 @@ class InternalInvoiceCreateSerializer(serializers.ModelSerializer):
     duration = serializers.IntegerField(
         required=False,
         default=10,
-        min_value=5,
-        max_value=60,
+        min_value=MIN_INVOICE_DURATION,
+        max_value=MAX_INVOICE_DURATION,
         help_text="支付有效期（分钟），默认 10",
     )
 

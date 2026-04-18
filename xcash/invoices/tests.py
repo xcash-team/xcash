@@ -24,6 +24,7 @@ from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import TransferType
 from chains.models import Wallet
+from common.consts import MAX_INVOICE_DURATION
 from common.error_codes import ErrorCode
 from currencies.models import Crypto
 from currencies.models import ChainToken
@@ -31,11 +32,13 @@ from currencies.models import Fiat
 from invoices.admin import InvoiceAdmin
 from invoices.exceptions import InvoiceAllocationError
 from invoices.exceptions import InvoiceStatusError
+from invoices.forms import ManualInvoiceAdminForm
 from invoices.models import Invoice
 from invoices.models import InvoicePaySlot
 from invoices.models import InvoicePaySlotDiscardReason
 from invoices.models import InvoicePaySlotStatus
 from invoices.models import InvoiceStatus
+from invoices.serializers import InvoiceCreateSerializer
 from invoices.serializers import InvoiceDisplaySerializer
 from invoices.service import InvoiceService
 from invoices.tasks import check_expired
@@ -597,6 +600,22 @@ class InvoiceDuplicateOutNoTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], ErrorCode.DUPLICATE_OUT_NO.code)
+
+
+class InvoiceDurationValidationTests(TestCase):
+    """账单有效期上限在公开入口与后台入口必须保持一致。"""
+
+    def test_public_serializer_and_admin_form_share_thirty_minute_cap(self):
+        # Redis broker 下 ETA 不应超过 30 分钟；公开 API 与后台表单必须统一收紧边界。
+        self.assertEqual(MAX_INVOICE_DURATION, 30)
+        self.assertEqual(
+            InvoiceCreateSerializer().fields["duration"].max_value,
+            MAX_INVOICE_DURATION,
+        )
+        self.assertEqual(
+            ManualInvoiceAdminForm().fields["duration"].max_value,
+            MAX_INVOICE_DURATION,
+        )
 
 
 class InvoicePublicThrottleTests(TestCase):

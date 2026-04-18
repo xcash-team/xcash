@@ -76,6 +76,8 @@ services:
     <<: *django
     container_name: xcash_worker
     labels: []
+    environment:
+      REMAP_SIGTERM: SIGQUIT
     stop_grace_period: 60s
     command: /start-worker
 
