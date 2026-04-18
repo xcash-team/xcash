@@ -34,7 +34,7 @@ REDIS_URL = env.str(
 # Internal API
 # ------------------------------------------------------------------------------
 INTERNAL_API_TOKEN = env.str("INTERNAL_API_TOKEN", default="")
-INTERNAL_CALLBACK_URL = env.str("INTERNAL_CALLBACK_URL", default="")
+SAAS_CALLBACK_URL = env.str("SAAS_CALLBACK_URL", default="")
 INTERNAL_API_ALLOWED_IP = ""
 
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts

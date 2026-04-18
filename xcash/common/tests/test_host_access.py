@@ -1,3 +1,7 @@
+import importlib
+import os
+import sys
+
 from django.http import HttpResponse
 from django.test import RequestFactory
 from django.test import SimpleTestCase
@@ -20,6 +24,30 @@ class NormalizeIpHostTests(SimpleTestCase):
     def test_normalize_ip_host_rejects_invalid_value(self):
         with self.assertRaisesMessage(ValueError, "INTERNAL_API_IP"):
             normalize_ip_host("not-an-ip")
+
+
+class ProductionInternalApiHostSettingsTests(SimpleTestCase):
+    def tearDown(self):
+        sys.modules.pop("config.settings.production", None)
+        super().tearDown()
+
+    def test_internal_api_ip_defaults_to_loopback(self):
+        original = os.environ.pop("INTERNAL_API_IP", None)
+        self.addCleanup(self._restore_internal_api_ip, original)
+        os.environ.setdefault("DJANGO_SECRET_KEY", "test-secret-key")
+
+        production = importlib.import_module("config.settings.production")
+
+        self.assertEqual(production.INTERNAL_API_ALLOWED_IP, "127.0.0.1")
+        self.assertIn("127.0.0.1", production.ALLOWED_HOSTS)
+
+    @staticmethod
+    def _restore_internal_api_ip(original):
+        if original is None:
+            os.environ.pop("INTERNAL_API_IP", None)
+            return
+
+        os.environ["INTERNAL_API_IP"] = original
 
 
 @override_settings(

@@ -20,9 +20,9 @@ def send_internal_callback(
 ) -> None:
     """
     在事务提交后异步发送内部回调给 SaaS。
-    INTERNAL_CALLBACK_URL 为空则跳过。
+    SAAS_CALLBACK_URL 为空则跳过。
     """
-    if not settings.INTERNAL_CALLBACK_URL:
+    if not settings.SAAS_CALLBACK_URL:
         return
 
     transaction.on_commit(
@@ -53,7 +53,7 @@ def _deliver_internal_callback(
     currency: str,
 ) -> None:
     """Celery task：向 SaaS 发送内部回调 POST 请求。"""
-    url = settings.INTERNAL_CALLBACK_URL
+    url = settings.SAAS_CALLBACK_URL
     if not url:
         return
 
