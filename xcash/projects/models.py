@@ -140,19 +140,20 @@ class Project(models.Model):
 
     @property
     def is_ready(self) -> tuple[bool, list[str]]:
+        # 错误项采用统一的"短名词 + 状态"格式，便于前端横排拼接（如"通知地址未配置、支付地址未配置"）
         errors: list[str] = []
         if not self.ip_white_list:
-            errors.append(_("项目IP白名单未设置"))
+            errors.append(_("IP 白名单未配置"))
         if not self.webhook:
-            errors.append(_("项目通知地址未设置"))
+            errors.append(_("通知地址未配置"))
         if not self.webhook_open:
-            errors.append(_("项目通知已关闭"))
+            errors.append(_("通知开关未开启"))
         if not self.active:
             errors.append(_("项目未启用"))
         if not RecipientAddress.objects.filter(
             project=self, usage=RecipientAddressUsage.INVOICE
         ).exists():
-            errors.append(_("本项目未设置支付地址"))
+            errors.append(_("支付地址未配置"))
         return (not errors), errors
 
     def recipients(self, chain: Chain):

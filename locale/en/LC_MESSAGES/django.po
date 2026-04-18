@@ -829,21 +829,25 @@ msgstr ""
 msgid "HMAC密钥"
 msgstr "HMAC key"
 
-#: xcash/projects/models.py:102
-msgid "项目IP白名单未设置"
-msgstr "Project IP allowlist not configured"
+#: xcash/projects/models.py:144
+msgid "IP 白名单未配置"
+msgstr "IP allowlist missing"
 
-#: xcash/projects/models.py:104
-msgid "项目通知地址未设置"
-msgstr "Project notification URL not configured"
+#: xcash/projects/models.py:146
+msgid "通知地址未配置"
+msgstr "Webhook URL missing"
 
-#: xcash/projects/models.py:106
+#: xcash/projects/models.py:148
+msgid "通知开关未开启"
+msgstr "Webhook disabled"
+
+#: xcash/projects/models.py:150
 msgid "项目未启用"
 msgstr "Project disabled"
 
-#: xcash/projects/models.py:108
-msgid "本项目未设置收币地址"
-msgstr "No receiving address configured for this project"
+#: xcash/projects/models.py:154
+msgid "支付地址未配置"
+msgstr "Payment address missing"
 
 #: xcash/projects/models.py:109
 msgid "完成"
