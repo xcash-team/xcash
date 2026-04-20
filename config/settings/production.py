@@ -1,8 +1,6 @@
 # ruff: noqa: E501, F405
 import logging
 
-from common.host_access import normalize_ip_host
-
 from .base import *  # noqa
 from .base import env
 from .base import shared_processors
@@ -13,13 +11,9 @@ from .base import shared_processors
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DOMAIN = env("SITE_DOMAIN", default="localhost").strip().lower()
 SCHEME = "https"
-# 未显式配置时默认只为本机保留 internal API Host，避免空配置退化为完全不限制。
-INTERNAL_API_ALLOWED_IP = normalize_ip_host(
-    env.str("INTERNAL_API_IP", default="127.0.0.1")
-)
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", DOMAIN]
-if INTERNAL_API_ALLOWED_IP:
-    ALLOWED_HOSTS.append(INTERNAL_API_ALLOWED_IP)
+# xcash_traefik：同机内部服务（如 saas）通过 Docker 共享网络按容器名访问时的 Host 头。
+# 公网 DNS 无法解析此名，不构成对外暴露风险。
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", DOMAIN, "xcash_traefik"]
 
 # STATIC & MEDIA
 # ------------------------

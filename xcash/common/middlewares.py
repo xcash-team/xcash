@@ -5,7 +5,6 @@ from dataclasses import dataclass
 
 from django.conf import settings
 from django.http import HttpRequest
-from django.http import HttpResponseNotFound
 from django.utils import timezone
 from django_redis import get_redis_connection
 
@@ -18,34 +17,8 @@ from common.consts import TIMESTAMP_HEADER
 from common.crypto import verify_hmac
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
-from common.host_access import extract_hostname
-from common.host_access import is_internal_api_path
 from common.utils.security import is_ip_in_whitelist
 from projects.models import Project
-
-
-class InternalApiHostRestrictionMiddleware:
-    """限制配置过的内网 IP Host 只能访问 internal API。"""
-
-    def __init__(self, get_response):
-        self.get_response = get_response
-
-    def __call__(self, request: HttpRequest):
-        if not self._is_internal_api_ip_host(request):
-            return self.get_response(request)
-
-        if is_internal_api_path(request.path):
-            return self.get_response(request)
-
-        return HttpResponseNotFound()
-
-    @staticmethod
-    def _is_internal_api_ip_host(request: HttpRequest) -> bool:
-        allowed_host = getattr(settings, "INTERNAL_API_ALLOWED_IP", "")
-        if not allowed_host:
-            return False
-
-        return extract_hostname(request.get_host()) == allowed_host
 
 
 class AdminSessionTimeoutMiddleware:

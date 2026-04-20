@@ -5,6 +5,13 @@ volumes:
   django_db_data: {}
   signer_db_data: {}
 
+# 同机 SaaS 等可信服务通过加入 xcash_public 按容器名互通（如 http://xcash_traefik）。
+# xcash 自己总是创建该网络；即便没有外部服务加入也不影响本项目正常运行。
+networks:
+  default:
+  xcash_public:
+    name: xcash_public
+
 services:
   redis:
     image: redis:8.2.1
@@ -79,6 +86,8 @@ services:
     environment:
       REMAP_SIGTERM: SIGQUIT
     stop_grace_period: 60s
+    # worker 承担对 SaaS 的内部回调推送，需要能按容器名解析 saas 侧 traefik。
+    networks: [default, xcash_public]
     command: /start-worker
 
   beat:
@@ -99,5 +108,7 @@ services:
       - --entrypoints.web.address=:80
     ports:
       - "${LISTEN_TO}:6688:80"
+    # 对外（公网）走端口映射，对内（SaaS 同机调用）通过 xcash_public 网络按容器名直连。
+    networks: [default, xcash_public]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
