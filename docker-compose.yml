@@ -109,6 +109,12 @@ services:
     ports:
       - "${LISTEN_TO}:6688:80"
     # 对外（公网）走端口映射，对内（SaaS 同机调用）通过 xcash_public 网络按容器名直连。
-    networks: [default, xcash_public]
+    # container_name 里的下划线在 Django HTTP_HOST 校验（RFC 1034/1035）中非法，
+    # 故在 xcash_public 上额外暴露一个合规的 DNS alias 供 SaaS 使用。
+    networks:
+      default: {}
+      xcash_public:
+        aliases:
+          - xcash-traefik
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
