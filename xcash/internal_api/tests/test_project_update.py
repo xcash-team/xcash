@@ -344,7 +344,7 @@ class TestGatherPeriodValidation:
     def test_accepts_max(self, client, project):
         response = client.patch(
             _url(project),
-            data={"gather_period": 365},
+            data={"gather_period": 525600},
             content_type="application/json",
             HTTP_AUTHORIZATION=AUTH_HEADER,
         )
@@ -353,7 +353,7 @@ class TestGatherPeriodValidation:
     def test_rejects_over_max(self, client, project):
         response = client.patch(
             _url(project),
-            data={"gather_period": 366},
+            data={"gather_period": 525601},
             content_type="application/json",
             HTTP_AUTHORIZATION=AUTH_HEADER,
         )

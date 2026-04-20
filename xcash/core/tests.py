@@ -11,6 +11,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.core.cache import cache as _cache
 from django.core.management import call_command
 from django.test import TestCase
 from django.test import override_settings
@@ -30,7 +31,6 @@ from chains.models import OnchainTransfer
 from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
-from django.core.cache import cache as _cache
 from chains.tasks import block_number_updated
 from chains.tasks import confirm_transfer
 from chains.tasks import update_the_latest_block
@@ -741,7 +741,9 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         RecipientAddress.objects.create(
             project=project,
             chain_type=chain.type,
-            address="0x000000000000000000000000000000000000beef",
+            address=Web3.to_checksum_address(
+                "0x000000000000000000000000000000000000beef"
+            ),
             usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         deposit_address = DepositAddress.get_address(chain, customer)
@@ -1042,7 +1044,9 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         RecipientAddress.objects.create(
             project=project,
             chain_type=chain.type,
-            address="0x000000000000000000000000000000000000beef",
+            address=Web3.to_checksum_address(
+                "0x000000000000000000000000000000000000beef"
+            ),
             usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         deposit_address = DepositAddress.get_address(chain, customer)
@@ -1239,7 +1243,9 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         RecipientAddress.objects.create(
             project=project,
             chain_type=chain.type,
-            address="0x000000000000000000000000000000000000beef",
+            address=Web3.to_checksum_address(
+                "0x000000000000000000000000000000000000beef"
+            ),
             usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         deposit_address = DepositAddress.get_address(chain, customer)
@@ -1401,7 +1407,9 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         RecipientAddress.objects.create(
             project=project,
             chain_type=chain.type,
-            address="0x000000000000000000000000000000000000beef",
+            address=Web3.to_checksum_address(
+                "0x000000000000000000000000000000000000beef"
+            ),
             usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         deposit_address = DepositAddress.get_address(chain, customer)
@@ -1476,7 +1484,9 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         RecipientAddress.objects.create(
             project=project,
             chain_type=chain.type,
-            address="0x000000000000000000000000000000000000beef",
+            address=Web3.to_checksum_address(
+                "0x000000000000000000000000000000000000beef"
+            ),
             usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
         )
         deposit_address = DepositAddress.get_address(chain, customer)

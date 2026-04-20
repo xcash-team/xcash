@@ -5,9 +5,10 @@ from datetime import timedelta
 import httpx
 import structlog
 from celery import shared_task
-from django.db import models
 from django.db import transaction
 from django.utils import timezone
+
+from common.decorators import singleton_task
 
 from .models import DepositStressCase
 from .models import DepositStressCaseStatus
@@ -17,7 +18,6 @@ from .models import StressRun
 from .models import StressRunStatus
 from .models import WithdrawalStressCase
 from .models import WithdrawalStressCaseStatus
-from common.decorators import singleton_task
 from .payment import simulate_payment
 from .service import StressService
 
@@ -45,12 +45,12 @@ def prepare_stress(stress_run_id: int) -> None:
 # 瞬态连接错误：Django 服务未就绪、连接被重置等，可安全重试。
 _TRANSIENT_EXC = (ConnectionError, httpx.ConnectError, httpx.RemoteProtocolError)
 
-_RETRY_KWARGS = dict(
-    autoretry_for=_TRANSIENT_EXC,
-    retry_backoff=3,
-    retry_backoff_max=30,
-    max_retries=5,
-)
+_RETRY_KWARGS = {
+    "autoretry_for": _TRANSIENT_EXC,
+    "retry_backoff": 3,
+    "retry_backoff_max": 30,
+    "max_retries": 5,
+}
 
 
 @shared_task(ignore_result=True, soft_time_limit=120, time_limit=180, **_RETRY_KWARGS)
@@ -457,11 +457,13 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             tx_hashes.append(f"0x{h}")
         else:
             tx_hashes.append(h.removeprefix("0x"))
-    # 基于进度判定：uncollected 连续 2 轮不下降才判定停滞退出。相比固定时间
-    # 窗口，能自适应不同规模的压测——小规模提早收尾，大规模随归集流水线
-    # 的真实吞吐继续等待，避免尾部已归集的 case 被误判为失败。
+    # 基于分阶段进度判定：区分"未匹配到 Deposit"、"已匹配但尚未建单"、
+    # "已建单待链上确认" 三个阶段。CollectSchedule 重构后，归集任务会先经历
+    # "等待 schedule 到期 -> 创建 DepositCollection -> 链上广播/确认" 三步，
+    # 只看最终 uncollected 数会把"已建单但待确认"误判成无进展。
+    expected_case_hashes = {c.tx_hash.removeprefix("0x") for c in webhook_ok_cases}
     stall_rounds = 0
-    prev_uncollected: int | None = None
+    prev_progress_key: tuple[int, int, int] | None = None
     while True:
         # 同步调用归集逻辑
         try:
@@ -469,38 +471,56 @@ def verify_deposit_collection(stress_run_id: int) -> None:
         except Exception:
             logger.warning("stress.deposit_collection.gather_failed", exc_info=True)
 
-        # 检查所有关联 Deposit 是否归集完成
-        uncollected = Deposit.objects.filter(
-            transfer__hash__in=tx_hashes,
-            customer__project=stress.project,
-            status="completed",
-        ).filter(
-            models.Q(collection__isnull=True)
-            | models.Q(collection__collected_at__isnull=True)
-        ).count()
+        deposits = list(
+            Deposit.objects.filter(
+                transfer__hash__in=tx_hashes,
+                customer__project=stress.project,
+                status="completed",
+            )
+            .select_related("transfer", "collection")
+            .order_by("pk")
+        )
+        matched_hashes = {deposit.transfer.hash.removeprefix("0x") for deposit in deposits}
+        missing_deposit_count = len(expected_case_hashes - matched_hashes)
+        no_collection_count = sum(
+            1 for deposit in deposits if deposit.collection_id is None
+        )
+        pending_confirm_count = sum(
+            1
+            for deposit in deposits
+            if deposit.collection_id is not None
+            and deposit.collection.collected_at is None
+        )
+        progress_key = (
+            missing_deposit_count,
+            no_collection_count,
+            pending_confirm_count,
+        )
 
-        if uncollected == 0:
+        if progress_key == (0, 0, 0):
             logger.info(
                 "stress.deposit_collection.all_collected",
                 stress_run_id=stress_run_id,
             )
             break
 
-        # 第 1 轮无参考值；从第 2 轮开始与上一轮比较。只要 uncollected 还在
-        # 下降就重置停滞计数，避免慢吞吐被误判。
-        if prev_uncollected is not None and uncollected >= prev_uncollected:
+        # 第 1 轮无参考值；从第 2 轮开始比较阶段进度。只要任一 case 从
+        # "无 Deposit -> 无 Collection -> 待确认" 继续向前推进，就重置停滞计数。
+        if prev_progress_key is not None and progress_key >= prev_progress_key:
             stall_rounds += 1
             if stall_rounds >= 2:
                 logger.warning(
                     "stress.deposit_collection.stalled",
                     stress_run_id=stress_run_id,
-                    uncollected=uncollected,
+                    missing_deposit_count=missing_deposit_count,
+                    no_collection_count=no_collection_count,
+                    pending_confirm_count=pending_confirm_count,
                 )
                 break
         else:
             stall_rounds = 0
 
-        prev_uncollected = uncollected
+        prev_progress_key = progress_key
         time.sleep(30)
 
     # 逐个验证归集结果

@@ -5,29 +5,30 @@ from decimal import Decimal
 
 import structlog
 from django.db import transaction as db_transaction
-from django.db.models import F
 from django.utils import timezone
 
-logger = structlog.get_logger()
-
-from chains.adapters import AdapterFactory
+from chains.adapters import AdapterFactory  # noqa: F401
 from chains.models import AddressUsage
+from chains.models import BroadcastTask
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import TransferType
+from common.internal_callback import send_internal_callback
 from common.utils.math import format_decimal_stripped
 from deposits.exceptions import DepositStatusError
+from deposits.models import CollectSchedule
 from deposits.models import Deposit
 from deposits.models import DepositAddress
 from deposits.models import DepositCollection
 from deposits.models import DepositStatus
 from deposits.models import GasRecharge
-from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
-from common.internal_callback import send_internal_callback
+from projects.models import RecipientAddressUsage
 from webhooks.service import WebhookService
+
+logger = structlog.get_logger()
 
 
 class GasRechargeService:
@@ -241,6 +242,7 @@ class DepositService:
                 worth=str(deposit.worth),
                 currency=deposit.transfer.crypto.symbol,
             )
+            cls.schedule_collection_after_confirm(deposit)
 
     @classmethod
     @db_transaction.atomic
@@ -256,11 +258,7 @@ class DepositService:
     @classmethod
     def prepare_collection(cls, deposit: Deposit) -> dict | None:
         """
-        归集准备阶段（事务外调用）：读取候选组、做最基础的"有余额、该归集"检查，
-        返回 execute_collection 创建关系所需的参数。
-
-        gas 充足性判断已收敛到广播层 EvmBroadcastTask.broadcast 的 pre-flight，
-        本阶段不再读取 gas_price、不再计算 gas_cost、不再触发 GasRecharge。
+        归集准备阶段（事务外调用）：读取候选组并生成 execute_collection 所需参数。
 
         本方法不加数据库锁，execute_collection 会在事务内对候选组再次加锁校验，
         避免 prepare 与 execute 之间的状态漂移引起重复归集。
@@ -270,41 +268,7 @@ class DepositService:
         grouped_deposits, deposit = cls._resolve_collection_group(deposit)
         if deposit is None:
             return None
-
-        chain = deposit.transfer.chain
-        crypto = deposit.transfer.crypto
-        project = deposit.customer.project
-
-        recipient = cls._select_recipient(project_id=project.id, chain_type=chain.type)
-        if recipient is None:
-            return None
-
-        deposit_addr = DepositAddress.objects.get(
-            customer=deposit.customer,
-            chain_type=chain.type,
-        ).address
-        adapter = AdapterFactory.get_adapter(chain.type)
-
-        # 快速退出：链上余额为 0 不可能归集
-        balance_raw = adapter.get_balance(deposit_addr.address, chain, crypto)
-        if balance_raw <= 0:
-            return None
-
-        # 归集金额 = 充值金额之和（非余额），保证对账一致
-        amount = cls._calculate_collection_amount(grouped_deposits)
-
-        if not cls._should_collect(deposit, amount):
-            return None
-
-        return {
-            "group_ids": [item.pk for item in grouped_deposits],
-            "address": deposit_addr,
-            "crypto": crypto,
-            "chain": chain,
-            "recipient_address": recipient.address,
-            "amount": amount,
-            "deposit_id": deposit.id,
-        }
+        return cls._build_collection_params(grouped_deposits, deposit)
 
     @classmethod
     @db_transaction.atomic
@@ -347,12 +311,7 @@ class DepositService:
 
     @classmethod
     def collect_deposit(cls, deposit: Deposit) -> bool:
-        """归集便捷封装：事务外 prepare（含链上 RPC）+ 事务内 execute（DB 原子）。
-
-        拆分原则：链上 RPC（余额/gas/gas 补充）一律在事务外执行，避免
-        长事务持有行锁期间阻塞并发操作；execute 的短事务只做本地 DB
-        的加锁再校验 + 三步原子写入。
-        """
+        """直接基于某笔 Deposit 的分组创建一笔归集任务。"""
         try:
             params = cls.prepare_collection(deposit)
             if params is None:
@@ -364,6 +323,66 @@ class DepositService:
                 deposit_id=getattr(deposit, "id", None) or getattr(deposit, "pk", None),
             )
             return False
+
+    @classmethod
+    def schedule_collection_after_confirm(cls, deposit: Deposit) -> None:
+        now = timezone.now()
+        cls._upsert_collect_schedule(
+            deposit=deposit,
+            next_collect_time=now
+            + timedelta(minutes=deposit.customer.project.gather_period),
+        )
+
+    @classmethod
+    def schedule_collection_after_failure(cls, deposit: Deposit) -> None:
+        cls._upsert_collect_schedule(
+            deposit=deposit,
+            next_collect_time=timezone.now()
+            + timedelta(minutes=deposit.customer.project.gather_period),
+        )
+
+    @classmethod
+    def collect_due_schedule(cls, schedule_id: int) -> bool:
+        with db_transaction.atomic():
+            schedule = (
+                CollectSchedule.objects.select_related(
+                    "deposit_address__customer__project",
+                    "chain",
+                    "crypto",
+                )
+                .select_for_update(skip_locked=True)
+                .filter(pk=schedule_id)
+                .first()
+            )
+            if schedule is None:
+                return False
+
+            grouped_deposits = cls._snapshot_schedule_collectible_group(schedule)
+            if not grouped_deposits:
+                schedule.delete()
+                return False
+
+            amount = cls._calculate_collection_amount(grouped_deposits)
+            project = schedule.deposit_address.customer.project
+            if not cls._should_collect_due_group(
+                project=project,
+                crypto=schedule.crypto,
+                collection_amount=amount,
+            ):
+                schedule.delete()
+                return False
+
+            params = cls._build_collection_params(
+                grouped_deposits,
+                grouped_deposits[0],
+            )
+            if params is None:
+                return False
+
+            collected = cls.execute_collection(params)
+            if collected:
+                schedule.delete()
+            return collected
 
     @classmethod
     def _resolve_collection_group(
@@ -387,9 +406,54 @@ class DepositService:
         """归集金额 = 分组内所有充值金额之和，保证对账一致：充多少归多少。"""
         return sum((d.transfer.amount for d in grouped_deposits), Decimal("0"))
 
+    @classmethod
+    def _build_collection_params(
+        cls, grouped_deposits: list[Deposit], deposit: Deposit
+    ) -> dict | None:
+        chain = deposit.transfer.chain
+        crypto = deposit.transfer.crypto
+        project = deposit.customer.project
+
+        recipient = cls._select_recipient(project_id=project.id, chain_type=chain.type)
+        if recipient is None:
+            return None
+
+        deposit_addr = DepositAddress.objects.get(
+            customer=deposit.customer,
+            chain_type=chain.type,
+        ).address
+        amount = cls._calculate_collection_amount(grouped_deposits)
+        return {
+            "group_ids": [item.pk for item in grouped_deposits],
+            "address": deposit_addr,
+            "crypto": crypto,
+            "chain": chain,
+            "recipient_address": recipient.address,
+            "amount": amount,
+            "deposit_id": deposit.id,
+        }
+
+    @classmethod
+    def _upsert_collect_schedule(
+        cls,
+        *,
+        deposit: Deposit,
+        next_collect_time,
+    ) -> tuple[CollectSchedule, bool]:
+        deposit_address = DepositAddress.objects.get(
+            customer=deposit.customer,
+            chain_type=deposit.transfer.chain.type,
+        )
+        return CollectSchedule.objects.update_or_create(
+            deposit_address=deposit_address,
+            chain=deposit.transfer.chain,
+            crypto=deposit.transfer.crypto,
+            defaults={"next_collect_time": next_collect_time},
+        )
+
     @staticmethod
     def try_match_gas_recharge(
-        transfer: OnchainTransfer, broadcast_task: "BroadcastTask"
+        transfer: OnchainTransfer, broadcast_task: BroadcastTask
     ) -> bool:
         """通过 BroadcastTask 识别 Vault → 充币地址的 Gas 补充转账，并关联到 GasRecharge 记录。"""
         transfer.type = TransferType.GasRecharge
@@ -407,7 +471,7 @@ class DepositService:
     def try_match_collection(
         cls,
         transfer: OnchainTransfer,
-        broadcast_task: "BroadcastTask",
+        broadcast_task: BroadcastTask,
     ) -> bool:
         """通过 BroadcastTask 将链上归集转账与 DepositCollection 记录关联。"""
         collection = (
@@ -462,26 +526,10 @@ class DepositService:
             update_fields=["collection_hash", "transfer", "collected_at", "updated_at"]
         )
 
-    @staticmethod
+    @classmethod
     @db_transaction.atomic
-    def release_failed_collection(*, broadcast_task) -> None:
-        """BroadcastTask 终态失败时调用：解绑 deposits + 删除 collection。
-
-        与 drop_collection（reorg 场景下保留关系）语义互补：当广播任务走到
-        FINALIZED+FAILED 终态、不再有重试机会时，必须把绑定的 deposits 释放
-        回 collection__isnull=True 状态，下一轮 gather_deposits 才能重新发起
-        归集，否则这些 deposit 会永久卡死在已失败的 collection 上。
-
-        同时对每条被释放的 deposit 累加 failed_collection_attempts：gather_deposits
-        自身的累加只覆盖 collect_deposit 返回 False 的路径，而 pre-flight revert /
-        链上 receipt.status=0 这类"collect_deposit 已返回 True、但广播任务终态失败"
-        的情形，会把 deposit 放回候选池但不会走到 gather 的累加分支，必须在释放时
-        显式累加，避免配错 recipient 等"确定性失败"形成无限重试循环。用 F 表达式
-        原子自增，防止读-改-写 race condition。
-
-        显式先 update 再 delete，以刷新 deposits.updated_at（on_delete=SET_NULL
-        的级联清空不会更新 updated_at，会影响归集超时监控）。
-        """
+    def release_failed_collection(cls, *, broadcast_task) -> None:
+        """BroadcastTask 终态失败时调用：解绑 deposits、删除 collection、重建 schedule。"""
         collection = (
             DepositCollection.objects.select_for_update()
             .filter(broadcast_task=broadcast_task)
@@ -489,12 +537,17 @@ class DepositService:
         )
         if collection is None:
             return
-        collection.deposits.update(
-            collection=None,
-            failed_collection_attempts=F("failed_collection_attempts") + 1,
-            updated_at=timezone.now(),
+        released_deposits = list(
+            collection.deposits.select_related(
+                "customer__project",
+                "transfer__chain",
+                "transfer__crypto",
+            )
         )
+        collection.deposits.update(collection=None, updated_at=timezone.now())
         collection.delete()
+        for deposit in released_deposits:
+            cls.schedule_collection_after_failure(deposit)
 
     @staticmethod
     def _select_recipient(*, project_id: int, chain_type: ChainType | str):
@@ -513,10 +566,11 @@ class DepositService:
         return Decimal(raw_value).scaleb(-decimals)
 
     @classmethod
-    def _should_collect(cls, deposit: Deposit, collection_amount: Decimal) -> bool:
-        crypto = deposit.transfer.crypto
-        project = deposit.customer.project
-
+    def _should_collect_due_group(
+        cls, *, project, crypto, collection_amount: Decimal
+    ) -> bool:
+        if project.gather_worth == 0:
+            return True
         try:
             worth = collection_amount * crypto.price("USD")
         except KeyError:
@@ -524,13 +578,8 @@ class DepositService:
                 "缺少代币价格，直接触发归集",
                 crypto=crypto.symbol,
             )
-            worth = project.gather_worth
-
-        if worth >= project.gather_worth:
             return True
-
-        deadline = deposit.created_at + timedelta(days=project.gather_period)
-        return timezone.now() >= deadline
+        return worth >= project.gather_worth
 
     @staticmethod
     def _lock_pending_group_ids(group_ids: list[int]) -> set[int]:
@@ -563,6 +612,29 @@ class DepositService:
                 customer_id=deposit.customer_id,
                 transfer__chain_id=deposit.transfer.chain_id,
                 transfer__crypto_id=deposit.transfer.crypto_id,
+                status=DepositStatus.COMPLETED,
+                collection__isnull=True,
+            )
+            .order_by("created_at", "pk")
+        )
+
+    @staticmethod
+    def _snapshot_schedule_collectible_group(schedule: CollectSchedule) -> list[Deposit]:
+        customer_id = getattr(
+            schedule.deposit_address,
+            "customer_id",
+            schedule.deposit_address.customer.pk,
+        )
+        chain_id = getattr(schedule, "chain_id", schedule.chain.pk)
+        crypto_id = getattr(schedule, "crypto_id", schedule.crypto.pk)
+        return list(
+            Deposit.objects.select_related(
+                "customer", "customer__project", "transfer__crypto", "transfer__chain"
+            )
+            .filter(
+                customer_id=customer_id,
+                transfer__chain_id=chain_id,
+                transfer__crypto_id=crypto_id,
                 status=DepositStatus.COMPLETED,
                 collection__isnull=True,
             )

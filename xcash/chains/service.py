@@ -196,7 +196,6 @@ class TransferService:
             "from_address": (existing.from_address, observed.from_address),
             "to_address": (existing.to_address, observed.to_address),
             "value": (existing.value, observed.value),
-            "amount": (existing.amount, observed.amount),
             "timestamp": (existing.timestamp, observed.timestamp),
         }
         differences = {

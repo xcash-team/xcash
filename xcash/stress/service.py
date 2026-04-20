@@ -67,10 +67,11 @@ class StressService:
             if stress.withdrawal_count > 0 or stress.deposit_count > 0:
                 _setup_wallet_for_withdrawal(project)
 
-            # 充币测试：设置 gather_worth=0 以确保任意金额立即触发归集
+            # 充币压测：到期即归集，并把首次窗口压到 1 分钟，避免验证阶段久等。
             if stress.deposit_count > 0:
                 project.gather_worth = Decimal("0")
-                project.save(update_fields=["gather_worth"])
+                project.gather_period = 1
+                project.save(update_fields=["gather_worth", "gather_period"])
 
             stress.project = project
             stress.error = ""
@@ -545,6 +546,17 @@ _DEPOSIT_AMOUNT_RANGES = {
 }
 
 
+def _sample_decimal_amount(
+    *, lo: Decimal, hi: Decimal, decimal_places: int = 8
+) -> Decimal:
+    """按固定小数精度采样金额，避免 float/uniform 路径引入尾差。"""
+    scale = 10**decimal_places
+    lo_units = int(lo * scale)
+    hi_units = int(hi * scale)
+    sampled_units = random.randint(lo_units, hi_units)  # noqa: S311
+    return Decimal(sampled_units).scaleb(-decimal_places)
+
+
 def _build_deposit_cases(stress: StressRun) -> list[DepositStressCase]:
     """构建本轮待执行的 DepositStressCase 列表。
 
@@ -574,7 +586,7 @@ def _build_deposit_cases(stress: StressRun) -> list[DepositStressCase]:
         offset = max(0.0, min(total_seconds, random.gauss(mu, sigma)))
         crypto_symbol, chain_code = random.choice(STRESS_DEPOSIT_METHOD_CHOICES)  # noqa: S311
         lo, hi = _DEPOSIT_AMOUNT_RANGES[crypto_symbol]
-        amount = Decimal(str(round(random.uniform(float(lo), float(hi)), 8)))  # noqa: S311
+        amount = _sample_decimal_amount(lo=lo, hi=hi, decimal_places=8)
 
         cases.append(
             DepositStressCase(
@@ -701,4 +713,3 @@ def _fund_evm_vault(project: Project) -> None:
         amount="10000000",
         tx_hash=tx_hash.hex(),
     )
-

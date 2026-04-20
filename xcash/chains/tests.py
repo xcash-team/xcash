@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from decimal import Decimal
 from io import StringIO
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -1120,14 +1121,13 @@ class TransferServiceCreateObservedTests(TestCase):
         enqueue_mock.assert_called_once()
 
     @patch("chains.service.TransferService.enqueue_processing")
-    def test_conflicting_content_returns_conflict_true(self, enqueue_mock):
+    def test_amount_precision_difference_does_not_trigger_conflict(self, enqueue_mock):
         from chains.service import ObservedTransferPayload
         from chains.service import TransferService
 
         TransferService.create_observed_transfer(observed=self.payload)
 
-        # 相同唯一键但不同 amount
-        conflicting = ObservedTransferPayload(
+        replay = ObservedTransferPayload(
             chain=self.payload.chain,
             block=self.payload.block,
             tx_hash=self.payload.tx_hash,
@@ -1136,7 +1136,33 @@ class TransferServiceCreateObservedTests(TestCase):
             to_address=self.payload.to_address,
             crypto=self.payload.crypto,
             value=self.payload.value,
-            amount=999,  # 不同金额
+            amount=Decimal("0.00000001"),
+            timestamp=self.payload.timestamp,
+            occurred_at=self.payload.occurred_at,
+            source="test-amount-precision",
+        )
+        result = TransferService.create_observed_transfer(observed=replay)
+
+        self.assertFalse(result.created)
+        self.assertFalse(result.conflict)
+
+    @patch("chains.service.TransferService.enqueue_processing")
+    def test_conflicting_value_returns_conflict_true(self, enqueue_mock):
+        from chains.service import ObservedTransferPayload
+        from chains.service import TransferService
+
+        TransferService.create_observed_transfer(observed=self.payload)
+
+        conflicting = ObservedTransferPayload(
+            chain=self.payload.chain,
+            block=self.payload.block,
+            tx_hash=self.payload.tx_hash,
+            event_id=self.payload.event_id,
+            from_address=self.payload.from_address,
+            to_address=self.payload.to_address,
+            crypto=self.payload.crypto,
+            value=Decimal("999"),
+            amount=self.payload.amount,
             timestamp=self.payload.timestamp,
             occurred_at=self.payload.occurred_at,
             source="test-conflict",

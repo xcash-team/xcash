@@ -14,34 +14,50 @@ from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.urls import resolve
+from django.utils import timezone
 from hexbytes import HexBytes
 from stress.bitcoin import BitcoinStressClient
 from stress.bitcoin import _build_wallet_clients
 from stress.bitcoin import send_btc
 from stress.evm import send_erc20
 from stress.evm import send_native
+from stress.models import DepositStressCase
+from stress.models import DepositStressCaseStatus
 from stress.models import InvoiceStressCase
 from stress.models import InvoiceStressCaseStatus
 from stress.models import StressRun
 from stress.models import StressRunStatus
 from stress.payment import simulate_payment
 from stress.service import _ANVIL_RECIPIENT_ADDRESSES
+from stress.service import _build_deposit_cases
 from stress.service import StressService
 from stress.service import _require_stress_methods_ready
 from stress.service import _setup_recipient_addresses
 from stress.tasks import _execute
 from stress.tasks import prepare_stress
+from stress.tasks import verify_deposit_collection
 from stress.views import _handle_webhook
+from web3 import Web3
 
+from chains.models import Address
+from chains.models import AddressUsage
+from chains.models import BroadcastTask
 from chains.models import Chain
 from chains.models import ChainType
+from chains.models import OnchainTransfer
+from chains.models import TransferStatus
+from chains.models import TransferType
 from chains.models import Wallet
 from currencies.models import ChainToken
 from currencies.models import Crypto
+from deposits.models import Deposit
+from deposits.models import DepositCollection
+from deposits.models import DepositStatus
 from invoices.models import Invoice
 from projects.models import Project
 from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
+from users.models import Customer
 
 
 @override_settings(STRESS_WEBHOOK_BASE_URL="http://localhost")
@@ -224,6 +240,31 @@ class StressServiceTests(SimpleTestCase):
             StressService.prepare(stress)
 
         bulk_create_mock.assert_not_called()
+
+    def test_build_deposit_cases_uses_decimal_sampling_without_float_uniform(self):
+        stress = StressRun(
+            id=24,
+            deposit_count=1,
+            deposit_customer_count=1,
+        )
+
+        with (
+            patch("stress.service.random.gauss", return_value=0.0),
+            patch(
+                "stress.service.random.choice",
+                return_value=("ETH", "ethereum-local"),
+            ),
+            patch("stress.service.random.randint", return_value=1234567),
+            patch("stress.service.random.shuffle"),
+            patch(
+                "stress.service.random.uniform",
+                side_effect=AssertionError("不应走 float uniform 路径"),
+            ),
+        ):
+            cases = _build_deposit_cases(stress)
+
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0].amount, Decimal("0.01234567"))
 
     def test_invoice_stress_case_model_has_no_scenario_field(self):
         with self.assertRaises(FieldDoesNotExist):
@@ -969,3 +1010,131 @@ class StressWebhookTests(TestCase):
         self.case.refresh_from_db()
         self.assertEqual(self.case.status, InvoiceStressCaseStatus.SUCCEEDED)
         self.assertTrue(self.case.webhook_received)
+
+
+class DepositCollectionVerificationTests(TestCase):
+    def setUp(self):
+        self.project = Project.objects.create(
+            name="Stress Deposit Verify Project",
+            wallet=Wallet.objects.create(),
+            webhook="http://localhost:8000/stress/webhook",
+            ip_white_list="*",
+            active=True,
+            hmac_key="stress-secret-key",
+        )
+        self.stress_run = StressRun.objects.create(
+            name="stress-deposit-verify",
+            deposit_count=1,
+            status=StressRunStatus.RUNNING,
+            project=self.project,
+        )
+        self.customer = Customer.objects.create(project=self.project, uid="dep-user-1")
+        native = Crypto.objects.create(
+            name="Stress Verify Native",
+            symbol="SVN",
+            coingecko_id="stress-verify-native",
+        )
+        self.crypto = Crypto.objects.create(
+            name="Stress Verify Token",
+            symbol="SVT",
+            coingecko_id="stress-verify-token",
+            prices={"USD": "1"},
+        )
+        self.chain = Chain.objects.create(
+            name="Stress Verify Chain",
+            code="stress-verify-chain",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=2901,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        self.transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=1,
+            hash="0x" + "a" * 64,
+            event_id="erc20:stress-verify",
+            crypto=self.crypto,
+            from_address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000d01"
+            ),
+            to_address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000d02"
+            ),
+            value="1",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        self.deposit = Deposit.objects.create(
+            customer=self.customer,
+            transfer=self.transfer,
+            status=DepositStatus.COMPLETED,
+        )
+        self.case = DepositStressCase.objects.create(
+            stress_run=self.stress_run,
+            sequence=1,
+            scheduled_offset=0,
+            customer_uid=self.customer.uid,
+            crypto=self.crypto.symbol,
+            chain=self.chain.code,
+            deposit_address=self.transfer.to_address,
+            amount=Decimal("1"),
+            payer_address=self.transfer.from_address,
+            tx_hash=self.transfer.hash,
+            status=DepositStressCaseStatus.WEBHOOK_OK,
+        )
+
+    def test_verify_deposit_collection_treats_created_collection_as_progress(self):
+        sleep_round = {"count": 0}
+
+        def advance_pipeline(_seconds):
+            sleep_round["count"] += 1
+            if sleep_round["count"] == 2:
+                collection = DepositCollection.objects.create(
+                    broadcast_task=BroadcastTask.objects.create(
+                        chain=self.chain,
+                        address=Address.objects.create(
+                            wallet=self.project.wallet,
+                            chain_type=ChainType.EVM,
+                            usage=AddressUsage.Deposit,
+                            bip44_account=0,
+                            address_index=99,
+                            address=Web3.to_checksum_address(
+                                "0x0000000000000000000000000000000000000d03"
+                            ),
+                        ),
+                        transfer_type=TransferType.DepositCollection,
+                        crypto=self.crypto,
+                        recipient=Web3.to_checksum_address(
+                            "0x0000000000000000000000000000000000000d04"
+                        ),
+                        amount=Decimal("1"),
+                    )
+                )
+                Deposit.objects.filter(pk=self.deposit.pk).update(collection=collection)
+            elif sleep_round["count"] == 3:
+                self.deposit.refresh_from_db()
+                collection = self.deposit.collection
+                collection.collection_hash = "0x" + "b" * 64
+                collection.collected_at = timezone.now()
+                collection.save(
+                    update_fields=["collection_hash", "collected_at", "updated_at"]
+                )
+
+        with (
+            patch("deposits.tasks.gather_deposits"),
+            patch("stress.tasks.time.sleep", side_effect=advance_pipeline),
+        ):
+            verify_deposit_collection.run(self.stress_run.pk)
+
+        self.case.refresh_from_db()
+        self.stress_run.refresh_from_db()
+
+        self.assertEqual(self.case.status, DepositStressCaseStatus.SUCCEEDED)
+        self.assertTrue(self.case.collection_verified)
+        self.assertEqual(self.case.collection_hash, "0x" + "b" * 64)
+        self.assertEqual(self.stress_run.succeeded, 1)
+        self.assertEqual(self.stress_run.failed, 0)

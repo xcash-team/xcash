@@ -1,5 +1,6 @@
 import unittest
 from contextlib import nullcontext
+from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from chains.models import TransferType
 from chains.models import Wallet
 from currencies.models import Crypto
 from currencies.models import ChainToken
+from deposits.models import CollectSchedule
 from deposits.models import Deposit
 from deposits.models import DepositAddress
 from deposits.models import DepositCollection
@@ -41,6 +43,201 @@ from users.models import Customer
 from users.models import User
 from common.error_codes import ErrorCode
 from deposits.viewsets import DepositViewSet
+
+
+class _CollectScheduleQuerySet:
+    def __init__(self, manager, rows: list):
+        self._manager = manager
+        self._rows = list(rows)
+
+    @staticmethod
+    def _resolve_lookup_value(row, key: str):
+        value = row
+        for part in key.split("__"):
+            value = getattr(value, part)
+        return value
+
+    @classmethod
+    def _matches(cls, row, lookup: dict) -> bool:
+        for raw_key, expected in lookup.items():
+            key, _, suffix = raw_key.partition("__")
+            actual = cls._resolve_lookup_value(row, key)
+            if suffix == "":
+                if actual != expected:
+                    return False
+            elif suffix == "lte":
+                if actual > expected:
+                    return False
+            elif suffix == "lt":
+                if actual >= expected:
+                    return False
+            elif suffix == "gte":
+                if actual < expected:
+                    return False
+            elif suffix == "gt":
+                if actual <= expected:
+                    return False
+            elif suffix == "isnull":
+                if bool(actual is None) != bool(expected):
+                    return False
+            elif suffix == "in":
+                if actual not in expected:
+                    return False
+            else:
+                raise AssertionError(f"不支持的 lookup: {raw_key}")
+        return True
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def exists(self):
+        return bool(self._rows)
+
+    def count(self):
+        return len(self._rows)
+
+    def delete(self):
+        for row in list(self._rows):
+            self._manager.delete_instance(row)
+
+    def update(self, **fields):
+        for row in self._rows:
+            for key, value in fields.items():
+                setattr(row, key, value)
+            self._manager.save(row)
+
+    def order_by(self, *fields):
+        if not fields:
+            return self
+        rows = list(self._rows)
+        for field in reversed(fields):
+            reverse = field.startswith("-")
+            field_name = field[1:] if reverse else field
+            rows.sort(key=lambda item: getattr(item, field_name), reverse=reverse)
+        return _CollectScheduleQuerySet(self._manager, rows)
+
+    def values_list(self, field_name, flat=False):
+        values = [getattr(row, field_name) for row in self._rows]
+        if flat:
+            return values
+        return [(value,) for value in values]
+
+    def select_for_update(self, *args, **kwargs):
+        return self
+
+    def select_related(self, *args, **kwargs):
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _CollectScheduleManager:
+    def __init__(self):
+        self._rows = []
+        self._next_pk = 1
+        self.model = None
+
+    def bind_model(self, model):
+        self.model = model
+        return self
+
+    def reset(self):
+        self._rows = []
+        self._next_pk = 1
+
+    @staticmethod
+    def _lookup_value(row, key: str):
+        value = row
+        for part in key.split("__"):
+            value = getattr(value, part)
+        return value
+
+    @classmethod
+    def _matches(cls, row, lookup: dict) -> bool:
+        return _CollectScheduleQuerySet._matches(row, lookup)
+
+    def _clone(self, row, **fields):
+        for key, value in fields.items():
+            setattr(row, key, value)
+        self.save(row)
+        return row
+
+    def save(self, row):
+        if getattr(row, "pk", None) is None:
+            row.pk = self._next_pk
+            self._next_pk += 1
+        row._state = SimpleNamespace(adding=False, db="default")
+        if row not in self._rows:
+            self._rows.append(row)
+        return row
+
+    def create(self, **fields):
+        row = self.model(**fields)
+        return self.save(row)
+
+    def update_or_create(self, defaults=None, **lookup):
+        defaults = defaults or {}
+        row = self.filter(**lookup).first()
+        if row is not None:
+            for key, value in defaults.items():
+                setattr(row, key, value)
+            self.save(row)
+            return row, False
+        fields = {**lookup, **defaults}
+        return self.create(**fields), True
+
+    def get_or_create(self, defaults=None, **lookup):
+        return self.update_or_create(defaults=defaults, **lookup)
+
+    def get(self, **lookup):
+        row = self.filter(**lookup).first()
+        if row is None:
+            raise self.model.DoesNotExist
+        return row
+
+    def filter(self, **lookup):
+        rows = [row for row in self._rows if self._matches(row, lookup)]
+        return _CollectScheduleQuerySet(self, rows)
+
+    def all(self):
+        return _CollectScheduleQuerySet(self, self._rows)
+
+    def select_for_update(self, *args, **kwargs):
+        return self
+
+    def select_related(self, *args, **kwargs):
+        return self
+
+    def delete_instance(self, row):
+        self._rows = [item for item in self._rows if item.pk != row.pk]
+
+
+def _build_collect_schedule_stub():
+    manager = _CollectScheduleManager()
+
+    class CollectSchedule:
+        DoesNotExist = LookupError
+        objects = manager
+
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+            if getattr(self, "pk", None) is None:
+                self.pk = None
+            self._state = SimpleNamespace(adding=True, db=None)
+
+        def save(self, update_fields=None):
+            return self.__class__.objects.save(self)
+
+        def delete(self):
+            self.__class__.objects.delete_instance(self)
+
+        def refresh_from_db(self):
+            fresh = self.__class__.objects.get(pk=self.pk)
+            self.__dict__.update(fresh.__dict__)
+
+    manager.bind_model(CollectSchedule)
+    return CollectSchedule, manager
 
 
 class DepositServiceCoreTests(TestCase):
@@ -82,98 +279,98 @@ class DepositServiceCoreTests(TestCase):
         with self.assertRaises(DepositStatusError):
             DepositService.drop_deposit(deposit)
 
-    # -- _should_collect 阈值判断 --
+    # -- _should_collect_due_group 阈值判断 --
 
-    def test_should_collect_triggers_by_time_deadline(self):
-        # 金额低于门槛但超过 gather_period 时间的充币应触发归集。
-        chain = SimpleNamespace(type=ChainType.EVM, code="eth")
-        crypto = SimpleNamespace(
-            symbol="USDT",
-            get_decimals=Mock(return_value=6),
-            price=Mock(return_value=Decimal("1")),
-        )
-        project = SimpleNamespace(gather_worth=Decimal("100"), gather_period=3)
-        customer = SimpleNamespace(project=project)
-        transfer = SimpleNamespace(chain=chain, crypto=crypto)
-        deposit = SimpleNamespace(
-            customer=customer,
-            transfer=transfer,
-            # 4 天前创建，超过 gather_period=3
-            created_at=timezone.now() - timedelta(days=4),
-        )
-
-        # 0.5 USDT，远低于 100 USD 门槛，但时间已过期
-        should = DepositService._should_collect(deposit, Decimal("0.5"))
-        self.assertTrue(should)
-
-    def test_should_collect_fallback_on_missing_price(self):
-        # 缺少价格时 worth 回退到 gather_worth，强制触发归集。
-        chain = SimpleNamespace(type=ChainType.EVM, code="eth")
+    def test_should_collect_due_group_fallback_on_missing_price(self):
         crypto = SimpleNamespace(
             symbol="UNKNOWN",
-            get_decimals=Mock(return_value=18),
             price=Mock(side_effect=KeyError("USD")),
         )
-        project = SimpleNamespace(gather_worth=Decimal("10"), gather_period=365)
-        customer = SimpleNamespace(project=project)
-        transfer = SimpleNamespace(chain=chain, crypto=crypto)
-        deposit = SimpleNamespace(
-            customer=customer,
-            transfer=transfer,
-            created_at=timezone.now(),
-        )
+        project = SimpleNamespace(gather_worth=Decimal("10"))
 
-        should = DepositService._should_collect(deposit, Decimal("1"))
+        should = DepositService._should_collect_due_group(
+            project=project,
+            crypto=crypto,
+            collection_amount=Decimal("1"),
+        )
         self.assertTrue(should)
 
-    def test_should_collect_above_threshold_immediately(self):
-        # 金额达到门槛时应立即触发归集，无需等待 deadline。
+    def test_should_collect_due_group_when_worth_reaches_threshold(self):
         crypto = SimpleNamespace(
             symbol="USDT", price=Mock(return_value=Decimal("1")),
         )
-        project = SimpleNamespace(gather_worth=Decimal("100"), gather_period=30)
-        deposit = SimpleNamespace(
-            customer=SimpleNamespace(project=project),
-            transfer=SimpleNamespace(crypto=crypto),
-            created_at=timezone.now(),  # 刚创建，远未到 deadline
-        )
-        # $100 恰好 == 门槛 → 归集
-        self.assertTrue(DepositService._should_collect(deposit, Decimal("100")))
-        # $100.01 略高于门槛 → 归集
-        self.assertTrue(DepositService._should_collect(deposit, Decimal("100.01")))
+        project = SimpleNamespace(gather_worth=Decimal("100"))
 
-    def test_should_collect_below_threshold_and_not_expired_skips(self):
-        # 金额低于门槛且未到 deadline → 跳过归集。
+        self.assertTrue(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("100"),
+            )
+        )
+        self.assertTrue(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("100.01"),
+            )
+        )
+
+    def test_should_collect_due_group_rejects_below_threshold(self):
         crypto = SimpleNamespace(
             symbol="USDT", price=Mock(return_value=Decimal("1")),
         )
-        project = SimpleNamespace(gather_worth=Decimal("100"), gather_period=30)
-        deposit = SimpleNamespace(
-            customer=SimpleNamespace(project=project),
-            transfer=SimpleNamespace(crypto=crypto),
-            created_at=timezone.now(),  # 刚创建
-        )
-        # $99.99 略低于 $100 门槛 → 不归集
-        self.assertFalse(DepositService._should_collect(deposit, Decimal("99.99")))
-        # $0.01 极低 → 不归集
-        self.assertFalse(DepositService._should_collect(deposit, Decimal("0.01")))
+        project = SimpleNamespace(gather_worth=Decimal("100"))
 
-    def test_should_collect_multi_deposit_sum_crosses_threshold(self):
-        # 单笔低于门槛，但多笔合并总额超过门槛时应触发归集。
-        # 模拟 _calculate_collection_amount 返回的合并金额。
+        self.assertFalse(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("99.99"),
+            )
+        )
+        self.assertFalse(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("0.01"),
+            )
+        )
+
+    def test_should_collect_due_group_accepts_zero_threshold(self):
+        crypto = SimpleNamespace(
+            symbol="USDT", price=Mock(return_value=Decimal("1")),
+        )
+        project = SimpleNamespace(gather_worth=Decimal("0"))
+
+        self.assertTrue(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("0.01"),
+            )
+        )
+
+    def test_should_collect_due_group_multi_deposit_sum_crosses_threshold(self):
         crypto = SimpleNamespace(
             symbol="ETH", price=Mock(return_value=Decimal("2000")),
         )
-        project = SimpleNamespace(gather_worth=Decimal("100"), gather_period=30)
-        deposit = SimpleNamespace(
-            customer=SimpleNamespace(project=project),
-            transfer=SimpleNamespace(crypto=crypto),
-            created_at=timezone.now(),
+        project = SimpleNamespace(gather_worth=Decimal("100"))
+
+        self.assertFalse(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("0.04"),
+            )
         )
-        # 单笔 0.04 ETH = $80 < $100 → 不归集
-        self.assertFalse(DepositService._should_collect(deposit, Decimal("0.04")))
-        # 合并 0.04 + 0.02 = 0.06 ETH = $120 > $100 → 归集
-        self.assertTrue(DepositService._should_collect(deposit, Decimal("0.06")))
+        self.assertTrue(
+            DepositService._should_collect_due_group(
+                project=project,
+                crypto=crypto,
+                collection_amount=Decimal("0.06"),
+            )
+        )
 
     # -- collect_deposit 防御分支 --
 
@@ -540,28 +737,6 @@ class DepositServiceDecimalsTests(TestCase):
         collection_create_mock.assert_not_called()
         deposit_filter_mock.return_value.update.assert_not_called()
 
-    def test_should_collect_uses_chain_specific_crypto_decimals(self):
-        # 链特定精度为 18、默认精度为 6 时，0.5 个代币不应被误判成巨额资产。
-        chain = SimpleNamespace(type=ChainType.EVM, code="bsc")
-        crypto = SimpleNamespace(
-            symbol="USDT",
-            decimals=6,
-            get_decimals=Mock(return_value=18),
-            price=Mock(return_value=Decimal("1")),
-        )
-        project = SimpleNamespace(gather_worth=Decimal("1"), gather_period=7)
-        customer = SimpleNamespace(project=project)
-        transfer = SimpleNamespace(chain=chain, crypto=crypto)
-        deposit = SimpleNamespace(
-            customer=customer,
-            transfer=transfer,
-            created_at=timezone.now() - timedelta(days=1),
-        )
-
-        should_collect = DepositService._should_collect(deposit, Decimal("0.5"))
-
-        self.assertFalse(should_collect)
-
     def test_collection_amount_is_sum_of_deposits(self):
         # 归集金额 = 分组内充值金额之和。
         deposits = [
@@ -786,7 +961,7 @@ class DepositTransferRematchTests(TestCase):
             address_index=0,
             address="0x0000000000000000000000000000000000000011",
         )
-        DepositAddress.objects.create(
+        deposit_address_record = DepositAddress.objects.create(
             customer=customer,
             chain_type=chain.type,
             address=addr,
@@ -822,6 +997,292 @@ class DepositTransferRematchTests(TestCase):
         self.assertEqual(payload["data"]["sys_no"], transfer.deposit.sys_no)
         self.assertEqual(payload["data"]["uid"], customer.uid)
         self.assertTrue(payload["data"]["confirmed"])
+
+
+class CollectScheduleLifecycleTests(TestCase):
+    def _make_collect_fixture(
+        self,
+        *,
+        gather_worth: Decimal,
+        gather_period: int,
+        amount: Decimal = Decimal("1"),
+        price: Decimal = Decimal("1"),
+        name_suffix: str,
+        deposit_status: str = DepositStatus.CONFIRMING,
+    ):
+        project = Project.objects.create(
+            name=f"CollectSchedule-{name_suffix}",
+            wallet=Wallet.objects.create(),
+            gather_worth=gather_worth,
+            gather_period=gather_period,
+        )
+        customer = Customer.objects.create(project=project, uid=f"uid-{name_suffix}")
+        native = Crypto.objects.create(
+            name=f"Native-{name_suffix}",
+            symbol=f"NAT-{name_suffix}",
+            coingecko_id=f"native-{name_suffix}",
+        )
+        crypto = Crypto.objects.create(
+            name=f"Crypto-{name_suffix}",
+            symbol=f"USDT-{name_suffix}",
+            coingecko_id=f"crypto-{name_suffix}",
+            prices={"USD": str(price)},
+        )
+        chain = Chain.objects.create(
+            name=f"Chain-{name_suffix}",
+            code=f"chain-{name_suffix}",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=900 + len(name_suffix),
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        recipient_address = RecipientAddress.objects.create(
+            project=project,
+            chain_type=chain.type,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000c01"
+            ),
+            usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
+        )
+        deposit_address = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000c11"
+            ),
+        )
+        deposit_address_record = DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain.type,
+            address=deposit_address,
+        )
+        hash_hex = (name_suffix.encode().hex() * 8)[:64].ljust(64, "1")
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + hash_hex,
+            event_id=f"erc20:{name_suffix}",
+            crypto=crypto,
+            from_address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000c21"
+            ),
+            to_address=deposit_address.address,
+            value=str(amount),
+            amount=amount,
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        deposit = Deposit.objects.create(
+            customer=customer,
+            transfer=transfer,
+            status=deposit_status,
+        )
+        return {
+            "project": project,
+            "customer": customer,
+            "chain": chain,
+            "crypto": crypto,
+            "recipient_address": recipient_address,
+            "deposit_address": deposit_address_record,
+            "transfer": transfer,
+            "deposit": deposit,
+        }
+
+    def _patch_collect_schedule(self):
+        return _build_collect_schedule_stub()
+
+    @patch("deposits.service.send_internal_callback")
+    @patch("deposits.service.WebhookService.create_event")
+    def test_confirm_deposit_creates_collect_schedule_with_project_period(
+        self,
+        create_event_mock,
+        send_internal_callback_mock,
+    ):
+        fixed_now = timezone.make_aware(datetime(2026, 4, 19, 9, 0, 0))
+        fixture = self._make_collect_fixture(
+            gather_worth=Decimal("10"),
+            gather_period=45,
+            name_suffix="first",
+        )
+        CollectSchedule, schedule_manager = self._patch_collect_schedule()
+
+        with (
+            patch("deposits.service.CollectSchedule", CollectSchedule, create=True),
+            patch("deposits.service.timezone.now", return_value=fixed_now),
+        ):
+            DepositService.confirm_deposit(fixture["deposit"])
+
+        self.assertEqual(schedule_manager.all().count(), 1)
+        schedule = schedule_manager.all().first()
+        self.assertEqual(schedule.deposit_address, fixture["deposit_address"])
+        self.assertEqual(schedule.chain, fixture["chain"])
+        self.assertEqual(schedule.crypto, fixture["crypto"])
+        self.assertEqual(
+            schedule.next_collect_time, fixed_now + timedelta(minutes=45)
+        )
+
+    @patch("deposits.service.send_internal_callback")
+    @patch("deposits.service.WebhookService.create_event")
+    def test_confirm_deposit_refreshes_existing_collect_schedule_to_project_period(
+        self,
+        create_event_mock,
+        send_internal_callback_mock,
+    ):
+        fixed_now = timezone.make_aware(datetime(2026, 4, 19, 10, 0, 0))
+        fixture = self._make_collect_fixture(
+            gather_worth=Decimal("10"),
+            gather_period=15,
+            name_suffix="refresh",
+        )
+        CollectSchedule, schedule_manager = self._patch_collect_schedule()
+        existing = schedule_manager.create(
+            deposit_address=fixture["deposit_address"],
+            chain=fixture["chain"],
+            crypto=fixture["crypto"],
+            next_collect_time=fixed_now - timedelta(minutes=30),
+        )
+
+        with (
+            patch("deposits.service.CollectSchedule", CollectSchedule, create=True),
+            patch("deposits.service.timezone.now", return_value=fixed_now),
+        ):
+            DepositService.confirm_deposit(fixture["deposit"])
+
+        self.assertEqual(schedule_manager.all().count(), 1)
+        schedule = schedule_manager.all().first()
+        self.assertEqual(schedule.pk, existing.pk)
+        self.assertEqual(
+            schedule.next_collect_time, fixed_now + timedelta(minutes=15)
+        )
+
+    @patch("deposits.tasks.DepositService.collect_deposit")
+    def test_gather_deposits_deletes_expired_schedule_without_collection_when_below_threshold(
+        self,
+        collect_deposit_mock,
+    ):
+        fixed_now = timezone.make_aware(datetime(2026, 4, 19, 11, 0, 0))
+        fixture = self._make_collect_fixture(
+            gather_worth=Decimal("100"),
+            gather_period=30,
+            amount=Decimal("1"),
+            price=Decimal("1"),
+            name_suffix="below-threshold",
+            deposit_status=DepositStatus.COMPLETED,
+        )
+        CollectSchedule, schedule_manager = self._patch_collect_schedule()
+        schedule_manager.create(
+            deposit_address=fixture["deposit_address"],
+            chain=fixture["chain"],
+            crypto=fixture["crypto"],
+            next_collect_time=fixed_now - timedelta(minutes=1),
+        )
+
+        with (
+            patch("deposits.tasks.CollectSchedule", CollectSchedule, create=True),
+            patch("deposits.service.CollectSchedule", CollectSchedule, create=True),
+        ):
+            gather_deposits.run()
+
+        self.assertEqual(DepositCollection.objects.count(), 0)
+        self.assertEqual(schedule_manager.all().count(), 0)
+
+    @patch("evm.models.EvmBroadcastTask.schedule_transfer")
+    @patch("deposits.service.AdapterFactory.get_adapter")
+    def test_gather_deposits_creates_one_collection_and_deletes_expired_schedule_when_threshold_met(
+        self,
+        adapter_factory_mock,
+        schedule_transfer_mock,
+    ):
+        fixed_now = timezone.make_aware(datetime(2026, 4, 19, 12, 0, 0))
+        fixture = self._make_collect_fixture(
+            gather_worth=Decimal("10"),
+            gather_period=30,
+            amount=Decimal("12"),
+            price=Decimal("1"),
+            name_suffix="threshold-met",
+            deposit_status=DepositStatus.COMPLETED,
+        )
+        CollectSchedule, schedule_manager = self._patch_collect_schedule()
+        schedule_manager.create(
+            deposit_address=fixture["deposit_address"],
+            chain=fixture["chain"],
+            crypto=fixture["crypto"],
+            next_collect_time=fixed_now - timedelta(minutes=1),
+        )
+        adapter_factory_mock.return_value = SimpleNamespace(
+            get_balance=Mock(return_value=10**18)
+        )
+        schedule_transfer_mock.return_value = SimpleNamespace(
+            base_task=BroadcastTask.objects.create(
+                chain=fixture["chain"],
+                address=fixture["deposit_address"].address,
+                transfer_type=TransferType.DepositCollection,
+                crypto=fixture["crypto"],
+                recipient=Web3.to_checksum_address(
+                    "0x0000000000000000000000000000000000000c02"
+                ),
+                amount=Decimal("12"),
+            )
+        )
+
+        with (
+            patch("deposits.tasks.CollectSchedule", CollectSchedule, create=True),
+            patch("deposits.service.CollectSchedule", CollectSchedule, create=True),
+        ):
+            gather_deposits.run()
+
+        self.assertEqual(DepositCollection.objects.count(), 1)
+        self.assertEqual(schedule_manager.all().count(), 0)
+
+    def test_release_failed_collection_recreates_collect_schedule_after_release(
+        self,
+    ):
+        fixed_now = timezone.make_aware(datetime(2026, 4, 19, 13, 0, 0))
+        fixture = self._make_collect_fixture(
+            gather_worth=Decimal("10"),
+            gather_period=25,
+            amount=Decimal("5"),
+            price=Decimal("1"),
+            name_suffix="release",
+            deposit_status=DepositStatus.COMPLETED,
+        )
+        collection_task = BroadcastTask.objects.create(
+            chain=fixture["chain"],
+            address=fixture["deposit_address"].address,
+            transfer_type=TransferType.DepositCollection,
+            crypto=fixture["crypto"],
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000c03"
+            ),
+            amount=Decimal("5"),
+        )
+        collection = DepositCollection.objects.create(
+            collection_hash="0x" + "c" * 64,
+            broadcast_task=collection_task,
+        )
+        Deposit.objects.filter(pk=fixture["deposit"].pk).update(collection=collection)
+        fixture["deposit"].refresh_from_db()
+        CollectSchedule, schedule_manager = self._patch_collect_schedule()
+
+        with (
+            patch("deposits.service.CollectSchedule", CollectSchedule, create=True),
+            patch("deposits.service.timezone.now", return_value=fixed_now),
+        ):
+            DepositService.release_failed_collection(broadcast_task=collection_task)
+
+        self.assertIsNone(Deposit.objects.get(pk=fixture["deposit"].pk).collection_id)
+        self.assertEqual(schedule_manager.all().count(), 1)
+        schedule = schedule_manager.all().first()
+        self.assertEqual(schedule.deposit_address, fixture["deposit_address"])
+        self.assertEqual(
+            schedule.next_collect_time, fixed_now + timedelta(minutes=25)
+        )
 
     @patch("evm.models.EvmBroadcastTask.schedule_transfer")
     @patch("deposits.service.AdapterFactory.get_adapter")
@@ -870,7 +1331,7 @@ class DepositTransferRematchTests(TestCase):
             address_index=0,
             address="0x00000000000000000000000000000000000000C1",
         )
-        DepositAddress.objects.create(
+        deposit_address_record = DepositAddress.objects.create(
             customer=customer,
             chain_type=chain.type,
             address=addr,
@@ -1344,6 +1805,19 @@ class DepositTransferRematchTests(TestCase):
             status=TransferStatus.CONFIRMED,
             type=TransferType.Deposit,
         )
+        deposit_addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000610",
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain.type,
+            address=deposit_addr,
+        )
         collection = DepositCollection.objects.create(
             collection_hash=None,
             broadcast_task=broadcast_task,
@@ -1353,14 +1827,12 @@ class DepositTransferRematchTests(TestCase):
             transfer=transfer1,
             status=DepositStatus.COMPLETED,
             collection=collection,
-            failed_collection_attempts=0,
         )
         deposit2 = Deposit.objects.create(
             customer=customer,
             transfer=transfer2,
             status=DepositStatus.COMPLETED,
             collection=collection,
-            failed_collection_attempts=3,
         )
         collection_id = collection.pk
         before_updated_at = deposit1.updated_at
@@ -1371,11 +1843,6 @@ class DepositTransferRematchTests(TestCase):
         deposit2.refresh_from_db()
         self.assertIsNone(deposit1.collection_id)
         self.assertIsNone(deposit2.collection_id)
-        # failed_collection_attempts 必须在释放时累加：gather_deposits 只在
-        # collect_deposit 返回 False 时累加，pre-flight revert / 链上失败走的是
-        # release_failed_collection 路径，若不累加会让 MAX_FAILED_ATTEMPTS 防御失效。
-        self.assertEqual(deposit1.failed_collection_attempts, 1)
-        self.assertEqual(deposit2.failed_collection_attempts, 4)
         # updated_at 应被显式刷新，使归集超时监控不误判
         self.assertGreater(deposit1.updated_at, before_updated_at)
         self.assertFalse(DepositCollection.objects.filter(pk=collection_id).exists())
@@ -1471,7 +1938,7 @@ class DepositTransferRematchTests(TestCase):
             address_index=0,
             address="0x00000000000000000000000000000000000003C1",
         )
-        DepositAddress.objects.create(
+        deposit_address_record = DepositAddress.objects.create(
             customer=customer,
             chain_type=chain.type,
             address=addr,
@@ -1550,6 +2017,12 @@ class DepositTransferRematchTests(TestCase):
             transfer=transfer2,
             status=DepositStatus.COMPLETED,
         )
+        CollectSchedule.objects.create(
+            deposit_address=deposit_address_record,
+            chain=chain,
+            crypto=crypto,
+            next_collect_time=timezone.now() - timedelta(minutes=1),
+        )
 
         gather_deposits.run()
 
@@ -1561,241 +2034,6 @@ class DepositTransferRematchTests(TestCase):
         self.assertIsNone(deposit1.collection.collection_hash)
         self.assertEqual(deposit1.collection.broadcast_task, base_task)
         schedule_transfer_mock.assert_called_once()
-
-
-class GatherDepositsSchedulingTests(TestCase):
-    """gather_deposits 防 DoS / 公平调度的四层防御测试。
-
-    覆盖：
-    - L1：project 没配 DEPOSIT_COLLECTION recipient 的 deposit 不被挑入候选；
-    - L3：failed_collection_attempts 达上限的 deposit 不被挑入候选；
-    - L3：collect_deposit 返回 False 时累计计数 +1；
-    - 公平调度：候选池中按 project quota 做 round-robin。
-    """
-
-    def _make_chain(self, *, code: str, chain_id: int) -> Chain:
-        native = Crypto.objects.create(
-            name=f"Native {code}",
-            symbol=f"NAT-{code.upper()}",
-            coingecko_id=f"native-{code}",
-        )
-        return Chain.objects.create(
-            name=f"Chain {code}",
-            code=code,
-            type=ChainType.EVM,
-            native_coin=native,
-            chain_id=chain_id,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-
-    def _make_project_with_deposit_address(
-        self,
-        *,
-        name: str,
-        chain: Chain,
-        configure_recipient: bool = True,
-        addr_suffix: str = "0001",
-    ) -> tuple[Project, Customer, DepositAddress]:
-        project = Project.objects.create(
-            name=name,
-            wallet=Wallet.objects.create(),
-            gather_worth=Decimal("0.001"),
-        )
-        if configure_recipient:
-            RecipientAddress.objects.create(
-                project=project,
-                chain_type=chain.type,
-                address=Web3.to_checksum_address(
-                    "0x" + addr_suffix.rjust(40, "0")
-                ),
-                usage=RecipientAddressUsage.DEPOSIT_COLLECTION,
-            )
-        customer = Customer.objects.create(project=project, uid=f"u-{name}")
-        addr = Address.objects.create(
-            wallet=project.wallet,
-            chain_type=chain.type,
-            usage=AddressUsage.Deposit,
-            bip44_account=0,
-            address_index=0,
-            address=Web3.to_checksum_address(
-                "0xa" + addr_suffix.rjust(39, "0")
-            ),
-        )
-        deposit_addr = DepositAddress.objects.create(
-            customer=customer,
-            chain_type=chain.type,
-            address=addr,
-        )
-        return project, customer, deposit_addr
-
-    def _make_deposit(
-        self,
-        *,
-        customer: Customer,
-        chain: Chain,
-        crypto: Crypto,
-        address_obj: Address,
-        seq: int,
-        failed_attempts: int = 0,
-    ) -> Deposit:
-        # 用一个唯一可读的 hash/event_id 防 unique 冲突。
-        unique_tag = f"{customer.pk:04x}{seq:04x}"
-        transfer = OnchainTransfer.objects.create(
-            chain=chain,
-            block=seq,
-            hash="0x" + unique_tag.ljust(64, "f")[:64],
-            event_id=f"native:{customer.pk}:{seq}",
-            crypto=crypto,
-            from_address="0x0000000000000000000000000000000000000999",
-            to_address=address_obj.address,
-            value="1",
-            amount=Decimal("1"),
-            timestamp=seq,
-            datetime=timezone.now(),
-            status=TransferStatus.CONFIRMED,
-            type=TransferType.Deposit,
-        )
-        deposit = Deposit.objects.create(
-            customer=customer,
-            transfer=transfer,
-            status=DepositStatus.COMPLETED,
-        )
-        if failed_attempts:
-            Deposit.objects.filter(pk=deposit.pk).update(
-                failed_collection_attempts=failed_attempts
-            )
-            deposit.refresh_from_db()
-        return deposit
-
-    @patch("deposits.tasks.DepositService.collect_deposit")
-    def test_gather_skips_deposit_when_project_lacks_recipient(
-        self, collect_deposit_mock
-    ):
-        # L1：未配置 DEPOSIT_COLLECTION recipient 的 project 下的 deposit
-        # 不应进入候选集，collect_deposit 不被调用。
-        chain = self._make_chain(code="eth-no-recipient", chain_id=701)
-        _project, customer, addr_record = self._make_project_with_deposit_address(
-            name="proj-no-recipient",
-            chain=chain,
-            configure_recipient=False,
-            addr_suffix="01",
-        )
-        self._make_deposit(
-            customer=customer,
-            chain=chain,
-            crypto=chain.native_coin,
-            address_obj=addr_record.address,
-            seq=1,
-        )
-
-        gather_deposits.run()
-
-        collect_deposit_mock.assert_not_called()
-
-    @patch("deposits.tasks.DepositService.collect_deposit")
-    def test_gather_skips_deposit_after_max_failed_attempts(
-        self, collect_deposit_mock
-    ):
-        # L3：失败计数已达上限的 deposit 不再被调度。
-        from deposits.tasks import MAX_FAILED_ATTEMPTS
-
-        chain = self._make_chain(code="eth-max-failed", chain_id=702)
-        _project, customer, addr_record = self._make_project_with_deposit_address(
-            name="proj-max-failed",
-            chain=chain,
-            configure_recipient=True,
-            addr_suffix="02",
-        )
-        self._make_deposit(
-            customer=customer,
-            chain=chain,
-            crypto=chain.native_coin,
-            address_obj=addr_record.address,
-            seq=1,
-            failed_attempts=MAX_FAILED_ATTEMPTS,
-        )
-
-        gather_deposits.run()
-
-        collect_deposit_mock.assert_not_called()
-
-    @patch("deposits.tasks.DepositService.collect_deposit", return_value=False)
-    def test_gather_increments_failed_attempts_on_collect_returning_false(
-        self, _collect_deposit_mock
-    ):
-        # L3：collect_deposit 返回 False 时累计 failed_collection_attempts +1。
-        chain = self._make_chain(code="eth-incr-failed", chain_id=703)
-        _project, customer, addr_record = self._make_project_with_deposit_address(
-            name="proj-incr-failed",
-            chain=chain,
-            configure_recipient=True,
-            addr_suffix="03",
-        )
-        deposit = self._make_deposit(
-            customer=customer,
-            chain=chain,
-            crypto=chain.native_coin,
-            address_obj=addr_record.address,
-            seq=1,
-        )
-
-        gather_deposits.run()
-
-        deposit.refresh_from_db()
-        self.assertEqual(deposit.failed_collection_attempts, 1)
-
-    @patch(
-        "deposits.tasks.DepositService.collect_deposit",
-        side_effect=lambda d: True,
-    )
-    def test_gather_per_project_round_robin_quota(self, collect_deposit_mock):
-        # 公平调度：A/B 各 100 笔、C 1 笔时，单轮 A/B 各拿到 PER_PROJECT_QUOTA(=4) 个名额，
-        # C 拿到 1 个名额，总命中 9 笔（小于 TOTAL_BATCH_SIZE=16），不被任一项目独占。
-        from deposits.tasks import PER_PROJECT_QUOTA
-
-        chain = self._make_chain(code="eth-rr", chain_id=704)
-
-        def _build(name: str, count: int, addr_suffix: str) -> Customer:
-            _project, customer, addr_record = (
-                self._make_project_with_deposit_address(
-                    name=name,
-                    chain=chain,
-                    configure_recipient=True,
-                    addr_suffix=addr_suffix,
-                )
-            )
-            for i in range(count):
-                self._make_deposit(
-                    customer=customer,
-                    chain=chain,
-                    crypto=chain.native_coin,
-                    address_obj=addr_record.address,
-                    seq=i + 1,
-                )
-            return customer
-
-        # 先创建 C 让它的 deposit 在 created_at 排序中排第一，
-        # 验证候选池 + Python round-robin 不会因为单一 project 占满前列就饿死小项目。
-        customer_c = _build("proj-c", 1, "00cc")
-        customer_a = _build("proj-a", 100, "00aa")
-        customer_b = _build("proj-b", 100, "00bb")
-
-        gather_deposits.run()
-
-        # 收集本轮被实际调用的 customer.project_id 分布。
-        called_project_ids = [
-            call.args[0].customer.project_id
-            for call in collect_deposit_mock.call_args_list
-        ]
-        a_count = called_project_ids.count(customer_a.project_id)
-        b_count = called_project_ids.count(customer_b.project_id)
-        c_count = called_project_ids.count(customer_c.project_id)
-
-        self.assertEqual(a_count, PER_PROJECT_QUOTA)
-        self.assertEqual(b_count, PER_PROJECT_QUOTA)
-        self.assertEqual(c_count, 1)
-        self.assertEqual(a_count + b_count + c_count, 2 * PER_PROJECT_QUOTA + 1)
 
 
 class DepositAddressApiGuardTests(TestCase):
@@ -2372,28 +2610,3 @@ class DepositCollectionAnvilTests(TestCase):
 
         # 3 轮 DepositCollection 各自独立
         self.assertEqual(len(set(collection_ids)), 3)
-
-    # ---- 场景 5: 小额低于阈值，deadline 后才归集 ----
-
-    def test_deposit_below_threshold_collected_after_deadline(self):
-        # 抬高归集阈值到 $5000，使 0.001 ETH ($2) 低于门槛
-        self.project.gather_worth = Decimal("5000")
-        self.project.save(update_fields=["gather_worth"])
-
-        deposit = self._create_deposit(Decimal("0.001"), seq=1)
-
-        # worth = 0.001 ETH * $2000 = $2 < gather_worth=$5000 且未过期 → 跳过
-        self.assertFalse(DepositService.collect_deposit(deposit))
-        deposit.refresh_from_db()
-        self.assertIsNone(deposit.collection_id)
-
-        # 修改创建时间到 gather_period 天前 → deadline 过期触发归集
-        Deposit.objects.filter(pk=deposit.pk).update(
-            created_at=timezone.now() - timedelta(days=self.project.gather_period + 1)
-        )
-        deposit.refresh_from_db()
-
-        self.assertTrue(DepositService.collect_deposit(deposit))
-        deposit.refresh_from_db()
-        self.assertIsNotNone(deposit.collection_id)
-        self.assertEqual(self._on_chain_balance(self.RECIPIENT_ADDR), 10**15)

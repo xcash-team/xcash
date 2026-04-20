@@ -78,13 +78,13 @@ class Project(models.Model):
         decimal_places=2,
         verbose_name="自动归集价值(USD)",
         default=10,
-        help_text="某充币地址中,若某代币的价值大于此,则自动归集",
+        help_text="归集窗口到期时, 若某充币地址下该代币待归集总价值达到此阈值, 则自动归集",
         blank=True,
     )
     gather_period = models.PositiveIntegerField(
-        verbose_name="自动归集周期(日)",
-        default=32,
-        help_text="某充币地址中,若某代币大于此周期未进行归集操作,则自动归集",
+        verbose_name="自动归集周期(分钟)",
+        default=1440,
+        help_text="某充币地址中,若某代币在此周期内未归集,则到期尝试归集",
         blank=True,
     )
     withdrawal_review_required = models.BooleanField(

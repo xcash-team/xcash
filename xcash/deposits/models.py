@@ -101,6 +101,49 @@ class DepositStatus(models.TextChoices):
     COMPLETED = "completed", _("已完成")
 
 
+class CollectSchedule(models.Model):
+    """按充币地址维度维护下一次归集建单时间。"""
+
+    deposit_address = models.ForeignKey(
+        "deposits.DepositAddress",
+        on_delete=models.CASCADE,
+        related_name="collect_schedules",
+        verbose_name=_("充币地址"),
+    )
+    chain = models.ForeignKey(
+        "chains.Chain",
+        on_delete=models.CASCADE,
+        verbose_name=_("链"),
+    )
+    crypto = models.ForeignKey(
+        "currencies.Crypto",
+        on_delete=models.CASCADE,
+        verbose_name=_("代币"),
+    )
+    next_collect_time = models.DateTimeField(
+        db_index=True,
+        verbose_name=_("下次归集时间"),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("deposit_address", "chain", "crypto"),
+                name="uniq_collect_schedule_address_chain_crypto",
+            ),
+        ]
+        verbose_name = _("归集调度")
+        verbose_name_plural = _("归集调度")
+
+    def __str__(self) -> str:
+        return (
+            f"CollectSchedule({self.deposit_address_id}, "
+            f"{self.chain_id}, {self.crypto_id})"
+        )
+
+
 class GasRecharge(models.Model):
     """Gas 补充记录：归集前 Vault → 充币地址 的原生币预充。"""
 
@@ -224,17 +267,6 @@ class Deposit(models.Model):
         blank=True,
         related_name="deposits",
         verbose_name=_("归集记录"),
-    )
-    # 防御性字段：collect_deposit 返回 False 的累计次数。
-    # gather_deposits 通过过滤 failed_collection_attempts < MAX_FAILED_ATTEMPTS
-    # 自然跳过反复失败的"毒丸"deposit（例如对应 project 配了一个会 revert 的归集
-    # recipient），避免少数失败 deposit 持续占用调度名额、阻塞整条归集流水线。
-    failed_collection_attempts = models.PositiveSmallIntegerField(
-        _("归集失败计数"),
-        default=0,
-        help_text=_(
-            "collect_deposit 返回 False 的累计次数；达到阈值后 gather_deposits 跳过该笔，等待人工介入"
-        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
