@@ -5,7 +5,7 @@ volumes:
   django_db_data: {}
   signer_db_data: {}
 
-# 同机 SaaS 等可信服务通过加入 xcash_public 按容器名互通（如 http://xcash_traefik）。
+# 同机 SaaS 等可信服务通过加入 xcash_public 按 DNS 别名互通（如 http://xcash-caddy）。
 # xcash 自己总是创建该网络；即便没有外部服务加入也不影响本项目正常运行。
 networks:
   default:
@@ -68,58 +68,36 @@ services:
       - signer
     env_file:
       - .env
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.gateway.rule=Host(`${SITE_DOMAIN}`)"
-      - "traefik.http.routers.gateway.entrypoints=web"
-      - "traefik.http.routers.gateway.service=gateway"
-      - "traefik.http.routers.internal-api.rule=Path(`/internal/v1`) || PathPrefix(`/internal/v1/`)"
-      - "traefik.http.routers.internal-api.entrypoints=web"
-      - "traefik.http.routers.internal-api.service=gateway"
-      - "traefik.http.services.gateway.loadbalancer.server.port=8000"
     command: /start
 
   worker:
     <<: *django
     container_name: xcash_worker
-    labels: []
     environment:
       REMAP_SIGTERM: SIGQUIT
     stop_grace_period: 60s
-    # worker 承担对 SaaS 的内部回调推送，需要能按容器名解析 saas 侧 traefik。
+    # worker 承担对 SaaS 的内部回调推送，需要能按 DNS 别名解析 saas 侧 Caddy。
     networks: [default, xcash_public]
     command: /start-worker
 
   beat:
     <<: *django
     container_name: xcash_beat
-    labels: []
     command: /start-beat
 
-  traefik:
-    image: traefik:v3.6.11
-    container_name: xcash_traefik
+  caddy:
+    image: caddy:2.10.2-alpine
+    container_name: xcash_caddy
     restart: unless-stopped
     depends_on:
       - django
-    command:
-      - --providers.docker=true
-      - --providers.docker.exposedbydefault=false
-      # 挂载 docker.sock 会让 Traefik 看到同机所有容器的 labels（含其他 compose 项目，
-      # 例如同机的 xcash-saas）。不加约束的话，邻居若写出无 Host 限制的 PathPrefix 路由
-      # （已真实发生过 saas 的 PathPrefix(`/static`) 抢走 gateway.xca.sh/static/*），
-      # 会直接抢走本项目流量。限定只处理本 compose 项目的容器。
-      - --providers.docker.constraints=Label(`com.docker.compose.project`,`xcash`)
-      - --entrypoints.web.address=:80
     ports:
-      - "${LISTEN_TO}:6688:80"
-    # 对外（公网）走端口映射，对内（SaaS 同机调用）通过 xcash_public 网络按容器名直连。
-    # container_name 里的下划线在 Django HTTP_HOST 校验（RFC 1034/1035）中非法，
-    # 故在 xcash_public 上额外暴露一个合规的 DNS alias 供 SaaS 使用。
+      - "${LISTEN_TO:-127.0.0.1}:6688:80"
+    # 对外（公网）走端口映射，对内（SaaS 同机调用）通过 xcash_public 网络按 DNS 别名直连。
     networks:
       default: {}
       xcash_public:
         aliases:
-          - xcash-traefik
+          - xcash-caddy
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro

@@ -11,10 +11,8 @@ from .base import shared_processors
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 DOMAIN = env("SITE_DOMAIN", default="localhost").strip().lower()
 SCHEME = "https"
-# xcash-traefik：同机内部服务（如 saas）通过 Docker 共享网络访问时的 Host 头。
-# 不用 container_name `xcash_traefik`，因为下划线不符合 RFC 1034/1035，Django 会直接拒绝；
-# 改在 docker-compose 上挂一个带连字符的 network alias 供外部使用。公网 DNS 无此名，无风险。
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", DOMAIN, "xcash-traefik"]
+# xcash-caddy：同机内部服务（如 saas）通过 Docker 共享网络访问时的 Host 头。
+ALLOWED_HOSTS = ["127.0.0.1", "localhost", DOMAIN, "xcash-caddy"]
 
 # STATIC & MEDIA
 # ------------------------

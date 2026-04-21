@@ -1,0 +1,3 @@
+:80 {
+	reverse_proxy django:8000
+}
