@@ -137,6 +137,7 @@ password: Admin@123456
 
 ```bash
 git pull
+docker compose down --remove-orphans
 docker compose up -d --build
 ```
 
