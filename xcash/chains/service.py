@@ -207,6 +207,19 @@ class TransferService:
         existing: OnchainTransfer,
         observed: ObservedTransferPayload,
     ) -> None:
+        if observed.block < existing.block:
+            logger.warning(
+                "Observed transfer replay with older block ignored",
+                source=observed.source,
+                chain=observed.chain.code,
+                tx_hash=observed.tx_hash,
+                event_id=observed.event_id,
+                existing_transfer_id=existing.pk,
+                existing_block=existing.block,
+                incoming_block=observed.block,
+            )
+            return
+
         update_fields = []
         if existing.block != observed.block:
             existing.block = observed.block

@@ -680,6 +680,70 @@ class TransferConfirmDispatchTests(TestCase):
 
         confirm_transfer_delay_mock.assert_not_called()
 
+    @patch("chains.tasks.confirm_transfer.delay")
+    def test_older_replayed_transfer_does_not_roll_back_full_confirm_block(
+        self,
+        confirm_transfer_delay_mock,
+    ):
+        # 已知的新打包高度不能被滞后的旧观测覆盖，否则 FULL 确认会按旧 block 提前放行。
+        Chain.objects.filter(pk=self.chain.pk).update(
+            latest_block_number=105,
+            confirm_block_count=10,
+        )
+        self.chain.refresh_from_db()
+        tx_hash = "0x" + "9" * 64
+        observed_at = timezone.now()
+        transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=100,
+            hash=tx_hash,
+            event_id="native:reorg-old",
+            crypto=self.crypto,
+            from_address=self.addr.address,
+            to_address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000c5"
+            ),
+            value=Decimal("1"),
+            amount=Decimal("1"),
+            timestamp=2,
+            datetime=observed_at,
+            status=TransferStatus.CONFIRMING,
+            confirm_mode=ConfirmMode.FULL,
+            type=TransferType.Deposit,
+            processed_at=timezone.now(),
+        )
+        OnchainTransfer.objects.filter(pk=transfer.pk).update(
+            created_at=timezone.now() - timedelta(seconds=20)
+        )
+
+        result = TransferService.create_observed_transfer(
+            observed=ObservedTransferPayload(
+                chain=self.chain,
+                block=90,
+                tx_hash=tx_hash,
+                event_id="native:reorg-old",
+                from_address=transfer.from_address,
+                to_address=transfer.to_address,
+                crypto=self.crypto,
+                value=Decimal("1"),
+                amount=Decimal("1"),
+                timestamp=1,
+                occurred_at=observed_at - timedelta(seconds=15),
+                source="test-reorg-stale",
+            )
+        )
+
+        self.assertFalse(result.created)
+        self.assertFalse(result.conflict)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.block, 100)
+        self.assertEqual(transfer.timestamp, 2)
+        self.assertEqual(transfer.datetime, observed_at)
+
+        block_number_updated.run(self.chain.pk)
+
+        confirm_transfer_delay_mock.assert_not_called()
+
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
     @patch("withdrawals.service.WithdrawalService.notify_status_changed")
