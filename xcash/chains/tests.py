@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
 from unittest.mock import Mock
@@ -31,11 +32,14 @@ from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import TxHash
 from chains.models import Wallet
+from chains.service import ObservedTransferPayload
+from chains.service import TransferService
 from chains.signer import RemoteSignerBackend
 from chains.signer import SignerAdminSummary
 from chains.signer import SignerServiceError
 from chains.signer import build_signer_signature_payload
 from chains.signer import get_signer_backend
+from chains.tasks import block_number_updated
 from currencies.models import Crypto
 
 
@@ -610,6 +614,71 @@ class TransferConfirmDispatchTests(TestCase):
         block_number_updated.run(self.chain.pk)
 
         confirm_transfer_delay_mock.assert_called_once_with(transfer.pk)
+
+    @patch("chains.tasks.confirm_transfer.delay")
+    def test_replayed_transfer_refreshes_block_before_full_confirm_dispatch(
+        self,
+        confirm_transfer_delay_mock,
+    ):
+        # reorg 后同一 tx_hash/event_id 可能被重新打包到更高的新区块。
+        # FULL 确认调度必须以重放观测到的新 block 为准，不能继续使用旧 transfer.block 提前确认。
+        Chain.objects.filter(pk=self.chain.pk).update(
+            latest_block_number=105,
+            confirm_block_count=10,
+        )
+        self.chain.refresh_from_db()
+        tx_hash = "0x" + "8" * 64
+        transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=90,
+            hash=tx_hash,
+            event_id="native:reorg",
+            crypto=self.crypto,
+            from_address=self.addr.address,
+            to_address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000c4"
+            ),
+            value=Decimal("1"),
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMING,
+            confirm_mode=ConfirmMode.FULL,
+            type=TransferType.Deposit,
+            processed_at=timezone.now(),
+        )
+        OnchainTransfer.objects.filter(pk=transfer.pk).update(
+            created_at=timezone.now() - timedelta(seconds=20)
+        )
+        observed_at = transfer.datetime + timedelta(seconds=15)
+
+        result = TransferService.create_observed_transfer(
+            observed=ObservedTransferPayload(
+                chain=self.chain,
+                block=100,
+                tx_hash=tx_hash,
+                event_id="native:reorg",
+                from_address=transfer.from_address,
+                to_address=transfer.to_address,
+                crypto=self.crypto,
+                value=Decimal("1"),
+                amount=Decimal("1"),
+                timestamp=2,
+                occurred_at=observed_at,
+                source="test-reorg",
+            )
+        )
+
+        self.assertFalse(result.created)
+        self.assertFalse(result.conflict)
+        transfer.refresh_from_db()
+        self.assertEqual(transfer.block, 100)
+        self.assertEqual(transfer.timestamp, 2)
+        self.assertEqual(transfer.datetime, observed_at)
+
+        block_number_updated.run(self.chain.pk)
+
+        confirm_transfer_delay_mock.assert_not_called()
 
     @patch("common.decorators.cache.delete", return_value=True)
     @patch("common.decorators.cache.add", return_value=True)
@@ -1279,6 +1348,19 @@ class BroadcastTaskTransitionTests(TestCase):
         self.assertEqual(
             self.task.failure_reason, BroadcastTaskFailureReason.EXECUTION_REVERTED
         )
+
+    def test_mark_finalized_failed_honors_expected_stage(self):
+        updated = BroadcastTask.mark_finalized_failed(
+            task_id=self.task.pk,
+            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+            expected_stage=BroadcastTaskStage.PENDING_CHAIN,
+        )
+
+        self.assertEqual(updated, 0)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+        self.assertEqual(self.task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(self.task.failure_reason, "")
 
     def test_mark_finalized_success_does_not_override_failed_final_state(self):
         BroadcastTask.mark_finalized_failed(

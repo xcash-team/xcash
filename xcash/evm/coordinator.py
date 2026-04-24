@@ -132,7 +132,7 @@ class InternalEvmTaskCoordinator:
             else:
                 # 所有历史 hash 都找不到 receipt，交易已被 mempool 丢弃，重新广播。
                 try:
-                    evm_task.broadcast()
+                    evm_task.broadcast(allow_pending_chain_rebroadcast=True)
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "PENDING_CHAIN 超时重新广播失败",
@@ -280,6 +280,7 @@ class InternalEvmTaskCoordinator:
         updated = BroadcastTask.mark_finalized_failed(
             task_id=base_task.pk,
             reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
+            expected_stage=BroadcastTaskStage.PENDING_CHAIN,
         )
         if not updated:
             return False

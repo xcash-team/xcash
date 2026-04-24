@@ -12,7 +12,6 @@ from web3 import Web3
 
 from chains.models import AddressChainState
 from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import TransferType
@@ -151,11 +150,34 @@ class EvmBroadcastTask(UndeletableModel):
             "gasPrice": self.gas_price,
         }
 
-    def broadcast(self) -> None:
-        if self.has_lower_queued_nonce() or self.is_pipeline_full():
-            return None
+    def broadcast(self, *, allow_pending_chain_rebroadcast: bool = False) -> None:
+        if not self._can_broadcast_for_current_stage(
+            allow_pending_chain_rebroadcast=allow_pending_chain_rebroadcast
+        ):
+            return
+        if self._is_broadcast_order_blocked(
+            allow_pending_chain_rebroadcast=allow_pending_chain_rebroadcast
+        ):
+            return
+
         self._ensure_signed_with_latest_gas_price()
 
+        if not self._passes_balance_preflight():
+            return
+        if not self._passes_execution_preflight():
+            return
+
+        self._record_broadcast_attempt()
+        self._send_signed_payload()
+
+    def _is_broadcast_order_blocked(
+        self, *, allow_pending_chain_rebroadcast: bool
+    ) -> bool:
+        if self.has_lower_queued_nonce():
+            return True
+        return not allow_pending_chain_rebroadcast and self.is_pipeline_full()
+
+    def _passes_balance_preflight(self) -> bool:
         # pre-flight 第 1 步：主动阈值检查。
         # 用 *当前* gas_price（不是本任务签名时锁定的 self.gas_price）估算单次
         # ERC-20 转账 gas 成本，再按 value + 2 * erc20_gas_cost 作为预算阈值：
@@ -173,8 +195,11 @@ class EvmBroadcastTask(UndeletableModel):
             if self._is_eligible_for_gas_recharge():
                 self._request_gas_recharge(erc20_gas_cost=erc20_gas_cost)
             # 不更新 last_attempt_at，避免 reconcile/dispatch 误判为活跃任务。
-            return None
+            return False
 
+        return True
+
+    def _passes_execution_preflight(self) -> bool:
         # pre-flight 第 2 步：estimate_gas 兜底 revert。
         # 主动阈值已覆盖余额不足；这里只防合约 revert / token 余额不足一类
         # 注定失败的交易被反复 send_raw_transaction。通用 RPC 错误原样上抛给 Celery。
@@ -189,23 +214,32 @@ class EvmBroadcastTask(UndeletableModel):
             self.chain.w3.eth.estimate_gas(preflight_tx)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             if self._is_execution_reverted_error(exc):
-                self._finalize_preflight_revert(exc)
-                return None
+                # estimate_gas 回退发生在交易广播前，此 nonce 尚未被链上消费。
+                # 直接终局会制造 nonce 空洞并放行后续更高 nonce；保持 QUEUED，
+                # 仅记录尝试时间让调度节流，等待后续重试、补救或人工处理。
+                self._record_broadcast_attempt()
+                return False
             raise
 
-        # pre-flight 通过，真正广播。
+        return True
+
+    def _record_broadcast_attempt(self) -> None:
         self.last_attempt_at = timezone.now()
         self.save(update_fields=["last_attempt_at"])
 
+    def _send_signed_payload(self) -> None:
+        # pre-flight 通过，真正广播。
         raw_payload = Web3.to_bytes(hexstr=self.signed_payload)
         try:
             self.chain.w3.eth.send_raw_transaction(raw_payload)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
+            if self._is_nonce_too_low_error(exc):
+                raise
             if self._is_already_known_error(exc):
-                return self._mark_pending_chain()
+                self._mark_pending_chain()
+                return
             raise
         self._mark_pending_chain()
-        return None
 
     @staticmethod
     def _is_execution_reverted_error(exc: Exception) -> bool:
@@ -215,9 +249,23 @@ class EvmBroadcastTask(UndeletableModel):
         if isinstance(exc, ContractLogicError):
             return True
         msg = str(exc).lower()
-        if "execution reverted" in msg:
+        return "execution reverted" in msg
+
+    def _can_broadcast_for_current_stage(
+        self, *, allow_pending_chain_rebroadcast: bool
+    ) -> bool:
+        """校验当前父任务阶段是否允许进入真实广播副作用。"""
+        if not self.base_task_id:
             return True
-        return False
+
+        base_task = BroadcastTask.objects.only("stage", "result").get(
+            pk=self.base_task_id
+        )
+        if base_task.result != BroadcastTaskResult.UNKNOWN:
+            return False
+        if base_task.stage == BroadcastTaskStage.PENDING_CHAIN:
+            return allow_pending_chain_rebroadcast
+        return base_task.stage == BroadcastTaskStage.QUEUED
 
     def _is_eligible_for_gas_recharge(self) -> bool:
         """判断当前任务是否适用"向其 address 补 gas"。
@@ -261,40 +309,6 @@ class EvmBroadcastTask(UndeletableModel):
             chain=self.chain,
             erc20_gas_cost=erc20_gas_cost,
         )
-
-    @db_transaction.atomic
-    def _finalize_preflight_revert(self, exc: Exception) -> None:
-        """pre-flight 检测到链上 execution reverted 时，终局失败并释放关联业务。
-
-        与 evm.coordinator._finalize_failed_task 同义，但触发源是"尚未上链的
-        模拟回退"——仍处于 QUEUED 或 PENDING_CHAIN 阶段，因此放宽 stage 限制。
-        加行锁 + 幂等过滤，杜绝并发重复终局。
-        """
-        if not self.base_task_id:
-            return
-
-        locked_task = (
-            EvmBroadcastTask.objects.select_for_update().filter(pk=self.pk).first()
-        )
-        if locked_task is None or not locked_task.base_task_id:
-            return
-
-        base_task = locked_task.base_task
-        updated = BroadcastTask.mark_finalized_failed(
-            task_id=base_task.pk,
-            reason=BroadcastTaskFailureReason.EXECUTION_REVERTED,
-        )
-        if not updated:
-            return
-
-        if base_task.transfer_type == TransferType.Withdrawal:
-            from withdrawals.service import WithdrawalService
-
-            WithdrawalService.fail_withdrawal(broadcast_task=base_task)
-        elif base_task.transfer_type == TransferType.DepositCollection:
-            from deposits.service import DepositService
-
-            DepositService.release_failed_collection(broadcast_task=base_task)
 
     def _ensure_signed_with_latest_gas_price(self) -> None:
         """首次广播时签名并生成首个 tx_hash；重试时仅在 gas 提升时重签。"""
@@ -395,7 +409,6 @@ class EvmBroadcastTask(UndeletableModel):
         - Parity / OpenEthereum: "Transaction with the same hash was already imported."
         - Anvil (Foundry): "transaction already imported"
         - Erigon: "existing txn with same hash"
-        - 所有客户端 nonce 已上链: "nonce too low"
         """
         msg = str(exc).lower()
         return (
@@ -404,8 +417,12 @@ class EvmBroadcastTask(UndeletableModel):
             or "known transaction" in msg
             or "already imported" in msg
             or "existing txn with same hash" in msg
-            or "nonce too low" in msg
         )
+
+    @staticmethod
+    def _is_nonce_too_low_error(exc: Exception) -> bool:
+        """nonce too low 只表示该 nonce 已不可用，不能等同本系统交易已知。"""
+        return "nonce too low" in str(exc).lower()
 
     @classmethod
     def _create_broadcast_task(

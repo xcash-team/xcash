@@ -776,23 +776,23 @@ class BroadcastTask(UndeletableModel):
         *,
         task_id: int,
         reason: BroadcastTaskFailureReason,
+        expected_stage: BroadcastTaskStage | None = None,
     ) -> int:
         """将匹配的任务标记为失败终局。
 
         失败终局必须保留失败原因，便于后续按失败类型统计和排查。
         """
-        return (
-            BroadcastTask.objects.filter(
-                pk=task_id,
-                result=BroadcastTaskResult.UNKNOWN,
-            )
-            .exclude(stage=BroadcastTaskStage.FINALIZED)
-            .update(
-                stage=BroadcastTaskStage.FINALIZED,
-                result=BroadcastTaskResult.FAILED,
-                failure_reason=reason,
-                updated_at=timezone.now(),
-            )
+        queryset = BroadcastTask.objects.filter(
+            pk=task_id,
+            result=BroadcastTaskResult.UNKNOWN,
+        ).exclude(stage=BroadcastTaskStage.FINALIZED)
+        if expected_stage is not None:
+            queryset = queryset.filter(stage=expected_stage)
+        return queryset.update(
+            stage=BroadcastTaskStage.FINALIZED,
+            result=BroadcastTaskResult.FAILED,
+            failure_reason=reason,
+            updated_at=timezone.now(),
         )
 
     @staticmethod

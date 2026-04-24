@@ -541,8 +541,9 @@ class EvmBroadcastTaskTests(TestCase):
         send_raw_mock.assert_not_called()
         self.assertIsNone(broadcast_task.last_attempt_at)
 
-    def test_broadcast_finalizes_failed_on_preflight_revert(self):
-        # pre-flight 命中合约 revert：标记 FINALIZED + FAILED，并解绑 deposits。
+    def test_broadcast_keeps_queued_on_preflight_revert_to_preserve_nonce(self):
+        # pre-flight 命中合约 revert 时不能直接终局失败；该 nonce 尚未上链消费，
+        # 必须保持 QUEUED 来阻断后续更高 nonce，避免制造链上 nonce 空洞。
         from deposits.models import Deposit
         from deposits.models import DepositAddress
         from deposits.models import DepositCollection
@@ -657,18 +658,14 @@ class EvmBroadcastTaskTests(TestCase):
         base_task.refresh_from_db()
         broadcast_task.refresh_from_db()
         deposit.refresh_from_db()
-        self.assertEqual(base_task.stage, BroadcastTaskStage.FINALIZED)
-        self.assertEqual(base_task.result, BroadcastTaskResult.FAILED)
-        self.assertEqual(
-            base_task.failure_reason,
-            BroadcastTaskFailureReason.EXECUTION_REVERTED,
-        )
+        self.assertEqual(base_task.stage, BroadcastTaskStage.QUEUED)
+        self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
+        self.assertEqual(base_task.failure_reason, "")
         send_raw_mock.assert_not_called()
-        # release_failed_collection 副作用：deposit 解绑、collection 被删
-        self.assertIsNone(deposit.collection_id)
-        self.assertFalse(
-            DepositCollection.objects.filter(pk=collection.pk).exists()
-        )
+        self.assertIsNotNone(broadcast_task.last_attempt_at)
+        # 业务关系仍保留，等待重试、补救或人工处理；不能提前释放并跳过 nonce。
+        self.assertEqual(deposit.collection_id, collection.pk)
+        self.assertTrue(DepositCollection.objects.filter(pk=collection.pk).exists())
 
     def test_broadcast_preflight_success_proceeds_to_send(self):
         # pre-flight 通过时继续进入 send_raw_transaction 流程，base_task 进入 PENDING_CHAIN。
@@ -747,6 +744,71 @@ class EvmBroadcastTaskTests(TestCase):
         # estimate_gas 校验的"交易语义是否可执行"属于两件事，务必解耦。
         preflight_arg = estimate_gas_mock.call_args.args[0]
         self.assertNotIn("nonce", preflight_arg)
+
+    @patch.object(EvmBroadcastTask, "is_pipeline_full", return_value=True)
+    def test_pending_chain_rebroadcast_ignores_pipeline_full(self, _pipeline_full_mock):
+        # 低 nonce 的 PENDING_CHAIN 任务超时重播是为了释放同地址 pipeline；
+        # 如果它也被 pipeline_full 阻断，满 pipeline 会无法自愈。
+        native = Crypto.objects.create(
+            name="Ethereum Rebroadcast Pipeline",
+            symbol="ETHRBP",
+            coingecko_id="ethereum-rebroadcast-pipeline",
+        )
+        chain = Chain.objects.create(
+            code="eth-rebroadcast-pipeline",
+            name="Ethereum Rebroadcast Pipeline",
+            type=ChainType.EVM,
+            chain_id=20403,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000404"
+            ),
+        )
+        send_raw_mock = Mock()
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                get_balance=Mock(return_value=10**19),
+                estimate_gas=Mock(return_value=21_000),
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000405"
+            ),
+            amount=Decimal("1"),
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        broadcast_task.broadcast(allow_pending_chain_rebroadcast=True)
+
+        send_raw_mock.assert_called_once()
 
     def test_broadcast_preflight_rpc_error_reraises(self):
         # pre-flight 遇到通用 RPC 错误（非 insufficient funds / revert）应上抛给 Celery 重试，
@@ -888,7 +950,7 @@ class EvmBroadcastTaskTests(TestCase):
             RuntimeError,
             "replacement transaction underpriced",
         ):
-            broadcast_task.broadcast()
+            broadcast_task.broadcast(allow_pending_chain_rebroadcast=True)
 
         base_task.refresh_from_db()
         broadcast_task.refresh_from_db()
@@ -896,7 +958,7 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
 
-    def test_broadcast_keeps_nonce_too_low_for_followup_reconciliation(self):
+    def test_broadcast_reraises_nonce_too_low_without_marking_pending(self):
         native = Crypto.objects.create(
             name="Ethereum Nonce Too Low",
             symbol="ETHNTL",
@@ -954,7 +1016,8 @@ class EvmBroadcastTaskTests(TestCase):
             signed_payload="0x7261772d6279746573",
         )
 
-        broadcast_task.broadcast()
+        with self.assertRaisesMessage(RuntimeError, "nonce too low"):
+            broadcast_task.broadcast(allow_pending_chain_rebroadcast=True)
 
         base_task.refresh_from_db()
         broadcast_task.refresh_from_db()
@@ -1687,6 +1750,24 @@ class EvmTaskQueueTests(TestCase):
 
         broadcast_mock.assert_not_called()
 
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_broadcast_task_skips_pending_chain_to_avoid_immediate_rebroadcast(
+        self, broadcast_mock
+    ):
+        # 普通 Celery 广播入口只负责 QUEUED 首次发送；PENDING_CHAIN 重播必须走
+        # coordinator 的超时收口路径，避免重复消息绕过重播间隔。
+        from evm.tasks import broadcast_evm_task
+
+        broadcast_task = self._create_evm_task(
+            tx_hash="0x" + "aa" * 32,
+            stage=BroadcastTaskStage.PENDING_CHAIN,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+
+        broadcast_evm_task.run(broadcast_task.pk)
+
+        broadcast_mock.assert_not_called()
+
     @patch("evm.tasks.broadcast_evm_task.delay")
     def test_dispatch_due_evm_broadcast_tasks_dispatches_only_queued_unknown_tasks(
         self, delay_mock
@@ -2188,6 +2269,35 @@ class EvmTaskQueueTests(TestCase):
 
         broadcast_mock.assert_called_once()
         delay_mock.assert_called_once_with(next_task.pk)
+
+    @patch("evm.tasks.broadcast_evm_task.delay")
+    @patch("evm.tasks.EvmBroadcastTask.broadcast")
+    def test_chain_dispatch_skips_when_current_task_remains_queued(
+        self,
+        broadcast_mock,
+        delay_mock,
+    ):
+        # pre-flight 阻断会让当前任务保持 QUEUED 并依赖 last_attempt_at 节流；
+        # 链式调度不能立刻把同一个最低 nonce 再投递一次。
+        from evm.tasks import broadcast_evm_task
+
+        current_task = self._create_evm_task(
+            tx_hash="0x" + "f5" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=0,
+        )
+        self._create_evm_task(
+            tx_hash="0x" + "f6" * 32,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+            nonce=1,
+        )
+
+        broadcast_evm_task.run(current_task.pk)
+
+        broadcast_mock.assert_called_once()
+        delay_mock.assert_not_called()
 
     @patch("evm.tasks.broadcast_evm_task.delay")
     @patch("evm.tasks.EvmBroadcastTask.broadcast")

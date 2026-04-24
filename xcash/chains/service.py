@@ -196,12 +196,33 @@ class TransferService:
             "from_address": (existing.from_address, observed.from_address),
             "to_address": (existing.to_address, observed.to_address),
             "value": (existing.value, observed.value),
-            "timestamp": (existing.timestamp, observed.timestamp),
         }
         differences = {
             field: vals for field, vals in compared_values.items() if vals[0] != vals[1]
         }
         return not differences, differences
+
+    @staticmethod
+    def _refresh_observed_transfer_chain_position(
+        existing: OnchainTransfer,
+        observed: ObservedTransferPayload,
+    ) -> None:
+        update_fields = []
+        if existing.block != observed.block:
+            existing.block = observed.block
+            update_fields.append("block")
+        if existing.timestamp != observed.timestamp:
+            existing.timestamp = observed.timestamp
+            update_fields.append("timestamp")
+        if existing.datetime != observed.occurred_at:
+            existing.datetime = observed.occurred_at
+            update_fields.append("datetime")
+        if not update_fields:
+            return
+
+        OnchainTransfer.objects.filter(pk=existing.pk).update(
+            **{field: getattr(existing, field) for field in update_fields}
+        )
 
     @staticmethod
     def _log_observed_transfer_conflict(
@@ -279,6 +300,10 @@ class TransferService:
                 observed=observed,
             )
             if is_same_transfer:
+                TransferService._refresh_observed_transfer_chain_position(
+                    existing=existing,
+                    observed=observed,
+                )
                 logger.debug(
                     "Observed transfer replay ignored",
                     source=observed.source,
