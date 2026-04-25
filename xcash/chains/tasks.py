@@ -51,6 +51,15 @@ def confirm_transfer(self, pk):
         raise self.retry(exc=result, countdown=countdown)
     if result == TxCheckStatus.CONFIRMED:
         transfer.confirm()
+    elif result == TxCheckStatus.CONFIRMING:
+        if self.request.retries >= self.max_retries:
+            transfer.drop()
+            return
+        countdown = 8 * (2**self.request.retries)
+        raise self.retry(
+            exc=RuntimeError(f"交易 receipt 暂不可见: {transfer.hash}"),
+            countdown=countdown,
+        )
     elif result == TxCheckStatus.DROPPED:
         transfer.drop()
     elif result == TxCheckStatus.FAILED:

@@ -456,6 +456,15 @@ class DepositService:
         transfer: OnchainTransfer, broadcast_task: BroadcastTask
     ) -> bool:
         """通过 BroadcastTask 识别 Vault → 充币地址的 Gas 补充转账，并关联到 GasRecharge 记录。"""
+        if not broadcast_task.matches_onchain_transfer(transfer):
+            logger.warning(
+                "Gas 补充链上转账与广播任务不匹配，忽略",
+                broadcast_task_id=broadcast_task.pk,
+                transfer_id=transfer.pk,
+                tx_hash=transfer.hash,
+            )
+            return False
+
         transfer.type = TransferType.GasRecharge
         transfer.save(update_fields=["type"])
 
@@ -474,6 +483,15 @@ class DepositService:
         broadcast_task: BroadcastTask,
     ) -> bool:
         """通过 BroadcastTask 将链上归集转账与 DepositCollection 记录关联。"""
+        if not broadcast_task.matches_onchain_transfer(transfer):
+            logger.warning(
+                "归集链上转账与广播任务不匹配，忽略",
+                broadcast_task_id=broadcast_task.pk,
+                transfer_id=transfer.pk,
+                tx_hash=transfer.hash,
+            )
+            return False
+
         collection = (
             DepositCollection.objects.select_for_update()
             .filter(broadcast_task=broadcast_task)

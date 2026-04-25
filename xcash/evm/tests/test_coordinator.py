@@ -50,6 +50,7 @@ _CONTRACT_HEX = Web3.to_checksum_address("0xdddddddddddddddddddddddddddddddddddd
 
 def _make_erc20_transfer_log(
     *,
+    contract_address: str = _CONTRACT_HEX,
     from_hex: str = _SENDER_HEX,
     to_hex: str = _RECEIVER_HEX,
     value_int: int = 100_000_000,
@@ -69,6 +70,7 @@ def _make_erc20_transfer_log(
     value_hex = "0x" + hex(value_int)[2:].zfill(64)
 
     return {
+        "address": contract_address,
         "topics": [topic0_bytes, from_padded, to_padded],
         "data": value_hex,
         "logIndex": log_index,
@@ -125,6 +127,43 @@ class ParseErc20TransferLogTest(TestCase):
 
         result = _parse_erc20_transfer_log(receipt=receipt)
         self.assertIsNone(result)
+
+    def test_filters_by_contract_sender_recipient_and_value(self):
+        """内部任务解析 receipt 时必须按任务预期筛选唯一 Transfer 日志。"""
+        wrong_contract = _make_erc20_transfer_log(
+            contract_address=Web3.to_checksum_address(
+                "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            ),
+            from_hex=_SENDER_HEX,
+            to_hex=_RECEIVER_HEX,
+            value_int=100_000_000,
+            log_index=1,
+        )
+        wrong_value = _make_erc20_transfer_log(
+            contract_address=_CONTRACT_HEX,
+            from_hex=_SENDER_HEX,
+            to_hex=_RECEIVER_HEX,
+            value_int=1,
+            log_index=2,
+        )
+        expected = _make_erc20_transfer_log(
+            contract_address=_CONTRACT_HEX,
+            from_hex=_SENDER_HEX,
+            to_hex=_RECEIVER_HEX,
+            value_int=100_000_000,
+            log_index=3,
+        )
+
+        result = _parse_erc20_transfer_log(
+            receipt={"logs": [wrong_contract, wrong_value, expected]},
+            token_address=_CONTRACT_HEX,
+            from_address=_SENDER_HEX,
+            to_address=_RECEIVER_HEX,
+            value=Decimal(100_000_000),
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["event_id"], "erc20:3")
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +345,8 @@ class ObserveConfirmedErc20Test(TestCase):
         """ERC-20 已确认时，从 receipt.logs 解析 Transfer，不调用 get_transaction。"""
         tx_hash = "0x" + "cd" * 32
         transfer_log = _make_erc20_transfer_log(
-            from_hex=_SENDER_HEX,
+            contract_address=_CONTRACT_HEX,
+            from_hex=_VAULT_HEX,
             to_hex=_RECEIVER_HEX,
             value_int=100_000_000,  # 100 USDT（精度 6）
             log_index=5,
@@ -339,7 +379,7 @@ class ObserveConfirmedErc20Test(TestCase):
         self.assertEqual(payload.tx_hash, tx_hash)
         self.assertEqual(payload.event_id, "erc20:5")
         self.assertEqual(
-            payload.from_address, Web3.to_checksum_address(_SENDER_HEX)
+            payload.from_address, Web3.to_checksum_address(_VAULT_HEX)
         )
         self.assertEqual(
             payload.to_address, Web3.to_checksum_address(_RECEIVER_HEX)
@@ -351,6 +391,37 @@ class ObserveConfirmedErc20Test(TestCase):
 
         # ERC-20 路径不应调用 get_transaction，from/to/value 来自 receipt.logs
         mock_w3.eth.get_transaction.assert_not_called()
+
+    def test_erc20_confirmed_ignores_mismatched_transfer_log(self):
+        """receipt 内没有符合任务参数的 Transfer 日志时，不应创建观察转账。"""
+        tx_hash = "0x" + "ce" * 32
+        wrong_transfer_log = _make_erc20_transfer_log(
+            contract_address=_CONTRACT_HEX,
+            from_hex=_SENDER_HEX,
+            to_hex=_RECEIVER_HEX,
+            value_int=100_000_000,
+            log_index=5,
+        )
+        receipt = {
+            "blockNumber": 201,
+            "status": 1,
+            "logs": [wrong_transfer_log],
+        }
+
+        mock_w3 = MagicMock()
+        mock_w3.eth.get_block.return_value = {"timestamp": 1700001000}
+
+        with (
+            patch.object(type(self.chain), "w3", new_callable=lambda: property(lambda self: mock_w3)),
+            patch("chains.service.TransferService.create_observed_transfer") as mock_create,
+        ):
+            InternalEvmTaskCoordinator._observe_confirmed_transaction(
+                evm_task=self.evm_task,
+                tx_hash=tx_hash,
+                receipt=receipt,
+            )
+
+        mock_create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +685,39 @@ class CoordinatorIntegrationTest(TestCase):
         self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
         self.assertEqual(withdrawal.transfer, transfer)
         self.assertEqual(transfer.type, TransferType.Withdrawal)
+        self.assertIsNotNone(transfer.processed_at)
+
+    def test_process_ignores_internal_withdrawal_when_transfer_value_mismatches(self):
+        """同 tx_hash 的异常事件不应仅凭 hash 绑定为内部提币。"""
+        from withdrawals.models import WithdrawalStatus
+
+        tx_hash = "0x" + "a6" * 32
+        withdrawal, base_task, _evm_task = self._create_erc20_withdrawal(
+            tx_hash=tx_hash
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=self.chain,
+            block=100,
+            hash=tx_hash,
+            event_id="erc20:bad",
+            crypto=self.token,
+            from_address=self.addr.address,
+            to_address=_RECEIVER_HEX,
+            value=Decimal("1"),
+            amount=Decimal("0.000001"),
+            timestamp=1700000000,
+            datetime=timezone.now(),
+        )
+
+        transfer.process()
+
+        withdrawal.refresh_from_db()
+        base_task.refresh_from_db()
+        transfer.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
+        self.assertIsNone(withdrawal.transfer_id)
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+        self.assertEqual(transfer.type, "")
         self.assertIsNotNone(transfer.processed_at)
 
     # ---- Test 3 ----

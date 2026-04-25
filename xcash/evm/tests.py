@@ -255,7 +255,6 @@ class EvmBroadcastTaskTests(TestCase):
         # 归集场景 native 余额低于阈值：pre-flight 主动补 gas，保持 QUEUED，
         # 不调用 estimate_gas / send_raw_transaction，不更新 last_attempt_at。
         from deposits.models import DepositAddress
-        from deposits.models import GasRecharge
         from projects.models import Project
         from users.models import Customer
 
@@ -1177,6 +1176,169 @@ class EvmBroadcastTaskTests(TestCase):
         self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(base_task.result, BroadcastTaskResult.UNKNOWN)
         self.assertEqual(base_task.failure_reason, "")
+
+    def test_queued_task_with_existing_hash_recovers_from_confirmed_receipt(self):
+        """首播已被节点接受但阶段仍是 QUEUED 时，应先查 receipt 自愈而不是重发。"""
+        native = Crypto.objects.create(
+            name="Ethereum Queued Receipt Recovery",
+            symbol="ETHQRR",
+            coingecko_id="ethereum-queued-receipt-recovery",
+        )
+        chain = Chain.objects.create(
+            code="eth-queued-receipt-recovery",
+            name="Ethereum Queued Receipt Recovery",
+            type=ChainType.EVM,
+            chain_id=20105,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000109"
+            ),
+        )
+        tx_hash = "0x" + "5" * 64
+        send_raw_mock = Mock()
+        receipt = {"status": 1, "blockNumber": 100, "logs": []}
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                get_transaction_receipt=Mock(return_value=receipt),
+                get_balance=Mock(return_value=10**18),
+                estimate_gas=Mock(return_value=21_000),
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000110"
+            ),
+            amount=Decimal("1"),
+            tx_hash=tx_hash,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        TxHash.objects.create(
+            broadcast_task=base_task,
+            chain=chain,
+            hash=tx_hash,
+            version=0,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        with patch(
+            "evm.coordinator.InternalEvmTaskCoordinator._observe_confirmed_transaction"
+        ) as observe_mock:
+            broadcast_task.broadcast()
+
+        send_raw_mock.assert_not_called()
+        observe_mock.assert_called_once()
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+
+    def test_nonce_too_low_checks_existing_hash_before_reraising(self):
+        """nonce too low 时若历史 hash 已有 receipt，应自动恢复而不是继续卡 QUEUED。"""
+        from web3.exceptions import TransactionNotFound
+
+        native = Crypto.objects.create(
+            name="Ethereum Nonce Too Low Recovery",
+            symbol="ETHNTLR",
+            coingecko_id="ethereum-nonce-too-low-recovery",
+        )
+        chain = Chain.objects.create(
+            code="eth-nonce-too-low-recovery",
+            name="Ethereum Nonce Too Low Recovery",
+            type=ChainType.EVM,
+            chain_id=20106,
+            rpc="http://localhost:8545",
+            native_coin=native,
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=Wallet.objects.create(),
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Vault,
+            bip44_account=1,
+            address_index=0,
+            address=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000111"
+            ),
+        )
+        tx_hash = "0x" + "6" * 64
+        receipt = {"status": 1, "blockNumber": 100, "logs": []}
+        get_receipt_mock = Mock(
+            side_effect=[TransactionNotFound(tx_hash), receipt],
+        )
+        send_raw_mock = Mock(side_effect=RuntimeError("nonce too low"))
+        chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(
+                gas_price=1,
+                get_transaction_receipt=get_receipt_mock,
+                get_balance=Mock(return_value=10**19),
+                estimate_gas=Mock(return_value=21_000),
+                send_raw_transaction=send_raw_mock,
+            )
+        )
+        base_task = BroadcastTask.objects.create(
+            chain=chain,
+            address=addr,
+            transfer_type=TransferType.Withdrawal,
+            crypto=native,
+            recipient=Web3.to_checksum_address(
+                "0x0000000000000000000000000000000000000112"
+            ),
+            amount=Decimal("1"),
+            tx_hash=tx_hash,
+            stage=BroadcastTaskStage.QUEUED,
+            result=BroadcastTaskResult.UNKNOWN,
+        )
+        TxHash.objects.create(
+            broadcast_task=base_task,
+            chain=chain,
+            hash=tx_hash,
+            version=0,
+        )
+        broadcast_task = EvmBroadcastTask.objects.create(
+            base_task=base_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=base_task.recipient,
+            value=10**18,
+            gas=21_000,
+            gas_price=1,
+            signed_payload="0x7261772d6279746573",
+        )
+
+        with patch(
+            "evm.coordinator.InternalEvmTaskCoordinator._observe_confirmed_transaction"
+        ) as observe_mock:
+            broadcast_task.broadcast()
+
+        send_raw_mock.assert_called_once()
+        observe_mock.assert_called_once()
+        base_task.refresh_from_db()
+        self.assertEqual(base_task.stage, BroadcastTaskStage.PENDING_CHAIN)
 
 
 class EvmChainScannerServiceTests(TestCase):
@@ -3616,7 +3778,7 @@ class EvmAdapterTests(TestCase):
         result = EvmAdapter.tx_result(chain, "0x" + "ab" * 32)
         self.assertEqual(result, TxCheckStatus.FAILED)
 
-    def test_tx_result_returns_dropped_when_transaction_not_found(self):
+    def test_tx_result_returns_confirming_when_transaction_not_found(self):
         from web3.exceptions import TransactionNotFound
 
         chain = Chain(
@@ -3638,9 +3800,9 @@ class EvmAdapterTests(TestCase):
         from evm.adapter import EvmAdapter
 
         result = EvmAdapter.tx_result(chain, "0x" + "ab" * 32)
-        self.assertEqual(result, TxCheckStatus.DROPPED)
+        self.assertEqual(result, TxCheckStatus.CONFIRMING)
 
-    def test_tx_result_returns_dropped_when_receipt_is_none(self):
+    def test_tx_result_returns_confirming_when_receipt_is_none(self):
         chain = Chain(
             code="eth",
             name="Ethereum",
@@ -3658,7 +3820,7 @@ class EvmAdapterTests(TestCase):
         from evm.adapter import EvmAdapter
 
         result = EvmAdapter.tx_result(chain, "0x" + "ab" * 32)
-        self.assertEqual(result, TxCheckStatus.DROPPED)
+        self.assertEqual(result, TxCheckStatus.CONFIRMING)
 
     def test_tx_result_returns_exception_when_receipt_missing_status(self):
         chain = Chain(

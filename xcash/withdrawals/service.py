@@ -586,6 +586,16 @@ class WithdrawalService:
         except Withdrawal.DoesNotExist:
             return False
 
+        if not broadcast_task.matches_onchain_transfer(transfer):
+            logger.warning(
+                "提币链上转账与广播任务不匹配，忽略",
+                withdrawal_id=withdrawal.id,
+                broadcast_task_id=broadcast_task.pk,
+                transfer_id=transfer.pk,
+                tx_hash=transfer.hash,
+            )
+            return False
+
         # 记录需要额外写入的字段（chain 为 None 时才加入）
         update_fields = ["transfer", "status", "updated_at"]
 

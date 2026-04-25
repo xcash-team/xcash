@@ -636,6 +636,57 @@ class BroadcastTask(UndeletableModel):
     def __str__(self):
         return self.tx_hash or f"broadcast-task-{self.pk or 'unsaved'}"
 
+    @staticmethod
+    def _addresses_equal(left: str | None, right: str | None, *, chain: Chain) -> bool:
+        if not left or not right:
+            return False
+        if chain.type == ChainType.EVM:
+            try:
+                return Web3.to_checksum_address(str(left)) == Web3.to_checksum_address(
+                    str(right)
+                )
+            except ValueError:
+                return False
+        return str(left) == str(right)
+
+    def expected_transfer_value(self) -> Decimal | None:
+        """返回内部广播任务预期的链上原始转账数值。"""
+        if self.crypto_id is None or self.amount is None:
+            return None
+        if self.chain.type == ChainType.EVM:
+            try:
+                evm_task = self.evm_task
+            except AttributeError:
+                return None
+            if self.crypto == self.chain.native_coin or self.crypto.is_native:
+                return Decimal(evm_task.value)
+            return Decimal(self.amount).scaleb(self.crypto.get_decimals(self.chain))
+        return None
+
+    def matches_onchain_transfer(self, transfer: OnchainTransfer) -> bool:
+        """校验内部广播任务与链上转账内容完全一致。
+
+        tx_hash 只能定位交易；这里再校验资产、收付款地址和原始金额，防止同一
+        receipt 内多条事件或异常日志顺序把错误转账绑定到内部业务。
+        """
+        if transfer.chain_id != self.chain_id:
+            return False
+        if self.crypto_id is not None and transfer.crypto_id != self.crypto_id:
+            return False
+        if not self._addresses_equal(
+            transfer.from_address, self.address.address, chain=self.chain,
+        ):
+            return False
+        if not self._addresses_equal(
+            transfer.to_address, self.recipient, chain=self.chain,
+        ):
+            return False
+
+        expected_value = self.expected_transfer_value()
+        if expected_value is None:
+            return False
+        return Decimal(transfer.value) == expected_value
+
     def clean(self) -> None:
         """在模型层显式约束阶段、结果、失败原因三者的一致性。"""
         super().clean()

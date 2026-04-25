@@ -1583,8 +1583,13 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             status=WithdrawalStatus.CONFIRMING,
         )
 
-        with self.captureOnCommitCallbacks(execute=True):
-            confirm_transfer.run(transfer.pk)
+        old_retries = confirm_transfer.request.retries
+        confirm_transfer.request.retries = confirm_transfer.max_retries
+        try:
+            with self.captureOnCommitCallbacks(execute=True):
+                confirm_transfer.run(transfer.pk)
+        finally:
+            confirm_transfer.request.retries = old_retries
 
         # OnchainTransfer 被 drop 后直接删除，释放唯一约束以允许 reorg 后重建
         self.assertFalse(OnchainTransfer.objects.filter(pk=transfer.pk).exists())

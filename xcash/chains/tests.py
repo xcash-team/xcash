@@ -805,6 +805,70 @@ class TransferConfirmDispatchTests(TestCase):
         self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CHAIN)
         self.assertEqual(broadcast_task.result, BroadcastTaskResult.UNKNOWN)
 
+    @patch("common.decorators.cache.delete", return_value=True)
+    @patch("common.decorators.cache.add", return_value=True)
+    @patch("chains.tasks.AdapterFactory.get_adapter")
+    def test_confirm_transfer_retries_confirming_result_before_drop(
+        self, get_adapter_mock, _cache_add_mock, _cache_delete_mock
+    ):
+        from chains.adapters import TxCheckStatus
+        from chains.tasks import confirm_transfer
+        from withdrawals.models import WithdrawalStatus
+
+        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+            tx_hash="0x" + "d" * 64
+        )
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.CONFIRMING
+        get_adapter_mock.return_value = adapter
+
+        with patch.object(
+            confirm_transfer,
+            "retry",
+            side_effect=RuntimeError("retry scheduled"),
+        ) as retry_mock:
+            with self.assertRaisesMessage(RuntimeError, "retry scheduled"):
+                confirm_transfer.run(transfer.pk)
+
+        retry_mock.assert_called_once()
+        self.assertTrue(OnchainTransfer.objects.filter(pk=transfer.pk).exists())
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalStatus.CONFIRMING)
+        self.assertEqual(withdrawal.transfer_id, transfer.pk)
+        broadcast_task.refresh_from_db()
+        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CONFIRM)
+
+    @patch("common.decorators.cache.delete", return_value=True)
+    @patch("common.decorators.cache.add", return_value=True)
+    @patch("chains.tasks.AdapterFactory.get_adapter")
+    def test_confirm_transfer_drops_confirming_result_after_retry_limit(
+        self, get_adapter_mock, _cache_add_mock, _cache_delete_mock
+    ):
+        from chains.adapters import TxCheckStatus
+        from chains.tasks import confirm_transfer
+        from withdrawals.models import WithdrawalStatus
+
+        transfer, withdrawal, broadcast_task = self._create_withdrawal_transfer_fixture(
+            tx_hash="0x" + "c" * 64
+        )
+        adapter = Mock()
+        adapter.tx_result.return_value = TxCheckStatus.CONFIRMING
+        get_adapter_mock.return_value = adapter
+
+        old_retries = confirm_transfer.request.retries
+        confirm_transfer.request.retries = confirm_transfer.max_retries
+        try:
+            confirm_transfer.run(transfer.pk)
+        finally:
+            confirm_transfer.request.retries = old_retries
+
+        self.assertFalse(OnchainTransfer.objects.filter(pk=transfer.pk).exists())
+        withdrawal.refresh_from_db()
+        self.assertEqual(withdrawal.status, WithdrawalStatus.PENDING)
+        self.assertIsNone(withdrawal.transfer)
+        broadcast_task.refresh_from_db()
+        self.assertEqual(broadcast_task.stage, BroadcastTaskStage.PENDING_CHAIN)
+
 
 class SignerBackendTests(TestCase):
     @override_settings(

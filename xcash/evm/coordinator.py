@@ -16,7 +16,6 @@ from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import TransferType
-from chains.models import TxHash
 from common.time import ago
 from evm.constants import EVM_PENDING_REBROADCAST_TIMEOUT
 from evm.models import EvmBroadcastTask
@@ -36,13 +35,36 @@ def _to_hex(value: object) -> str:
     return hex_value.removeprefix("0x")
 
 
-def _parse_erc20_transfer_log(*, receipt: dict) -> dict | None:
+def _same_evm_address(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Web3.to_checksum_address(str(left)) == Web3.to_checksum_address(
+            str(right)
+        )
+    except ValueError:
+        return False
+
+
+def _parse_erc20_transfer_log(
+    *,
+    receipt: dict,
+    token_address: str | None = None,
+    from_address: str | None = None,
+    to_address: str | None = None,
+    value: Decimal | None = None,
+) -> dict | None:
     """从 receipt 日志中解析 ERC-20 Transfer 事件。
 
     返回 {"from_address", "to_address", "value", "event_id"} 或 None。
-    仅匹配第一条 Transfer 日志（一笔内部广播交易只对应一次 token transfer）。
+    传入任务预期参数时，只返回唯一符合合约、from、to、value 的 Transfer 日志。
     """
     for log in receipt.get("logs") or []:
+        if token_address is not None and not _same_evm_address(
+            str(log.get("address") or ""), token_address,
+        ):
+            continue
+
         topics = list(log.get("topics") or [])
         if len(topics) < 3:
             continue
@@ -52,22 +74,35 @@ def _parse_erc20_transfer_log(*, receipt: dict) -> dict | None:
         if topic0_hex != ERC20_TRANSFER_TOPIC0.removeprefix("0x").lower():
             continue
 
-        from_address = Web3.to_checksum_address(f"0x{_to_hex(topics[1])[-40:]}")
-        to_address = Web3.to_checksum_address(f"0x{_to_hex(topics[2])[-40:]}")
+        parsed_from_address = Web3.to_checksum_address(
+            f"0x{_to_hex(topics[1])[-40:]}"
+        )
+        parsed_to_address = Web3.to_checksum_address(f"0x{_to_hex(topics[2])[-40:]}")
+
+        if from_address is not None and not _same_evm_address(
+            parsed_from_address, from_address,
+        ):
+            continue
+        if to_address is not None and not _same_evm_address(
+            parsed_to_address, to_address,
+        ):
+            continue
 
         raw_data = _to_hex(log.get("data", "0x0"))
         if not raw_data:
             continue
-        value = Decimal(int(raw_data, 16))
+        parsed_value = Decimal(int(raw_data, 16))
+        if value is not None and parsed_value != value:
+            continue
 
         log_index = log.get("logIndex", 0)
         if isinstance(log_index, str):
             log_index = int(log_index, 16) if log_index.startswith("0x") else int(log_index)
 
         return {
-            "from_address": from_address,
-            "to_address": to_address,
-            "value": value,
+            "from_address": parsed_from_address,
+            "to_address": parsed_to_address,
+            "value": parsed_value,
             "event_id": f"erc20:{log_index}",
         }
 
@@ -159,13 +194,7 @@ class InternalEvmTaskCoordinator:
         - 全部未找到 -> (CONFIRMING, None, None)
         - RPC 异常 -> (Exception, None, None)
         """
-        hashes = set(
-            TxHash.objects.filter(
-                broadcast_task=evm_task.base_task
-            ).values_list("hash", flat=True)
-        )
-
-        for tx_hash in hashes:
+        for tx_hash in evm_task._known_tx_hashes():
             try:
                 receipt = evm_task.chain.w3.eth.get_transaction_receipt(tx_hash)
             except TransactionNotFound:
@@ -221,18 +250,29 @@ class InternalEvmTaskCoordinator:
             event_id = "native:tx"
         else:
             # ERC-20 转账：从 receipt.logs 解析 Transfer 事件
-            parsed = _parse_erc20_transfer_log(receipt=receipt)
+            decimals = base_task.crypto.get_decimals(chain)
+            expected_value = Decimal(base_task.amount).scaleb(decimals)
+            parsed = _parse_erc20_transfer_log(
+                receipt=receipt,
+                token_address=evm_task.to,
+                from_address=evm_task.address.address,
+                to_address=base_task.recipient,
+                value=expected_value,
+            )
             if parsed is None:
                 logger.warning(
-                    "协调器未在 receipt 中找到 ERC-20 Transfer 日志",
+                    "协调器未在 receipt 中找到匹配任务参数的 ERC-20 Transfer 日志",
                     chain=chain.code,
                     tx_hash=tx_hash,
+                    token_address=evm_task.to,
+                    from_address=evm_task.address.address,
+                    to_address=base_task.recipient,
+                    value=str(expected_value),
                 )
                 return
             from_address = parsed["from_address"]
             to_address = parsed["to_address"]
             value = parsed["value"]
-            decimals = base_task.crypto.get_decimals(chain)
             amount = value.scaleb(-decimals)
             event_id = parsed["event_id"]
 

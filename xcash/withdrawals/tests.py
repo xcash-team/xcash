@@ -125,6 +125,15 @@ class WithdrawalBroadcastTaskTests(TestCase):
             stage=BroadcastTaskStage.QUEUED,
             result=BroadcastTaskResult.UNKNOWN,
         )
+        EvmBroadcastTask.objects.create(
+            base_task=broadcast_task,
+            address=addr,
+            chain=chain,
+            nonce=0,
+            to=broadcast_task.recipient,
+            value=1,
+            gas=21_000,
+        )
         withdrawal = Withdrawal.objects.create(
             project=project,
             out_no="order-1",
@@ -1901,7 +1910,7 @@ class WithdrawalTryMatchTests(TestCase):
             hash=tx_hash or self._next_hash(),
             event_id=event_id,
             crypto=self.crypto,
-            from_address="0x0000000000000000000000000000000000000001",
+            from_address=self.addr.address,
             to_address="0x0000000000000000000000000000000000000002",
             value=1,
             amount=Decimal("1"),
@@ -1912,13 +1921,28 @@ class WithdrawalTryMatchTests(TestCase):
 
     def _make_broadcast_task(self, *, tx_hash, stage=BroadcastTaskStage.PENDING_CHAIN):
         """创建完整的 BroadcastTask 对象。"""
-        return BroadcastTask.objects.create(
+        recipient = "0x0000000000000000000000000000000000000002"
+        broadcast_task = BroadcastTask.objects.create(
             chain=self.chain,
             address=self.addr,
             transfer_type=TransferType.Withdrawal,
+            crypto=self.crypto,
+            recipient=recipient,
+            amount=Decimal("1"),
             tx_hash=tx_hash,
             stage=stage,
+            result=BroadcastTaskResult.UNKNOWN,
         )
+        EvmBroadcastTask.objects.create(
+            base_task=broadcast_task,
+            address=self.addr,
+            chain=self.chain,
+            nonce=0,
+            to=recipient,
+            value=1,
+            gas=21_000,
+        )
+        return broadcast_task
 
     def test_match_returns_false_when_no_withdrawal_found(self):
         """链上转账没有对应提币单时应返回 False。"""

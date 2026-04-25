@@ -15,6 +15,7 @@ from chains.models import BroadcastTask
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import TransferType
+from chains.models import TxHash
 from chains.signer import get_signer_backend
 from common.fields import EvmAddressField
 from common.models import UndeletableModel
@@ -155,6 +156,8 @@ class EvmBroadcastTask(UndeletableModel):
             allow_pending_chain_rebroadcast=allow_pending_chain_rebroadcast
         ):
             return
+        if self._recover_queued_receipt_if_any():
+            return
         if self._is_broadcast_order_blocked(
             allow_pending_chain_rebroadcast=allow_pending_chain_rebroadcast
         ):
@@ -234,12 +237,94 @@ class EvmBroadcastTask(UndeletableModel):
             self.chain.w3.eth.send_raw_transaction(raw_payload)  # noqa: SLF001
         except Exception as exc:  # noqa: BLE001
             if self._is_nonce_too_low_error(exc):
+                if self._recover_queued_receipt_if_any():
+                    return
                 raise
             if self._is_already_known_error(exc):
                 self._mark_pending_chain()
                 return
             raise
         self._mark_pending_chain()
+
+    def _known_tx_hashes(self) -> list[str]:
+        """返回当前任务所有已知 tx_hash，按新版本优先查询。"""
+        if not self.base_task_id:
+            return []
+
+        hashes: list[str] = []
+        base_tx_hash = (
+            BroadcastTask.objects.filter(pk=self.base_task_id)
+            .values_list("tx_hash", flat=True)
+            .first()
+        )
+        if base_tx_hash:
+            hashes.append(base_tx_hash)
+
+        for tx_hash in (
+            TxHash.objects.filter(broadcast_task_id=self.base_task_id)
+            .order_by("-version")
+            .values_list("hash", flat=True)
+        ):
+            if tx_hash not in hashes:
+                hashes.append(tx_hash)
+        return hashes
+
+    def _find_receipt_for_known_hashes(self) -> tuple[str | None, dict | None]:
+        from web3.exceptions import TransactionNotFound
+
+        for tx_hash in self._known_tx_hashes():
+            try:
+                receipt = self.chain.w3.eth.get_transaction_receipt(tx_hash)  # noqa: SLF001
+            except TransactionNotFound:
+                continue
+            except AttributeError:
+                return None, None
+            if receipt is None:
+                continue
+            return tx_hash, dict(receipt)
+        return None, None
+
+    def _recover_queued_receipt_if_any(self) -> bool:
+        """QUEUED 任务若已有 tx_hash，先按链上 receipt 恢复状态。
+
+        send_raw_transaction 可能已被节点接受，但 worker 在 _mark_pending_chain 前
+        中断。再次执行时不能盲目重发或让 nonce too low 卡住队列，应先用历史
+        hash 观察链上事实，再回到统一 coordinator/业务管线。
+        """
+        if not self.base_task_id:
+            return False
+
+        base_task = BroadcastTask.objects.only("stage", "result", "tx_hash").get(
+            pk=self.base_task_id
+        )
+        if (
+            base_task.stage != BroadcastTaskStage.QUEUED
+            or base_task.result != BroadcastTaskResult.UNKNOWN
+        ):
+            return False
+        if not self._known_tx_hashes():
+            return False
+
+        tx_hash, receipt = self._find_receipt_for_known_hashes()
+        if receipt is None or tx_hash is None:
+            return False
+
+        from evm.coordinator import InternalEvmTaskCoordinator
+
+        status = receipt.get("status")
+        if status == 1:
+            self._mark_pending_chain()
+            InternalEvmTaskCoordinator._observe_confirmed_transaction(
+                evm_task=self,
+                tx_hash=tx_hash,
+                receipt=receipt,
+            )
+            return True
+        if status == 0:
+            self._mark_pending_chain()
+            InternalEvmTaskCoordinator._finalize_failed_task(evm_task=self)
+            return True
+        raise RuntimeError("EVM receipt status missing or invalid")
 
     @staticmethod
     def _is_execution_reverted_error(exc: Exception) -> bool:
