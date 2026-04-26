@@ -130,3 +130,19 @@ class CheckSaasPermissionTest(TestCase):
 
         # 冷启动 + SaaS 返回 4xx → fail-closed
         self.assertRaises(APIError, check_saas_permission, appid="XC-4xx", action="deposit")
+
+    def test_missing_appid_raises_invalid_appid(self):
+        """appid=None 直接抛 INVALID_APPID，不走 SaaS 调用。"""
+        from common.permission_check import check_saas_permission
+
+        with self.assertRaises(APIError) as ctx:
+            check_saas_permission(appid=None, action="deposit")
+        self.assertEqual(ctx.exception.error_code, ErrorCode.INVALID_APPID)
+
+    def test_empty_appid_raises_invalid_appid(self):
+        """appid='' 也走 INVALID_APPID。"""
+        from common.permission_check import check_saas_permission
+
+        with self.assertRaises(APIError) as ctx:
+            check_saas_permission(appid="", action="deposit")
+        self.assertEqual(ctx.exception.error_code, ErrorCode.INVALID_APPID)

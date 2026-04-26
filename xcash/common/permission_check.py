@@ -44,6 +44,10 @@ def check_saas_permission(*, appid: str, action: str) -> None:
     if not settings.INTERNAL_API_TOKEN:
         return
 
+    # 防御：appid 缺失（header 没传 / 中间件未过滤）→ 直接 INVALID_APPID
+    if not appid:
+        raise APIError(ErrorCode.INVALID_APPID)
+
     cache_key = f"saas:permission:{appid}"
     perm = cache.get(cache_key)
 
