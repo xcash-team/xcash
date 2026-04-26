@@ -4,8 +4,8 @@ import httpx
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 
-from xcash.common.exceptions import APIError
-from xcash.common.error_codes import ErrorCode
+from common.exceptions import APIError
+from common.error_codes import ErrorCode
 
 
 @override_settings(
@@ -16,10 +16,10 @@ class CheckSaasPermissionTest(TestCase):
     def setUp(self):
         cache.clear()
 
-    @patch("xcash.common.permission_check.httpx.Client")
+    @patch("common.permission_check.httpx.Client")
     def test_caches_successful_response(self, mock_client_cls):
-        from xcash.common.permission_check import check_saas_permission
-        from xcash.common.exceptions import APIError
+        from common.permission_check import check_saas_permission
+        from common.exceptions import APIError
 
         mock_resp = Mock()
         mock_resp.json.return_value = {
@@ -39,9 +39,9 @@ class CheckSaasPermissionTest(TestCase):
             mock_client_cls.return_value.__enter__.return_value.post.call_count, 1,
         )
 
-    @patch("xcash.common.permission_check.httpx.Client")
+    @patch("common.permission_check.httpx.Client")
     def test_denies_disabled_feature(self, mock_client_cls):
-        from xcash.common.permission_check import check_saas_permission
+        from common.permission_check import check_saas_permission
 
         mock_resp = Mock()
         mock_resp.json.return_value = {
@@ -57,9 +57,9 @@ class CheckSaasPermissionTest(TestCase):
 
         self.assertRaises(APIError, check_saas_permission, appid="XC-disabled", action="withdrawal")
 
-    @patch("xcash.common.permission_check.httpx.Client")
+    @patch("common.permission_check.httpx.Client")
     def test_denies_frozen_user(self, mock_client_cls):
-        from xcash.common.permission_check import check_saas_permission
+        from common.permission_check import check_saas_permission
 
         mock_resp = Mock()
         mock_resp.json.return_value = {
@@ -73,10 +73,10 @@ class CheckSaasPermissionTest(TestCase):
 
         self.assertRaises(APIError, check_saas_permission, appid="XC-frozen", action="deposit")
 
-    @patch("xcash.common.permission_check.httpx.Client")
+    @patch("common.permission_check.httpx.Client")
     def test_uses_stale_cache_on_saas_unavailable(self, mock_client_cls):
         """SaaS 第一次返回成功，第二次超时 → 用 stale 缓存。"""
-        from xcash.common.permission_check import check_saas_permission
+        from common.permission_check import check_saas_permission
 
         ok_resp = Mock()
         ok_resp.json.return_value = {
@@ -101,9 +101,9 @@ class CheckSaasPermissionTest(TestCase):
 
         self.assertRaises(APIError, check_saas_permission, appid="XC-stale", action="withdrawal")
 
-    @patch("xcash.common.permission_check.httpx.Client")
+    @patch("common.permission_check.httpx.Client")
     def test_fail_closed_on_cold_start_with_saas_unavailable(self, mock_client_cls):
-        from xcash.common.permission_check import check_saas_permission
+        from common.permission_check import check_saas_permission
 
         mock_client_cls.return_value.__enter__.return_value.post.side_effect = httpx.ConnectError("boom")
 
@@ -112,15 +112,15 @@ class CheckSaasPermissionTest(TestCase):
     @override_settings(INTERNAL_API_TOKEN="")
     def test_no_token_means_self_hosted_pass_through(self):
         """INTERNAL_API_TOKEN 为空（自托管模式）：直接放行。"""
-        from xcash.common.permission_check import check_saas_permission
+        from common.permission_check import check_saas_permission
 
         # 不应抛异常，不应调用 SaaS
         check_saas_permission(appid="XC-a", action="withdrawal")
 
-    @patch("xcash.common.permission_check.httpx.Client")
+    @patch("common.permission_check.httpx.Client")
     def test_saas_returns_4xx_treated_as_unavailable(self, mock_client_cls):
         """SaaS 返回 4xx（如 token 错误）应走 fail-closed，与 connect_error 等价。"""
-        from xcash.common.permission_check import check_saas_permission
+        from common.permission_check import check_saas_permission
 
         mock_resp = Mock()
         mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
