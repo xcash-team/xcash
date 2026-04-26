@@ -515,6 +515,12 @@ class WithdrawalPolicyTests(TestCase):
 
 
 class WithdrawalViewSetTests(TestCase):
+    def setUp(self):
+        # 屏蔽 SaaS 权限回调，避免单测触发真实 HTTP 请求
+        patcher = patch("withdrawals.viewsets.check_saas_permission")
+        self.mock_check_saas = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_viewset_create_translates_unique_conflict_to_api_error(self):
         # 提币创建命中数据库唯一约束时必须返回业务错误，而不是数据库异常或 500。
         wallet = Wallet.objects.create()
@@ -2393,3 +2399,106 @@ class WithdrawalShouldRequireReviewTests(TestCase):
         self.assertFalse(
             WithdrawalService.should_require_review(project=project, worth=Decimal("0"))
         )
+
+
+class WithdrawalCreatePermissionCheckTests(TestCase):
+    """v2 SaaS 模式：提币创建入口调用 check_saas_permission。"""
+
+    def setUp(self):
+        self.wallet = Wallet.objects.create()
+        self.project = Project.objects.create(
+            name="PermissionCheckProject",
+            wallet=self.wallet,
+        )
+        self.crypto = Crypto.objects.create(
+            name="Ethereum PermCheck",
+            symbol="ETHPC",
+            coingecko_id="ethereum-permcheck",
+        )
+        self.chain = Chain.objects.create(
+            name="Ethereum PermCheck",
+            code="eth-permcheck",
+            type=ChainType.EVM,
+            native_coin=self.crypto,
+            chain_id=9901,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+
+    def _make_request(self):
+        return APIRequestFactory().post(
+            "/v1/withdrawal",
+            {},
+            format="json",
+            HTTP_XC_APPID=self.project.appid,
+        )
+
+    def _make_serializer_stub(self):
+        return SimpleNamespace(
+            is_valid=Mock(return_value=True),
+            validated_data={
+                "out_no": "perm-order",
+                "to": "0x0000000000000000000000000000000000000099",
+                "uid": None,
+                "crypto": self.crypto.symbol,
+                "chain": self.chain.code,
+                "amount": Decimal("1"),
+            },
+            errors={},
+        )
+
+    @patch("withdrawals.viewsets.check_saas_permission")
+    def test_create_calls_permission_check_with_correct_args(self, mock_check):
+        """提币创建时必须以正确的 appid 和 action='withdrawal' 调用权限校验。"""
+        serializer_stub = self._make_serializer_stub()
+        select_for_update_manager = Mock()
+        select_for_update_manager.get.return_value = self.project
+
+        with (
+            patch("withdrawals.viewsets.Project.retrieve", return_value=self.project),
+            patch(
+                "withdrawals.viewsets.Project.objects.select_for_update",
+                return_value=select_for_update_manager,
+            ),
+            patch(
+                "withdrawals.viewsets.CreateWithdrawalSerializer",
+                return_value=serializer_stub,
+            ),
+            patch(
+                "withdrawals.viewsets.WithdrawalService.assert_project_policy",
+                return_value=Decimal("0"),
+            ),
+            patch("withdrawals.viewsets.WithdrawalService.submit_withdrawal"),
+        ):
+            WithdrawalViewSet.as_view({"post": "create"})(self._make_request())
+
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="withdrawal",
+        )
+
+    @patch("withdrawals.viewsets.check_saas_permission")
+    def test_create_blocked_when_feature_not_enabled(self, mock_check):
+        """check_saas_permission 抛出 APIError 时，提币创建应返回 403。"""
+        from common.error_codes import ErrorCode
+        from common.exceptions import APIError
+
+        mock_check.side_effect = APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="withdrawal")
+
+        response = WithdrawalViewSet.as_view({"post": "create"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.FEATURE_NOT_ENABLED.code)
+
+    @patch("withdrawals.viewsets.check_saas_permission")
+    def test_create_blocked_when_account_frozen(self, mock_check):
+        """账户冻结时，提币创建应返回 403。"""
+        from common.error_codes import ErrorCode
+        from common.exceptions import APIError
+
+        mock_check.side_effect = APIError(ErrorCode.ACCOUNT_FROZEN)
+
+        response = WithdrawalViewSet.as_view({"post": "create"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.ACCOUNT_FROZEN.code)

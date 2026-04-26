@@ -15,6 +15,7 @@ from chains.service import ChainService
 from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from common.permission_check import check_saas_permission
 from common.permissions import RejectAll
 from common.throttles import InvoiceRetrieveThrottle
 from common.throttles import InvoiceSelectMethodThrottle
@@ -73,6 +74,13 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         # 释放 Project 行上的 FOR KEY SHARE FK 锁，避免高并发下
         # 多事务争夺同一 Project tuple 的 MultiXact 锁元数据导致死锁。
         # IntegrityError（重复 out_no）在 autocommit 模式下仍可正常捕获。
+
+        # SaaS 模式：校验该 project 是否有权限创建充值账单
+        check_saas_permission(
+            appid=request.headers.get(APPID_HEADER),
+            action="deposit",
+        )
+
         serializer = self.get_serializer(
             data=request.data, context={"request": request}
         )

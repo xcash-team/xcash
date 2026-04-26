@@ -564,6 +564,12 @@ class InvoicePaySlotConcurrencyTests(TransactionTestCase):
 
 
 class InvoiceDuplicateOutNoTests(TestCase):
+    def setUp(self):
+        # 屏蔽 SaaS 权限回调，避免单测触发真实 HTTP 请求
+        patcher = patch("invoices.viewsets.check_saas_permission")
+        self.mock_check_saas = patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_viewset_create_translates_unique_conflict_to_api_error(self):
         # 并发重复 out_no 命中数据库唯一约束时，接口必须返回业务错误而不是 500。
         project = Project.objects.create(
@@ -1094,3 +1100,92 @@ class InvoiceDisplaySerializerTests(InvoiceTestMixin, TestCase):
             serializer.data["pay_url"],
             f"https://merchant.example.com/pay/{invoice.sys_no}",
         )
+
+
+class InvoiceCreatePermissionCheckTests(TestCase):
+    """v2 SaaS 模式：充值账单创建入口调用 check_saas_permission。"""
+
+    def setUp(self):
+        self.project = Project.objects.create(
+            name="InvoicePermCheckProject",
+            wallet=Wallet.objects.create(),
+        )
+
+    def _make_request(self):
+        return APIRequestFactory().post(
+            "/v1/invoice",
+            {},
+            format="json",
+            HTTP_XC_APPID=self.project.appid,
+        )
+
+    def _make_serializer_stub(self):
+        return SimpleNamespace(
+            is_valid=Mock(return_value=True),
+            validated_data={
+                "out_no": "perm-inv-order",
+                "title": "PermCheck Invoice",
+                "currency": "USD",
+                "amount": Decimal("10"),
+                "methods": {},
+                "duration": 10,
+                "email": "",
+                "redirect_url": "",
+            },
+            errors={},
+        )
+
+    @patch("invoices.viewsets.check_saas_permission")
+    def test_create_calls_permission_check_with_correct_args(self, mock_check):
+        """充值账单创建时必须以正确的 appid 和 action='deposit' 调用权限校验。"""
+        serializer_stub = self._make_serializer_stub()
+
+        with (
+            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch(
+                "invoices.viewsets.Invoice.objects.create",
+                return_value=Mock(
+                    sys_no="inv-0001",
+                    out_no="perm-inv-order",
+                    project=self.project,
+                    status="waiting",
+                ),
+            ),
+            patch("invoices.viewsets.InvoiceService.initialize_invoice"),
+            patch(
+                "invoices.viewsets.InvoiceDisplaySerializer",
+                return_value=Mock(data={}),
+            ),
+        ):
+            InvoiceViewSet.as_view({"post": "create"})(self._make_request())
+
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="deposit",
+        )
+
+    @patch("invoices.viewsets.check_saas_permission")
+    def test_create_blocked_when_feature_not_enabled(self, mock_check):
+        """check_saas_permission 抛出 APIError 时，充值账单创建应返回 403。"""
+        from common.error_codes import ErrorCode
+        from common.exceptions import APIError
+
+        mock_check.side_effect = APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="deposit")
+
+        response = InvoiceViewSet.as_view({"post": "create"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.FEATURE_NOT_ENABLED.code)
+
+    @patch("invoices.viewsets.check_saas_permission")
+    def test_create_blocked_when_account_frozen(self, mock_check):
+        """账户冻结时，充值账单创建应返回 403。"""
+        from common.error_codes import ErrorCode
+        from common.exceptions import APIError
+
+        mock_check.side_effect = APIError(ErrorCode.ACCOUNT_FROZEN)
+
+        response = InvoiceViewSet.as_view({"post": "create"})(self._make_request())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.ACCOUNT_FROZEN.code)

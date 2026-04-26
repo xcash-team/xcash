@@ -11,6 +11,7 @@ from chains.models import Chain
 from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from common.permission_check import check_saas_permission
 from common.permissions import RejectAll
 from common.throttles import WithdrawalCreateThrottle
 from currencies.service import CryptoService
@@ -39,6 +40,12 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
 
     @db_transaction.atomic
     def create(self, request, *args, **kwargs):
+        # SaaS 模式：校验该 project 是否有权限发起提币
+        check_saas_permission(
+            appid=request.headers.get(APPID_HEADER),
+            action="withdrawal",
+        )
+
         serializer = CreateWithdrawalSerializer(
             data=request.data,
             context={"request": request},
