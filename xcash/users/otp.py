@@ -72,17 +72,18 @@ def record_admin_access(
     )
 
 
-def verify_otp_token(device, token: str) -> bool:
+def verify_otp_token(device: TOTPDevice, token: str) -> bool:
     """校验 TOTP token。settings.DEBUG=True 时无条件通过并打 warning 日志。
 
     DEBUG bypass 仅用于本地开发，避免每次登录后台都要打开 Authenticator。
     生产配置必须保持 DEBUG=False，否则任何 token 都会被放行。
+    日志故意不记录 token 本身，避免开发日志泄漏短期凭据。
     """
     if settings.DEBUG:
         logger.warning(
             "OTP token verification bypassed by DEBUG=True (device_id=%s, user_id=%s)",
-            getattr(device, "id", None),
-            getattr(getattr(device, "user", None), "pk", None),
+            device.id,
+            device.user_id,
         )
         return True
     return bool(device.verify_token(token))

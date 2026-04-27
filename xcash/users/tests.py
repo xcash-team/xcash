@@ -1,3 +1,4 @@
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from django.contrib.sessions.middleware import SessionMiddleware
@@ -21,6 +22,7 @@ from users.models import User
 from users.otp import ADMIN_OTP_PENDING_USER_ID_SESSION_KEY
 from users.otp import ADMIN_OTP_VERIFIED_AT_SESSION_KEY
 from users.otp import get_admin_otp_ratelimit_key
+from users.otp import verify_otp_token
 
 _USERS_TEST_PATCHERS = []
 
@@ -351,21 +353,14 @@ class VerifyOtpTokenTests(TestCase):
 
     @override_settings(DEBUG=True)
     def test_debug_true_returns_true_without_calling_device(self):
-        from users.otp import verify_otp_token
-
-        device = patch("django_otp.plugins.otp_totp.models.TOTPDevice").start()
-        try:
+        device = MagicMock()
+        with self.assertLogs("users.otp", level="WARNING") as cm:
             self.assertTrue(verify_otp_token(device, "any-garbage-string"))
-            device.verify_token.assert_not_called()
-        finally:
-            patch.stopall()
+        device.verify_token.assert_not_called()
+        self.assertIn("bypassed by DEBUG=True", cm.output[0])
 
     @override_settings(DEBUG=False)
     def test_debug_false_delegates_to_device_verify_token(self):
-        from unittest.mock import MagicMock
-
-        from users.otp import verify_otp_token
-
         device = MagicMock()
         device.verify_token.return_value = True
         self.assertTrue(verify_otp_token(device, "123456"))
