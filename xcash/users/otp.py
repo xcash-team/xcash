@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from base64 import b32encode
 from base64 import b64encode
 from datetime import UTC
@@ -26,6 +28,8 @@ from core.runtime_settings import (
 )
 from users.models import AdminAccessLog
 from users.models import User
+
+logger = logging.getLogger(__name__)
 
 ADMIN_OTP_PENDING_USER_ID_SESSION_KEY = "admin_otp_pending_user_id"
 ADMIN_OTP_NEXT_PATH_SESSION_KEY = "admin_otp_next_path"
@@ -66,6 +70,22 @@ def record_admin_access(
         result=result,
         reason=reason[:1024],
     )
+
+
+def verify_otp_token(device, token: str) -> bool:
+    """校验 TOTP token。settings.DEBUG=True 时无条件通过并打 warning 日志。
+
+    DEBUG bypass 仅用于本地开发，避免每次登录后台都要打开 Authenticator。
+    生产配置必须保持 DEBUG=False，否则任何 token 都会被放行。
+    """
+    if settings.DEBUG:
+        logger.warning(
+            "OTP token verification bypassed by DEBUG=True (device_id=%s, user_id=%s)",
+            getattr(device, "id", None),
+            getattr(getattr(device, "user", None), "pk", None),
+        )
+        return True
+    return bool(device.verify_token(token))
 
 
 def set_pending_admin_otp(request, *, user: User, next_path: str) -> None:

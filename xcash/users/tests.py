@@ -344,3 +344,34 @@ class RecipientAddressAdminTests(TestCase):
                 address="0x5AAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
                 usage="unknown",
             )
+
+
+class VerifyOtpTokenTests(TestCase):
+    """覆盖 users.otp.verify_otp_token 的 DEBUG bypass 与正常校验两个分支。"""
+
+    @override_settings(DEBUG=True)
+    def test_debug_true_returns_true_without_calling_device(self):
+        from users.otp import verify_otp_token
+
+        device = patch("django_otp.plugins.otp_totp.models.TOTPDevice").start()
+        try:
+            self.assertTrue(verify_otp_token(device, "any-garbage-string"))
+            device.verify_token.assert_not_called()
+        finally:
+            patch.stopall()
+
+    @override_settings(DEBUG=False)
+    def test_debug_false_delegates_to_device_verify_token(self):
+        from unittest.mock import MagicMock
+
+        from users.otp import verify_otp_token
+
+        device = MagicMock()
+        device.verify_token.return_value = True
+        self.assertTrue(verify_otp_token(device, "123456"))
+        device.verify_token.assert_called_once_with("123456")
+
+        device.verify_token.reset_mock()
+        device.verify_token.return_value = False
+        self.assertFalse(verify_otp_token(device, "000000"))
+        device.verify_token.assert_called_once_with("000000")
