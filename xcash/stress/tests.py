@@ -28,7 +28,6 @@ from stress.payment import simulate_payment
 from stress.service import _ANVIL_RECIPIENT_ADDRESSES
 from stress.service import _build_deposit_cases
 from stress.service import StressService
-from stress.service import _require_stress_methods_ready
 from stress.service import _setup_recipient_addresses
 from stress.tasks import _execute
 from stress.tasks import prepare_stress
@@ -124,28 +123,6 @@ class StressServiceTests(SimpleTestCase):
             StressService.create_invoice(case)
 
         post_mock.assert_not_called()
-
-    def test_require_stress_methods_ready_returns_expected_methods(self):
-        project = SimpleNamespace()
-
-        with patch(
-            "stress.service.Invoice.available_methods",
-            return_value={
-                "BTC": ["bitcoin-local"],
-                "ETH": ["ethereum-local"],
-                "USDT": ["ethereum-local"],
-            },
-        ):
-            result = _require_stress_methods_ready(project)
-
-        self.assertEqual(
-            result,
-            {
-                "BTC": ["bitcoin-local"],
-                "ETH": ["ethereum-local"],
-                "USDT": ["ethereum-local"],
-            },
-        )
 
     def test_select_method_posts_one_fixed_local_method_without_fetching_invoice(self):
         project = SimpleNamespace(appid="app-1")

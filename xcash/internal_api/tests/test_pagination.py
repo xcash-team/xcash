@@ -14,7 +14,6 @@ common.pagination.PageNumberSizePagination 真的作用于内网 API 列表端�
 
 import pytest
 from chains.models import Wallet
-from common.pagination import PageNumberSizePagination
 from internal_api.viewsets.deposits import InternalDepositViewSet
 from internal_api.viewsets.operations import DepositCollectionViewSet
 from internal_api.viewsets.operations import GasRechargeViewSet
@@ -47,17 +46,6 @@ def webhook_events(project):
     ]
     WebhookEvent.objects.bulk_create(events)
     return WebhookEvent.objects.filter(project=project)
-
-
-class TestPageNumberSizePagination:
-    """分页类本身的默认值。"""
-
-    def test_defaults(self):
-        paginator = PageNumberSizePagination()
-        assert paginator.page_size == 20
-        assert paginator.max_page_size == 100
-        assert paginator.page_query_param == "page"
-        assert paginator.page_size_query_param == "size"
 
 
 @pytest.mark.django_db

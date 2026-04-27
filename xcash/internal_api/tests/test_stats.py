@@ -171,7 +171,7 @@ class TestStatsSummaryAggregation:
             "&prev_start=2026-03-01T00:00:00Z&prev_end=2026-03-18T00:00:00Z"
         )
         resp = client.get(url, HTTP_AUTHORIZATION=AUTH)
-        assert resp.status_code in (400, 404)
+        assert resp.status_code == 404
 
 
 # ─── daily 每日时序测试 ────────────────────────────────────────────────────────

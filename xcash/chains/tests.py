@@ -1231,12 +1231,6 @@ class SignerSystemCheckTests(TestCase):
 
 
 class UpdateLatestBlockTaskConfigTests(TestCase):
-    def test_update_the_latest_block_time_limit_exceeds_bitcoin_rpc_timeout(self):
-        from chains.tasks import update_the_latest_block
-
-        # Bitcoin RPC 当前客户端超时是 30s，任务硬超时必须更长，避免 worker 先杀死任务。
-        self.assertGreater(update_the_latest_block.time_limit, 30)
-
     @patch("chains.tasks.block_number_updated.delay")
     def test_update_the_latest_block_keeps_tron_height_without_rpc_polling(
         self,

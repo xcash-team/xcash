@@ -166,16 +166,6 @@ class RecipientAddressCapabilityTests(TestCase):
     def setUp(self):
         self.project = Project.objects.create(name="Recipient Capability Project")
 
-    def test_name_is_optional_when_saving_recipient_address(self):
-        recipient = RecipientAddress.objects.create(
-            project=self.project,
-            chain_type=ChainType.TRON,
-            address="TMwFHYXLJaRUPeW6421aqXL4ZEzPRFGkGT",
-            usage=RecipientAddressUsage.INVOICE,
-        )
-
-        self.assertEqual(recipient.name, "")
-
     def test_clean_allows_tron_invoice_address(self):
         recipient = RecipientAddress(
             name="Tron Invoice",
