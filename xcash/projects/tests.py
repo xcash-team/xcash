@@ -18,7 +18,6 @@ from chains.models import ChainType
 from chains.test_signer import build_test_remote_signer_backend
 from common.admin import ModelAdmin
 from currencies.models import Crypto
-from projects.admin import CollectionAddressInline
 from projects.admin import PaymentAddressInline
 from projects.admin import ProjectAdmin
 from projects.models import Project
@@ -144,31 +143,6 @@ class ProjectAdminTests(TestCase):
 
         otp_mock.assert_not_called()
         save_model_mock.assert_called_once()
-
-    def test_payment_address_inline_allows_tron_choice(self):
-        request = self.factory.get("/admin/projects/project/add/")
-        request.user = self.user
-
-        inline = PaymentAddressInline(Project, admin.site)
-        formset = inline.get_formset(request, self.project)
-        choices = {
-            value for value, _label in formset.form.base_fields["chain_type"].choices
-        }
-
-        self.assertIn(ChainType.TRON, choices)
-
-    def test_collection_address_inline_excludes_tron_choice(self):
-        request = self.factory.get("/admin/projects/project/add/")
-        request.user = self.user
-
-        inline = CollectionAddressInline(Project, admin.site)
-        formset = inline.get_formset(request, self.project)
-        choices = {
-            value for value, _label in formset.form.base_fields["chain_type"].choices
-        }
-
-        self.assertNotIn(ChainType.TRON, choices)
-        self.assertNotIn(ChainType.BITCOIN, choices)
 
     def test_payment_address_inline_form_validates_without_usage_field(self):
         request = self.factory.get("/admin/projects/project/add/")

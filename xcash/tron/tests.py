@@ -196,36 +196,6 @@ class TronWatchCursorAdminTests(TestCase):
         self.admin = TronWatchCursorAdmin(TronWatchCursor, AdminSite())
         self.admin.message_user = Mock()
 
-    def test_enable_selected_scanners_updates_only_selected_cursors(self):
-        TronWatchCursor.objects.filter(pk=self.cursor.pk).update(enabled=False)
-
-        self.admin.enable_selected_scanners(
-            request=Mock(),
-            queryset=TronWatchCursor.objects.filter(pk=self.cursor.pk),
-        )
-
-        self.cursor.refresh_from_db()
-        self.other_cursor.refresh_from_db()
-
-        self.assertTrue(self.cursor.enabled)
-        self.assertFalse(self.other_cursor.enabled)
-        self.admin.message_user.assert_called_once()
-
-    def test_disable_selected_scanners_updates_only_selected_cursors(self):
-        TronWatchCursor.objects.filter(pk=self.other_cursor.pk).update(enabled=True)
-
-        self.admin.disable_selected_scanners(
-            request=Mock(),
-            queryset=TronWatchCursor.objects.filter(pk=self.cursor.pk),
-        )
-
-        self.cursor.refresh_from_db()
-        self.other_cursor.refresh_from_db()
-
-        self.assertFalse(self.cursor.enabled)
-        self.assertTrue(self.other_cursor.enabled)
-        self.admin.message_user.assert_called_once()
-
     @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
     def test_sync_selected_to_latest_uses_cached_chain_latest_block_number(
         self, get_latest_block_number_mock

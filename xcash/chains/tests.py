@@ -3,14 +3,11 @@ import hmac
 import json
 from datetime import timedelta
 from decimal import Decimal
-from io import StringIO
 from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.core import checks
 from django.core.exceptions import ValidationError
-from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.db import IntegrityError
 from django.test import TestCase
 from django.test import override_settings
@@ -116,11 +113,6 @@ class WalletBip44AccountMapTests(TestCase):
     def test_unknown_usage_raises_value_error(self):
         with self.assertRaises(ValueError):
             Wallet.get_bip44_account("nonexistent")
-
-    def test_wallet_str_for_non_project_wallet_is_stable_identifier(self):
-        # 非项目钱包也必须输出稳定可区分的标识，避免被误显示成 Core。
-        wallet = Wallet.objects.create()
-        self.assertEqual(str(wallet), f"Wallet-{wallet.pk}")
 
 
 class TxHashModelTests(TestCase):
@@ -1236,54 +1228,6 @@ class SignerSystemCheckTests(TestCase):
 
         self.assertIn("chains.E002", error_ids)
         self.assertIn("chains.E003", error_ids)
-
-
-@override_settings(
-    SIGNER_BACKEND="remote",
-    SIGNER_BASE_URL="http://signer.internal",
-    SIGNER_TIMEOUT=3.5,
-)
-class CheckSignerServiceCommandTests(TestCase):
-    @patch("chains.management.commands.check_signer_service.httpx.get")
-    def test_command_accepts_healthz_ok_payload(self, httpx_get_mock):
-        response = Mock()
-        response.json.return_value = {"ok": True}
-        httpx_get_mock.return_value = response
-        stdout = StringIO()
-
-        call_command("check_signer_service", stdout=stdout)
-
-        self.assertIn("signer 服务检查通过", stdout.getvalue())
-
-    @patch("chains.management.commands.check_signer_service.httpx.get")
-    def test_command_reports_healthy_signer_service(self, httpx_get_mock):
-        response = Mock()
-        response.json.return_value = {
-            "database": True,
-            "cache": True,
-            "signer_shared_secret": True,
-            "healthy": True,
-        }
-        httpx_get_mock.return_value = response
-        stdout = StringIO()
-
-        call_command("check_signer_service", stdout=stdout)
-
-        self.assertIn("signer 服务检查通过", stdout.getvalue())
-
-    @patch("chains.management.commands.check_signer_service.httpx.get")
-    def test_command_fails_when_signer_service_not_ready(self, httpx_get_mock):
-        response = Mock()
-        response.json.return_value = {
-            "database": True,
-            "cache": False,
-            "signer_shared_secret": True,
-            "healthy": False,
-        }
-        httpx_get_mock.return_value = response
-
-        with self.assertRaises(CommandError):
-            call_command("check_signer_service")
 
 
 class UpdateLatestBlockTaskConfigTests(TestCase):

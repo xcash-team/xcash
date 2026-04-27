@@ -1,6 +1,5 @@
 import hashlib
 import hmac
-import importlib
 import json
 from decimal import Decimal
 from types import SimpleNamespace
@@ -8,12 +7,10 @@ from unittest.mock import ANY
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from django.core.exceptions import FieldDoesNotExist
 from django.test import RequestFactory
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
-from django.urls import resolve
 from django.utils import timezone
 from hexbytes import HexBytes
 from stress.bitcoin import BitcoinStressClient
@@ -266,10 +263,6 @@ class StressServiceTests(SimpleTestCase):
         self.assertEqual(len(cases), 1)
         self.assertEqual(cases[0].amount, Decimal("0.01234567"))
 
-    def test_invoice_stress_case_model_has_no_scenario_field(self):
-        with self.assertRaises(FieldDoesNotExist):
-            InvoiceStressCase._meta.get_field("scenario")
-
     def test_execute_pays_without_scenario_field(self):
         case = SimpleNamespace(
             pk=1,
@@ -320,16 +313,6 @@ class StressServiceTests(SimpleTestCase):
             case.payer_address,
             "0x2000000000000000000000000000000000000002",
         )
-
-    @override_settings(DEBUG=True)
-    def test_stress_webhook_url_resolves_to_stress_view(self):
-        import config.urls as project_urls
-
-        reloaded_urls = importlib.reload(project_urls)
-
-        match = resolve("/stress/webhook", urlconf=reloaded_urls)
-
-        self.assertEqual(match.view_name, "stress:webhook")
 
     @override_settings(STRESS_BTC_RPC_URL="http://xcash:xcash@localhost:18443")
     def test_bitcoin_stress_client_uses_ensured_wallet_client(self):

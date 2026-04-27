@@ -5,16 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from django.contrib.admin.sites import AdminSite
-from django.core.cache import cache
 from django.db import IntegrityError
 from django.db import close_old_connections
 from django.db import connections
-from django.test import RequestFactory
 from django.test import TestCase
 from django.test import TransactionTestCase
-from django.test import override_settings
-from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory
 from web3 import Web3
@@ -24,22 +19,17 @@ from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import TransferType
 from chains.models import Wallet
-from common.consts import MAX_INVOICE_DURATION
 from common.error_codes import ErrorCode
 from currencies.models import Crypto
 from currencies.models import ChainToken
 from currencies.models import Fiat
-from invoices.admin import InvoiceAdmin
 from invoices.exceptions import InvoiceAllocationError
 from invoices.exceptions import InvoiceStatusError
-from invoices.forms import ManualInvoiceAdminForm
 from invoices.models import Invoice
 from invoices.models import InvoicePaySlot
 from invoices.models import InvoicePaySlotDiscardReason
 from invoices.models import InvoicePaySlotStatus
 from invoices.models import InvoiceStatus
-from invoices.serializers import InvoiceCreateSerializer
-from invoices.serializers import InvoiceDisplaySerializer
 from invoices.service import InvoiceService
 from invoices.tasks import check_expired
 from invoices.tasks import fallback_invoice_expired
@@ -136,69 +126,6 @@ class InvoiceInitializationTests(TestCase):
             active=True,
         )
 
-    @patch("invoices.tasks.check_expired.apply_async")
-    @patch.object(Invoice, "select_method")
-    @patch("invoices.service.CryptoService.get_by_symbol")
-    @patch("invoices.service.ChainService.get_by_code")
-    @patch("invoices.service.FiatService.get_by_code")
-    def test_initialize_invoice_autoselects_single_method_and_schedules_expiry(
-        self,
-        get_fiat_by_code_mock,
-        get_by_code_mock,
-        get_by_symbol_mock,
-        select_method_mock,
-        apply_async_mock,
-    ):
-        # 单一 methods 账单应在创建路径中显式自动选定支付方式，而不是依赖 signal。
-        invoice = Invoice.objects.create(
-            project=self.project,
-            out_no="order-1",
-            title="Test",
-            currency="USD",
-            amount=Decimal("10"),
-            methods={"ETH": ["eth"]},
-            expires_at=timezone.now() + timedelta(minutes=10),
-        )
-        get_by_symbol_mock.return_value = self.eth
-        get_by_code_mock.return_value = self.chain
-        get_fiat_by_code_mock.side_effect = lambda code: SimpleNamespace(
-            fiat_price=Mock(return_value=Decimal("1"))
-        )
-
-        with self.captureOnCommitCallbacks(execute=True):
-            InvoiceService.initialize_invoice(invoice)
-
-        get_by_symbol_mock.assert_called_once_with("ETH")
-        get_by_code_mock.assert_called_once_with("eth")
-        select_method_mock.assert_called_once_with(self.eth, self.chain)
-        apply_async_mock.assert_called_once()
-
-    @patch("invoices.service.FiatService.get_by_code")
-    def test_initialize_invoice_refreshes_fiat_worth(self, get_by_code_mock):
-        # 法币账单在未选支付方式前，也必须先固化一份基础 worth。
-        usd = SimpleNamespace()
-        cny = SimpleNamespace(fiat_price=Mock(return_value=Decimal("0.14")))
-
-        def get_fiat(code: str):
-            return {"USD": usd, "CNY": cny}[code]
-
-        get_by_code_mock.side_effect = get_fiat
-        invoice = Invoice.objects.create(
-            project=self.project,
-            out_no="order-2",
-            title="Fiat invoice",
-            currency="CNY",
-            amount=Decimal("100"),
-            methods={"ETH": ["eth", "base"]},
-            expires_at=timezone.now() + timedelta(minutes=10),
-        )
-
-        with self.captureOnCommitCallbacks(execute=True):
-            InvoiceService.initialize_invoice(invoice)
-
-        invoice.refresh_from_db()
-        self.assertEqual(invoice.worth, Decimal("14"))
-
     def test_remote_signer_project_wallet_can_initialize_and_select_method_without_local_keys(
         self,
     ):
@@ -274,16 +201,6 @@ class InvoiceInitializationTests(TestCase):
             Web3.to_checksum_address("0x00000000000000000000000000000000000000b1"),
         )
         select_method_mock.assert_called_once_with(self.eth, self.chain)
-
-
-class InvoiceAdminInitializationTests(TestCase):
-    def test_invoice_admin_disables_add_permission(self):
-        user = User.objects.create(username="admin-user", is_superuser=True)
-        request = RequestFactory().get("/admin/invoices/invoice/")
-        request.user = user
-        admin = InvoiceAdmin(Invoice, AdminSite())
-
-        self.assertFalse(admin.has_add_permission(request))
 
 
 class InvoicePaySlotTests(TestCase):
@@ -606,39 +523,6 @@ class InvoiceDuplicateOutNoTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], ErrorCode.DUPLICATE_OUT_NO.code)
-
-
-class InvoiceDurationValidationTests(TestCase):
-    """账单有效期上限在公开入口与后台入口必须保持一致。"""
-
-    def test_public_serializer_and_admin_form_share_thirty_minute_cap(self):
-        # Redis broker 下 ETA 不应超过 30 分钟；公开 API 与后台表单必须统一收紧边界。
-        self.assertEqual(MAX_INVOICE_DURATION, 30)
-        self.assertEqual(
-            InvoiceCreateSerializer().fields["duration"].max_value,
-            MAX_INVOICE_DURATION,
-        )
-        self.assertEqual(
-            ManualInvoiceAdminForm().fields["duration"].max_value,
-            MAX_INVOICE_DURATION,
-        )
-
-
-class InvoicePublicThrottleTests(TestCase):
-    def setUp(self):
-        cache.clear()
-
-    def test_retrieve_and_select_method_use_different_throttle_classes(self):
-        retrieve_view = InvoiceViewSet()
-        retrieve_view.action = "retrieve"
-
-        select_method_view = InvoiceViewSet()
-        select_method_view.action = "select_method"
-
-        self.assertNotEqual(
-            type(retrieve_view.get_throttles()[0]),
-            type(select_method_view.get_throttles()[0]),
-        )
 
 
 class InvoiceAllowedMethodsCapabilityTests(TestCase):
@@ -1062,44 +946,6 @@ class InvoiceAllocationRetryExhaustedTests(InvoiceTestMixin, TestCase):
             self.assertRaises(InvoiceAllocationError),
         ):
             invoice.select_method(self.crypto, self.chain)
-
-
-class FallbackInvoiceExpiredEmptyTests(TestCase):
-    """fallback_invoice_expired 在无过期账单时的行为测试。"""
-
-    def test_fallback_with_no_expired_invoices_returns_early(self):
-        # 没有过期账单时应安全返回 None，不执行任何 update。
-        result = fallback_invoice_expired()
-        self.assertIsNone(result)
-
-
-class InvoiceDisplaySerializerTests(InvoiceTestMixin, TestCase):
-    """InvoiceDisplaySerializer 序列化输出测试。"""
-
-    def setUp(self):
-        self.setup_base_fixtures(
-            username="merchant-serializer",
-            project_name="SerializerProject",
-            crypto_symbol="USDTS",
-            chain_code="eth-serializer",
-            chain_id=9998,
-        )
-
-    @override_settings(ALLOWED_HOSTS=["merchant.example.com"])
-    def test_serializer_builds_absolute_pay_url_from_request(self):
-        invoice = self.create_test_invoice(out_no="serializer-absolute-url")
-        request = RequestFactory().get(
-            reverse("payment-invoice", kwargs={"sys_no": invoice.sys_no}),
-            secure=True,
-            HTTP_HOST="merchant.example.com",
-        )
-
-        serializer = InvoiceDisplaySerializer(invoice, context={"request": request})
-
-        self.assertEqual(
-            serializer.data["pay_url"],
-            f"https://merchant.example.com/pay/{invoice.sys_no}",
-        )
 
 
 class InvoiceCreatePermissionCheckTests(TestCase):

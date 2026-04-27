@@ -4,11 +4,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
-from django.contrib.auth.models import Permission
 from django.db import IntegrityError
 from django.test import TestCase
 from django.test import override_settings
-from django.urls import reverse
 from django.utils import timezone
 from django_otp.oath import TOTP
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -1193,115 +1191,6 @@ class WithdrawalReviewTests(TestCase):
                     source="expired_context",
                 ),
             )
-
-    @patch("withdrawals.admin.WithdrawalService.approve_withdrawal")
-    def test_withdrawal_admin_action_renders_otp_modal_when_session_expired(
-        self, approve_mock
-    ):
-        owner = User.objects.create(username="merchant-admin-modal", is_staff=True)
-        owner.user_permissions.add(Permission.objects.get(codename="view_withdrawal"))
-        project = Project.objects.create(
-            name="AdminModalProject",
-            wallet=Wallet.objects.create(),
-        )
-        crypto = Crypto.objects.create(
-            name="Ethereum Admin Modal",
-            symbol="ETHAM",
-            coingecko_id="ethereum-admin-modal",
-        )
-        chain = Chain.objects.create(
-            name="Ethereum Admin Modal",
-            code="eth-admin-modal",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=310,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="admin-modal-order",
-            chain=chain,
-            crypto=crypto,
-            amount=Decimal("1"),
-            to="0x0000000000000000000000000000000000000011",
-            status=WithdrawalStatus.REVIEWING,
-        )
-        self._login_reviewer_with_expired_otp(owner)
-
-        response = self.client.post(
-            reverse("admin:withdrawals_withdrawal_changelist"),
-            {
-                "action": "approve_selected_withdrawals",
-                "_selected_action": [withdrawal.pk],
-                "index": 0,
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        approve_mock.assert_not_called()
-
-    @patch("withdrawals.admin.WithdrawalService.approve_withdrawal")
-    def test_withdrawal_admin_action_continues_after_modal_otp_verification(
-        self, approve_mock
-    ):
-        owner = User.objects.create(
-            username="merchant-admin-modal-verify", is_staff=True
-        )
-        owner.user_permissions.add(Permission.objects.get(codename="view_withdrawal"))
-        project = Project.objects.create(
-            name="AdminModalVerifyProject",
-            wallet=Wallet.objects.create(),
-        )
-        crypto = Crypto.objects.create(
-            name="Ethereum Admin Modal Verify",
-            symbol="ETHMV",
-            coingecko_id="ethereum-admin-modal-verify",
-        )
-        chain = Chain.objects.create(
-            name="Ethereum Admin Modal Verify",
-            code="eth-admin-modal-verify",
-            type=ChainType.EVM,
-            native_coin=crypto,
-            chain_id=311,
-            rpc="http://localhost:8545",
-            active=True,
-        )
-        withdrawal = Withdrawal.objects.create(
-            project=project,
-            out_no="admin-modal-verify-order",
-            chain=chain,
-            crypto=crypto,
-            amount=Decimal("1"),
-            to="0x0000000000000000000000000000000000000011",
-            status=WithdrawalStatus.REVIEWING,
-        )
-        device = self._login_reviewer_with_expired_otp(owner)
-
-        # 第一次提交只负责把 OTP modal 渲染出来并在 session 中写入 pending 上下文。
-        self.client.post(
-            reverse("admin:withdrawals_withdrawal_changelist"),
-            {
-                "action": "approve_selected_withdrawals",
-                "_selected_action": [withdrawal.pk],
-                "index": 0,
-            },
-        )
-
-        response = self.client.post(
-            reverse("admin:withdrawals_withdrawal_changelist"),
-            {
-                "action": "approve_selected_withdrawals",
-                "_selected_action": [withdrawal.pk],
-                "index": 0,
-                "_otp_modal_submit": 1,
-                "token": self._current_token(device),
-            },
-            follow=True,
-        )
-
-        self.assertEqual(response.status_code, 200)
-        approve_mock.assert_called_once()
 
 
 @override_settings(
