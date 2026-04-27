@@ -88,7 +88,15 @@ def _execute(case: InvoiceStressCase) -> None:
     case.invoice_sys_no = resp["sys_no"]
     case.invoice_out_no = resp.get("out_no", "")
     case.status = InvoiceStressCaseStatus.CREATED
-    case.save(update_fields=["invoice_sys_no", "invoice_out_no", "status"])
+    case.invoice_created_at = timezone.now()
+    case.save(
+        update_fields=[
+            "invoice_sys_no",
+            "invoice_out_no",
+            "status",
+            "invoice_created_at",
+        ]
+    )
 
     # 阶段 2: 选择支付方式
     resp = StressService.select_method(case)
@@ -96,7 +104,16 @@ def _execute(case: InvoiceStressCase) -> None:
     case.chain = resp.get("chain", "")
     case.pay_address = resp.get("pay_address", "")
     case.pay_amount = resp.get("pay_amount")
-    case.save(update_fields=["crypto", "chain", "pay_address", "pay_amount"])
+    case.api_done_at = timezone.now()
+    case.save(
+        update_fields=[
+            "crypto",
+            "chain",
+            "pay_address",
+            "pay_amount",
+            "api_done_at",
+        ]
+    )
 
     # 阶段 3: 链上支付
     # 等待 2 秒，确保链上交易的区块时间戳（秒级精度）晚于 Invoice 的 started_at，
@@ -110,7 +127,15 @@ def _execute(case: InvoiceStressCase) -> None:
     case.tx_hash = payment_result["tx_hash"]
     case.payer_address = payment_result["payer_address"]
     case.status = InvoiceStressCaseStatus.PAID
-    case.save(update_fields=["tx_hash", "payer_address", "status"])
+    case.chain_paid_at = timezone.now()
+    case.save(
+        update_fields=[
+            "tx_hash",
+            "payer_address",
+            "status",
+            "chain_paid_at",
+        ]
+    )
 
     # 派发超时检查任务（5 分钟后）
     check_webhook_timeout.apply_async(
@@ -171,8 +196,15 @@ def _execute_withdrawal(case: WithdrawalStressCase) -> None:
     case.withdrawal_out_no = f"STRESS-WD-{case.stress_run_id}-{case.sequence}"
     case.tx_hash = resp.get("hash", "")
     case.status = WithdrawalStressCaseStatus.CREATED
+    case.api_done_at = timezone.now()
     case.save(
-        update_fields=["withdrawal_sys_no", "withdrawal_out_no", "tx_hash", "status"]
+        update_fields=[
+            "withdrawal_sys_no",
+            "withdrawal_out_no",
+            "tx_hash",
+            "status",
+            "api_done_at",
+        ]
     )
 
     # 阶段 2: 等待链上确认（由系统自动处理）
@@ -339,7 +371,8 @@ def _execute_deposit(case: DepositStressCase) -> None:
     # 阶段 1: 获取充值地址
     deposit_address = StressService.get_deposit_address(case)
     case.deposit_address = deposit_address
-    case.save(update_fields=["deposit_address"])
+    case.api_done_at = timezone.now()
+    case.save(update_fields=["deposit_address", "api_done_at"])
 
     # 阶段 2: 模拟链上充值
     # 等待 2 秒，确保区块时间戳晚于充值地址创建时间
@@ -357,7 +390,15 @@ def _execute_deposit(case: DepositStressCase) -> None:
     case.tx_hash = payment_result["tx_hash"]
     case.payer_address = payment_result["payer_address"]
     case.status = DepositStressCaseStatus.PAID
-    case.save(update_fields=["tx_hash", "payer_address", "status"])
+    case.chain_paid_at = timezone.now()
+    case.save(
+        update_fields=[
+            "tx_hash",
+            "payer_address",
+            "status",
+            "chain_paid_at",
+        ]
+    )
 
     # 派发超时检查任务（15 分钟后）
     check_deposit_webhook_timeout.apply_async(
@@ -537,6 +578,13 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             .first()
         )
 
+        update_fields = [
+            "collection_verified",
+            "collection_hash",
+            "status",
+            "error",
+            "finished_at",
+        ]
         if (
             deposit
             and deposit.collection
@@ -545,19 +593,13 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             case.collection_verified = True
             case.collection_hash = deposit.collection.collection_hash or ""
             case.status = DepositStressCaseStatus.SUCCEEDED
+            case.collection_done_at = timezone.now()
+            update_fields.append("collection_done_at")
         else:
             case.status = DepositStressCaseStatus.FAILED
             reason = "未找到 Deposit 记录" if not deposit else "归集未完成"
             case.error = reason
 
         case.finished_at = timezone.now()
-        case.save(
-            update_fields=[
-                "collection_verified",
-                "collection_hash",
-                "status",
-                "error",
-                "finished_at",
-            ]
-        )
+        case.save(update_fields=update_fields)
         StressService.on_case_finished(case)

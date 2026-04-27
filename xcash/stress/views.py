@@ -159,7 +159,9 @@ def _update_stress_case(case, nonce, result: _VerifyResult):
         else:
             case.status = InvoiceStressCaseStatus.FAILED
             case.error = "; ".join(result.errors)
-        case.finished_at = timezone.now()
+        now = timezone.now()
+        case.webhook_received_at = now
+        case.finished_at = now
 
         case.save(
             update_fields=[
@@ -171,6 +173,7 @@ def _update_stress_case(case, nonce, result: _VerifyResult):
                 "webhook_received_nonces",
                 "status",
                 "error",
+                "webhook_received_at",
                 "finished_at",
             ]
         )
@@ -390,7 +393,9 @@ def _update_withdrawal_case(case, nonce, result: _VerifyResult):
         else:
             case.status = WithdrawalStressCaseStatus.FAILED
             case.error = "; ".join(result.errors)
-        case.finished_at = timezone.now()
+        now = timezone.now()
+        case.webhook_received_at = now
+        case.finished_at = now
 
         case.save(
             update_fields=[
@@ -402,6 +407,7 @@ def _update_withdrawal_case(case, nonce, result: _VerifyResult):
                 "webhook_received_nonces",
                 "status",
                 "error",
+                "webhook_received_at",
                 "finished_at",
             ]
         )
@@ -551,26 +557,30 @@ def _update_deposit_case(case, nonce, result: _VerifyResult):
         if nonce and nonce not in case.webhook_received_nonces:
             case.webhook_received_nonces = [*case.webhook_received_nonces, nonce]
 
+        now = timezone.now()
+        case.webhook_received_at = now
+        update_fields = [
+            "webhook_received",
+            "webhook_signature_ok",
+            "webhook_payload_ok",
+            "webhook_nonce_ok",
+            "webhook_timestamp_ok",
+            "webhook_received_nonces",
+            "status",
+            "error",
+            "webhook_received_at",
+        ]
         if result.all_ok:
             # 不设 finished_at，等待归集验证阶段完成
             case.status = DepositStressCaseStatus.WEBHOOK_OK
         else:
             case.status = DepositStressCaseStatus.FAILED
             case.error = "; ".join(result.errors)
-            case.finished_at = timezone.now()
+            case.finished_at = now
+            update_fields.append("finished_at")
 
         case.save(
-            update_fields=[
-                "webhook_received",
-                "webhook_signature_ok",
-                "webhook_payload_ok",
-                "webhook_nonce_ok",
-                "webhook_timestamp_ok",
-                "webhook_received_nonces",
-                "status",
-                "error",
-                "finished_at",
-            ]
+            update_fields=update_fields
         )
 
     return case
