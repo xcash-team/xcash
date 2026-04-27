@@ -5,6 +5,7 @@ from datetime import timedelta
 import httpx
 import structlog
 from celery import shared_task
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -513,21 +514,49 @@ def _maybe_trigger_collection_verification(stress_run_id: int) -> None:
     )
 
 
-@shared_task(ignore_result=True, soft_time_limit=1740, time_limit=1800)
-@singleton_task(timeout=1800, use_params=True)
-def verify_deposit_collection(stress_run_id: int) -> None:
-    """Phase 2：触发归集并验证所有 WEBHOOK_OK 的 deposit cases 是否被正确归集。
+# 归集验证 self-rescheduling 配置
+# - _VERIFY_COLLECTION_INTERVAL: 每轮自调度的间隔（秒）
+# - _VERIFY_COLLECTION_OVERALL_TIMEOUT: 整体兜底超时（秒），保留原 30 分钟语义
+# - _VERIFY_COLLECTION_CACHE_TIMEOUT: cache state 存活时间，需 > overall timeout
+#   以确保兜底判定能读到 start_ts
+_VERIFY_COLLECTION_INTERVAL = 30
+_VERIFY_COLLECTION_OVERALL_TIMEOUT = 1800
+_VERIFY_COLLECTION_CACHE_TIMEOUT = 1900
 
-    time_limit / singleton timeout 统一为 30 分钟：等待策略改成"uncollected 连续
-    2 轮不下降"后，实际等待时长由归集流水线的真实吞吐决定；7 分钟硬顶会在
-    5000+ 笔规模下抢先于进度判定触发，因此放宽到 30 分钟（按 1000 笔约 ~4 分钟
-    的吞吐，30 分钟可覆盖约 ~7500 笔，足够覆盖当前压测规模）。singleton timeout
-    与 hard time_limit 对齐，避免锁提前释放导致任务重入。
+
+def _verify_collection_cache_key(stress_run_id: int) -> str:
+    return f"stress:verify_collection:{stress_run_id}"
+
+
+@shared_task(bind=True, ignore_result=True, soft_time_limit=120, time_limit=180)
+@singleton_task(timeout=180, use_params=True)
+def verify_deposit_collection(self, stress_run_id: int) -> None:
+    """Phase 2：单轮触发归集 + 进度判定，未完成则 self-reschedule，让出 worker 线程。
+
+    改造前是 `while True: ... time.sleep(30)` 同步轮询，30 分钟硬顶下会卡掉 1/8
+    的 stress 队列并发能力。改造后每次仅跑"一次 _gather_deposits_task + 一次 DB
+    查询"，把 prev_progress / stall_rounds / start_ts 写到 Django cache，30 秒后
+    通过 apply_async(countdown=30) 自调度下一轮。
+
+    幂等保证：
+    - singleton_task(use_params=True) 用 stress_run_id 区分锁，同一 run 同时只有
+      一个 task 在跑（防 webhook handler 重复触发与 self-reschedule 之间的竞态）。
+    - 任意一轮的查询 + 重调度都不修改业务状态，只在判定阶段写 case。
+
+    判定阶段触发条件：
+    1) progress_key == (0, 0, 0) → 完成
+    2) prev_progress 与当前进度都不下降两轮 → 停滞
+    3) start_ts 距今超过 overall timeout → 兜底超时
+
+    bind=True 是为了配合 self-reschedule 的语义清晰（虽然这里没用 self.retry，
+    self.retry 是错误重试机制，max_retries=3 不够 30+ 轮等待，且语义不对）。
     """
     from deposits.models import Deposit
     from deposits.tasks import gather_deposits as _gather_deposits_task
 
-    # 前置条件：如果还有 case 尚未通过 webhook 阶段，提前返回
+    # ── 1. 前置条件检查（不更新 state，不重调度）────────────────
+    # 还有 case 尚未通过 webhook 阶段：直接 return。后续 webhook handler
+    # 完成后会通过 _maybe_trigger_collection_verification 重新触发首轮。
     pre_webhook_states = {
         DepositStressCaseStatus.PENDING,
         DepositStressCaseStatus.CREATING,
@@ -558,8 +587,40 @@ def verify_deposit_collection(stress_run_id: int) -> None:
         )
         return
 
+    # ── 2. 读取 / 初始化 state ────────────────────────────────
+    cache_key = _verify_collection_cache_key(stress_run_id)
+    state = cache.get(cache_key)
+    now_ts = time.time()
+    if state is None:
+        prev_progress_key: tuple[int, int, int] | None = None
+        stall_rounds = 0
+        start_ts = now_ts
+    else:
+        # cache 后端可能把 tuple 序列化成 list（JSON 化场景），统一转回 tuple。
+        raw_prev = state.get("prev_progress")
+        if raw_prev is None:
+            prev_progress_key = None
+        else:
+            prev_progress_key = tuple(raw_prev)
+        stall_rounds = state.get("stall_rounds", 0)
+        start_ts = state.get("start_ts", now_ts)
+
+    # ── 3. 整体兜底超时：直接进入判定阶段 ──────────────────────
+    if now_ts - start_ts > _VERIFY_COLLECTION_OVERALL_TIMEOUT:
+        logger.warning(
+            "stress.deposit_collection.overall_timeout",
+            stress_run_id=stress_run_id,
+            elapsed=int(now_ts - start_ts),
+        )
+        _finalize_collection_verification(
+            stress, webhook_ok_cases, reason="overall_timeout"
+        )
+        cache.delete(cache_key)
+        return
+
+    # ── 4. 单轮轮询：归集触发 + 进度采集 ───────────────────────
     # Transfer.hash 带 0x 前缀，case.tx_hash 可能不带，构建两种形式用于匹配
-    tx_hashes = []
+    tx_hashes: list[str] = []
     for c in webhook_ok_cases:
         h = c.tx_hash
         tx_hashes.append(h)
@@ -567,77 +628,116 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             tx_hashes.append(f"0x{h}")
         else:
             tx_hashes.append(h.removeprefix("0x"))
-    # 基于分阶段进度判定：区分"未匹配到 Deposit"、"已匹配但尚未建单"、
-    # "已建单待链上确认" 三个阶段。CollectSchedule 重构后，归集任务会先经历
-    # "等待 schedule 到期 -> 创建 DepositCollection -> 链上广播/确认" 三步，
-    # 只看最终 uncollected 数会把"已建单但待确认"误判成无进展。
     expected_case_hashes = {c.tx_hash.removeprefix("0x") for c in webhook_ok_cases}
-    stall_rounds = 0
-    prev_progress_key: tuple[int, int, int] | None = None
-    while True:
-        # 同步调用归集逻辑
-        try:
-            _gather_deposits_task()
-        except Exception:
-            logger.warning("stress.deposit_collection.gather_failed", exc_info=True)
 
-        deposits = list(
-            Deposit.objects.filter(
-                transfer__hash__in=tx_hashes,
-                customer__project=stress.project,
-                status="completed",
-            )
-            .select_related("transfer", "collection")
-            .order_by("pk")
-        )
-        matched_hashes = {deposit.transfer.hash.removeprefix("0x") for deposit in deposits}
-        missing_deposit_count = len(expected_case_hashes - matched_hashes)
-        no_collection_count = sum(
-            1 for deposit in deposits if deposit.collection_id is None
-        )
-        pending_confirm_count = sum(
-            1
-            for deposit in deposits
-            if deposit.collection_id is not None
-            and deposit.collection.collected_at is None
-        )
-        progress_key = (
-            missing_deposit_count,
-            no_collection_count,
-            pending_confirm_count,
-        )
+    try:
+        _gather_deposits_task()
+    except Exception:
+        logger.warning("stress.deposit_collection.gather_failed", exc_info=True)
 
-        if progress_key == (0, 0, 0):
-            logger.info(
-                "stress.deposit_collection.all_collected",
+    deposits = list(
+        Deposit.objects.filter(
+            transfer__hash__in=tx_hashes,
+            customer__project=stress.project,
+            status="completed",
+        )
+        .select_related("transfer", "collection")
+        .order_by("pk")
+    )
+    matched_hashes = {deposit.transfer.hash.removeprefix("0x") for deposit in deposits}
+    missing_deposit_count = len(expected_case_hashes - matched_hashes)
+    no_collection_count = sum(
+        1 for deposit in deposits if deposit.collection_id is None
+    )
+    pending_confirm_count = sum(
+        1
+        for deposit in deposits
+        if deposit.collection_id is not None
+        and deposit.collection.collected_at is None
+    )
+    progress_key = (
+        missing_deposit_count,
+        no_collection_count,
+        pending_confirm_count,
+    )
+
+    # ── 5. 判定逻辑 ────────────────────────────────────────────
+    # 区分"未匹配到 Deposit"、"已匹配但尚未建单"、"已建单待链上确认" 三个阶段。
+    # CollectSchedule 重构后，归集任务会先经历 "等待 schedule 到期 -> 创建
+    # DepositCollection -> 链上广播/确认" 三步，只看最终 uncollected 数会把
+    # "已建单但待确认"误判成无进展。
+    if progress_key == (0, 0, 0):
+        logger.info(
+            "stress.deposit_collection.all_collected",
+            stress_run_id=stress_run_id,
+        )
+        _finalize_collection_verification(
+            stress, webhook_ok_cases, reason="completed"
+        )
+        cache.delete(cache_key)
+        return
+
+    # 第 1 轮无参考值；从第 2 轮开始比较阶段进度。只要任一 case 从
+    # "无 Deposit -> 无 Collection -> 待确认" 继续向前推进，就重置停滞计数。
+    if prev_progress_key is not None and progress_key >= prev_progress_key:
+        stall_rounds += 1
+        if stall_rounds >= 2:
+            logger.warning(
+                "stress.deposit_collection.stalled",
                 stress_run_id=stress_run_id,
+                missing_deposit_count=missing_deposit_count,
+                no_collection_count=no_collection_count,
+                pending_confirm_count=pending_confirm_count,
             )
-            break
+            _finalize_collection_verification(
+                stress, webhook_ok_cases, reason="stalled"
+            )
+            cache.delete(cache_key)
+            return
+    else:
+        stall_rounds = 0
 
-        # 第 1 轮无参考值；从第 2 轮开始比较阶段进度。只要任一 case 从
-        # "无 Deposit -> 无 Collection -> 待确认" 继续向前推进，就重置停滞计数。
-        if prev_progress_key is not None and progress_key >= prev_progress_key:
-            stall_rounds += 1
-            if stall_rounds >= 2:
-                logger.warning(
-                    "stress.deposit_collection.stalled",
-                    stress_run_id=stress_run_id,
-                    missing_deposit_count=missing_deposit_count,
-                    no_collection_count=no_collection_count,
-                    pending_confirm_count=pending_confirm_count,
-                )
-                break
-        else:
-            stall_rounds = 0
+    # ── 6. 未达终止条件：写 state，30 秒后自调度 ───────────────
+    new_state = {
+        # 用 list 而不是 tuple，兼容 JSON 序列化的 cache 后端。
+        "prev_progress": list(progress_key),
+        "stall_rounds": stall_rounds,
+        "start_ts": start_ts,
+    }
+    cache.set(cache_key, new_state, timeout=_VERIFY_COLLECTION_CACHE_TIMEOUT)
+    verify_deposit_collection.apply_async(
+        args=[stress_run_id], countdown=_VERIFY_COLLECTION_INTERVAL
+    )
 
-        prev_progress_key = progress_key
-        time.sleep(30)
 
-    # 逐个验证归集结果
+def _finalize_collection_verification(
+    stress: StressRun,
+    webhook_ok_cases: list[DepositStressCase],
+    reason: str,
+) -> None:
+    """归集验证判定阶段：逐个 case 校验 Deposit + DepositCollection 状态，
+    标 SUCCEEDED / FAILED 并触发 on_case_finished。
+
+    被以下三种触发点调用：
+    - reason="completed"   归集已全部完成（progress_key == (0,0,0)）
+    - reason="stalled"     连续两轮进度不下降
+    - reason="overall_timeout"  整体兜底超时（30 分钟）
+    """
+    from deposits.models import Deposit
+
+    logger.info(
+        "stress.deposit_collection.finalize",
+        stress_run_id=stress.pk,
+        reason=reason,
+        cases=len(webhook_ok_cases),
+    )
+
     for case in webhook_ok_cases:
         # Transfer.hash 带 0x，case.tx_hash 可能不带
         h = case.tx_hash
-        hash_variants = [h, f"0x{h}"] if not h.startswith("0x") else [h, h.removeprefix("0x")]
+        hash_variants = (
+            [h, f"0x{h}"] if not h.startswith("0x") else [h, h.removeprefix("0x")]
+        )
         deposit = (
             Deposit.objects.filter(
                 transfer__hash__in=hash_variants,
@@ -666,8 +766,8 @@ def verify_deposit_collection(stress_run_id: int) -> None:
             update_fields.append("collection_done_at")
         else:
             case.status = DepositStressCaseStatus.FAILED
-            reason = "未找到 Deposit 记录" if not deposit else "归集未完成"
-            case.error = reason
+            reason_text = "未找到 Deposit 记录" if not deposit else "归集未完成"
+            case.error = reason_text
 
         case.finished_at = timezone.now()
         case.save(update_fields=update_fields)

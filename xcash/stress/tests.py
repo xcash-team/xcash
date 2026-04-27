@@ -1,12 +1,14 @@
 import hashlib
 import hmac
 import json
+import time
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import ANY
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.core.cache import cache as django_cache
 from django.test import RequestFactory
 from django.test import SimpleTestCase
 from django.test import TestCase
@@ -31,6 +33,7 @@ from stress.service import StressService
 from stress.service import _setup_recipient_addresses
 from stress.tasks import _execute
 from stress.tasks import _execute_deposit
+from stress.tasks import _verify_collection_cache_key
 from stress.tasks import execute_deposit_case_payment
 from stress.tasks import execute_stress_case_payment
 from stress.tasks import prepare_stress
@@ -1285,11 +1288,18 @@ class DepositCollectionVerificationTests(TestCase):
         )
 
     def test_verify_deposit_collection_treats_created_collection_as_progress(self):
-        sleep_round = {"count": 0}
+        """集成场景：跨多轮 self-reschedule 推进归集流水线，最终完成。
 
-        def advance_pipeline(_seconds):
-            sleep_round["count"] += 1
-            if sleep_round["count"] == 2:
+        改造前是 while loop 内 sleep 推进；改造后每轮跑一次单 task，state
+        通过 cache 持久化。这里直接连续调用 .run()，模拟 Celery 自调度链路。
+        """
+        django_cache.clear()
+
+        round_state = {"count": 0}
+
+        def advance_pipeline_each_run():
+            round_state["count"] += 1
+            if round_state["count"] == 2:
                 collection = DepositCollection.objects.create(
                     broadcast_task=BroadcastTask.objects.create(
                         chain=self.chain,
@@ -1312,7 +1322,7 @@ class DepositCollectionVerificationTests(TestCase):
                     )
                 )
                 Deposit.objects.filter(pk=self.deposit.pk).update(collection=collection)
-            elif sleep_round["count"] == 3:
+            elif round_state["count"] == 3:
                 self.deposit.refresh_from_db()
                 collection = self.deposit.collection
                 collection.collection_hash = "0x" + "b" * 64
@@ -1321,11 +1331,20 @@ class DepositCollectionVerificationTests(TestCase):
                     update_fields=["collection_hash", "collected_at", "updated_at"]
                 )
 
+        def gather_side_effect(*_args, **_kwargs):
+            advance_pipeline_each_run()
+
+        # 截获 self-reschedule，避免真发到 broker；最多 4 轮兜底，防止死循环。
+        max_rounds = 4
         with (
-            patch("deposits.tasks.gather_deposits"),
-            patch("stress.tasks.time.sleep", side_effect=advance_pipeline),
+            patch("deposits.tasks.gather_deposits", side_effect=gather_side_effect),
+            patch("stress.tasks.verify_deposit_collection.apply_async") as reschedule_mock,
         ):
-            verify_deposit_collection.run(self.stress_run.pk)
+            for _ in range(max_rounds):
+                verify_deposit_collection.run(self.stress_run.pk)
+                self.case.refresh_from_db()
+                if self.case.status != DepositStressCaseStatus.WEBHOOK_OK:
+                    break
 
         self.case.refresh_from_db()
         self.stress_run.refresh_from_db()
@@ -1335,3 +1354,283 @@ class DepositCollectionVerificationTests(TestCase):
         self.assertEqual(self.case.collection_hash, "0x" + "b" * 64)
         self.assertEqual(self.stress_run.succeeded, 1)
         self.assertEqual(self.stress_run.failed, 0)
+        # 完成轮不再 reschedule，但前面几轮会
+        self.assertGreaterEqual(reschedule_mock.call_count, 1)
+
+
+class VerifyDepositCollectionSchedulingTests(SimpleTestCase):
+    """self-rescheduling 单轮调度行为单测。
+
+    所有 case 用 Mock 替代 ORM，专注调度逻辑：cache state 读写、
+    reschedule 调用、判定阶段触发条件。
+    """
+
+    databases = {"default"}
+
+    def setUp(self):
+        django_cache.clear()
+        self.stress_run_id = 12345
+
+    def _make_case(self, tx_hash="abc123", **overrides):
+        case = SimpleNamespace(
+            pk=1,
+            tx_hash=tx_hash,
+            status=DepositStressCaseStatus.WEBHOOK_OK,
+            collection_verified=False,
+            collection_hash="",
+            collection_done_at=None,
+            error="",
+            finished_at=None,
+            stress_run_id=self.stress_run_id,
+        )
+        for key, value in overrides.items():
+            setattr(case, key, value)
+        case.save = Mock()
+        return case
+
+    def _make_stress_run(self):
+        project = SimpleNamespace(pk=99)
+        return SimpleNamespace(pk=self.stress_run_id, project=project)
+
+    def _patch_pre_webhook_filter(self, *, has_pending: bool):
+        """patch DepositStressCase.objects.filter(...).exists() 的前置条件检查。"""
+        return patch(
+            "stress.tasks.DepositStressCase.objects.filter",
+            return_value=SimpleNamespace(exists=Mock(return_value=has_pending)),
+        )
+
+    def _patch_normal_flow(self, stress, webhook_ok_cases, deposits):
+        """组装一组 patch：跳过 pre-webhook 检查、返回 stress_run、返回 webhook_ok cases、
+        返回 Deposit 查询结果。"""
+
+        # DepositStressCase.objects.filter 会被调用两次：
+        #   1) pre_webhook 检查：.exists() → False
+        #   2) webhook_ok 查询：list(qs) → webhook_ok_cases
+        case_filter_calls = {"count": 0}
+
+        def case_filter_side_effect(**kwargs):
+            case_filter_calls["count"] += 1
+            if case_filter_calls["count"] == 1:
+                # pre-webhook 检查
+                return SimpleNamespace(exists=Mock(return_value=False))
+            # webhook_ok 查询，需要支持 list(...)
+            return webhook_ok_cases
+
+        # Deposit.objects.filter(...).select_related(...).order_by(...)
+        # 在判定阶段还会再调 Deposit.objects.filter(...).select_related(...).first()
+        deposit_qs = SimpleNamespace(
+            select_related=Mock(
+                return_value=SimpleNamespace(
+                    order_by=Mock(return_value=deposits),
+                    first=Mock(return_value=deposits[0] if deposits else None),
+                )
+            ),
+        )
+
+        return [
+            patch(
+                "stress.tasks.DepositStressCase.objects.filter",
+                side_effect=case_filter_side_effect,
+            ),
+            patch(
+                "stress.tasks.StressRun.objects.select_related",
+                return_value=SimpleNamespace(get=Mock(return_value=stress)),
+            ),
+            patch("deposits.models.Deposit.objects.filter", return_value=deposit_qs),
+            patch("deposits.tasks.gather_deposits"),
+            patch("stress.tasks.StressService.on_case_finished"),
+        ]
+
+    def test_verify_deposit_collection_first_round_reschedules(self):
+        """首次跑：cache 无 state，跑一轮后写入 state，countdown=30 自调度。"""
+        case = self._make_case()
+        stress = self._make_stress_run()
+        # 没有任何 deposit 匹配 → progress_key=(1, 0, 0)，第 1 轮无 prev，不触发停滞
+        deposits = []
+
+        patches = self._patch_normal_flow(stress, [case], deposits)
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patch(
+                "stress.tasks.verify_deposit_collection.apply_async"
+            ) as reschedule_mock,
+        ):
+            verify_deposit_collection.run(self.stress_run_id)
+
+        cache_key = _verify_collection_cache_key(self.stress_run_id)
+        state = django_cache.get(cache_key)
+        self.assertIsNotNone(state)
+        # tuple 序列化兼容：用 list 存
+        self.assertEqual(state["prev_progress"], [1, 0, 0])
+        self.assertEqual(state["stall_rounds"], 0)
+        self.assertIn("start_ts", state)
+
+        reschedule_mock.assert_called_once_with(
+            args=[self.stress_run_id], countdown=30
+        )
+        # case 状态没有被改动（未到判定阶段）
+        case.save.assert_not_called()
+
+    def test_verify_deposit_collection_completes_when_all_collected(self):
+        """progress_key == (0,0,0)：进入判定阶段，case 标 SUCCEEDED，cache 清理，不重调度。"""
+        case = self._make_case()
+        stress = self._make_stress_run()
+
+        # 模拟 deposit 已建单 + 完成
+        collection = SimpleNamespace(
+            collected_at=timezone.now(),
+            collection_hash="0xcollection",
+        )
+        deposit = SimpleNamespace(
+            pk=1,
+            collection=collection,
+            collection_id=1,
+            transfer=SimpleNamespace(hash="abc123"),
+        )
+        deposits = [deposit]
+
+        patches = self._patch_normal_flow(stress, [case], deposits)
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patch(
+                "stress.tasks.verify_deposit_collection.apply_async"
+            ) as reschedule_mock,
+        ):
+            verify_deposit_collection.run(self.stress_run_id)
+
+        # 完成路径：cache 被清理，无 reschedule
+        self.assertIsNone(
+            django_cache.get(_verify_collection_cache_key(self.stress_run_id))
+        )
+        reschedule_mock.assert_not_called()
+
+        # case 标 SUCCEEDED
+        self.assertEqual(case.status, DepositStressCaseStatus.SUCCEEDED)
+        self.assertTrue(case.collection_verified)
+        self.assertEqual(case.collection_hash, "0xcollection")
+        case.save.assert_called_once()
+
+    def test_verify_deposit_collection_stalls_after_two_rounds(self):
+        """prev_progress 已存在且 progress_key 不下降：stall +1，到 ≥2 触发判定阶段。"""
+        # 预置 cache：上一轮 progress=(1,0,0)，已积累 1 轮停滞
+        prev_state = {
+            "prev_progress": [1, 0, 0],
+            "stall_rounds": 1,
+            "start_ts": time.time() - 60,
+        }
+        cache_key = _verify_collection_cache_key(self.stress_run_id)
+        django_cache.set(cache_key, prev_state, timeout=1900)
+
+        case = self._make_case()
+        stress = self._make_stress_run()
+        # 本轮仍是 progress=(1,0,0)：无 deposit 匹配
+        deposits = []
+
+        patches = self._patch_normal_flow(stress, [case], deposits)
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patch(
+                "stress.tasks.verify_deposit_collection.apply_async"
+            ) as reschedule_mock,
+        ):
+            verify_deposit_collection.run(self.stress_run_id)
+
+        # 触发停滞判定：cache 清理，不重调度
+        self.assertIsNone(django_cache.get(cache_key))
+        reschedule_mock.assert_not_called()
+
+        # case 标 FAILED 原因="未找到 Deposit 记录"（第二个 patch 让 first() 返回 None）
+        self.assertEqual(case.status, DepositStressCaseStatus.FAILED)
+        self.assertIn(case.error, {"未找到 Deposit 记录", "归集未完成"})
+        case.save.assert_called_once()
+
+    def test_verify_deposit_collection_overall_timeout(self):
+        """start_ts 距今 > 1800 秒：直接进入判定阶段（兜底超时）。"""
+        # 预置 cache：start_ts 在 31 分钟前
+        prev_state = {
+            "prev_progress": [1, 0, 0],
+            "stall_rounds": 0,
+            "start_ts": time.time() - 1900,
+        }
+        cache_key = _verify_collection_cache_key(self.stress_run_id)
+        django_cache.set(cache_key, prev_state, timeout=1900)
+
+        case = self._make_case()
+        stress = self._make_stress_run()
+
+        # 兜底超时分支不会跑 _gather_deposits_task / Deposit.objects.filter
+        # 但会 webhook_ok 查询 + Deposit.first()（在 _finalize 内）
+        case_filter_calls = {"count": 0}
+
+        def case_filter_side_effect(**kwargs):
+            case_filter_calls["count"] += 1
+            if case_filter_calls["count"] == 1:
+                return SimpleNamespace(exists=Mock(return_value=False))
+            return [case]
+
+        with (
+            patch(
+                "stress.tasks.DepositStressCase.objects.filter",
+                side_effect=case_filter_side_effect,
+            ),
+            patch(
+                "stress.tasks.StressRun.objects.select_related",
+                return_value=SimpleNamespace(get=Mock(return_value=stress)),
+            ),
+            patch(
+                "deposits.models.Deposit.objects.filter",
+                return_value=SimpleNamespace(
+                    select_related=Mock(
+                        return_value=SimpleNamespace(first=Mock(return_value=None))
+                    )
+                ),
+            ),
+            patch("deposits.tasks.gather_deposits") as gather_mock,
+            patch("stress.tasks.StressService.on_case_finished"),
+            patch(
+                "stress.tasks.verify_deposit_collection.apply_async"
+            ) as reschedule_mock,
+        ):
+            verify_deposit_collection.run(self.stress_run_id)
+
+        # 兜底超时分支：cache 清理，不重调度，gather 没被调用（提前 return）
+        self.assertIsNone(django_cache.get(cache_key))
+        reschedule_mock.assert_not_called()
+        gather_mock.assert_not_called()
+
+        # case 标 FAILED
+        self.assertEqual(case.status, DepositStressCaseStatus.FAILED)
+        case.save.assert_called_once()
+
+    def test_verify_deposit_collection_skips_when_pre_webhook_pending(self):
+        """还有 case 在 PENDING/CREATING/PAYING/PAID：直接 return，不更新 state，不重调度。"""
+        cache_key = _verify_collection_cache_key(self.stress_run_id)
+
+        # 第 1 次 filter().exists() → True，模拟还有 PENDING case
+        with (
+            self._patch_pre_webhook_filter(has_pending=True),
+            patch(
+                "stress.tasks.verify_deposit_collection.apply_async"
+            ) as reschedule_mock,
+            patch("deposits.tasks.gather_deposits") as gather_mock,
+            patch("stress.tasks.StressService.on_case_finished") as on_finished_mock,
+        ):
+            verify_deposit_collection.run(self.stress_run_id)
+
+        # 没动 cache、没 reschedule、没跑 gather、没动 case
+        self.assertIsNone(django_cache.get(cache_key))
+        reschedule_mock.assert_not_called()
+        gather_mock.assert_not_called()
+        on_finished_mock.assert_not_called()
