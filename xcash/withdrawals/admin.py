@@ -20,6 +20,7 @@ from users.otp import get_primary_totp_device
 from users.otp import record_admin_access
 from users.otp import refresh_admin_otp_verification
 from users.otp import set_pending_admin_otp
+from users.otp import verify_otp_token
 from withdrawals.models import VaultFunding
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalReviewLog
@@ -292,7 +293,7 @@ class WithdrawalAdmin(ModelAdmin):
         form = OTPVerifyForm(request.POST)
         if not form.is_valid():
             return self._render_changelist_with_otp_modal(request, form=form)
-        if not device.verify_token(form.cleaned_data["token"]):
+        if not verify_otp_token(device, form.cleaned_data["token"]):
             record_admin_access(
                 request=request,
                 action=AdminAccessLog.Action.OTP_VERIFY,

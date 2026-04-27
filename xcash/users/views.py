@@ -31,6 +31,7 @@ from .otp import get_primary_totp_device
 from .otp import get_totp_secret
 from .otp import record_admin_access
 from .otp import set_pending_admin_otp
+from .otp import verify_otp_token
 
 
 class AdminContextMixin:
@@ -130,7 +131,7 @@ class OTPSetupView(OTPContextMixin, FormView):
         if form.cleaned_data.get("device_name"):
             self.device.name = form.cleaned_data["device_name"]
             self.device.save(update_fields=["name"])
-        if not self.device.verify_token(form.cleaned_data["token"]):
+        if not verify_otp_token(self.device, form.cleaned_data["token"]):
             record_admin_access(
                 request=self.request,
                 action=AdminAccessLog.Action.OTP_SETUP,
@@ -179,7 +180,7 @@ class OTPVerifyView(OTPContextMixin, FormView):
         return None
 
     def form_valid(self, form):
-        if not self.device.verify_token(form.cleaned_data["token"]):
+        if not verify_otp_token(self.device, form.cleaned_data["token"]):
             record_admin_access(
                 request=self.request,
                 action=AdminAccessLog.Action.OTP_VERIFY,

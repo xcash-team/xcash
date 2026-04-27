@@ -33,6 +33,7 @@ from users.otp import get_primary_totp_device
 from users.otp import record_admin_access
 from users.otp import refresh_admin_otp_verification
 from users.otp import set_pending_admin_otp
+from users.otp import verify_otp_token
 
 # Register your models here.
 
@@ -365,7 +366,7 @@ class ProjectAdmin(ModelAdmin):
                 extra_context,
                 form=form,
             )
-        if not device.verify_token(form.cleaned_data["token"]):
+        if not verify_otp_token(device, form.cleaned_data["token"]):
             record_admin_access(
                 request=request,
                 action=AdminAccessLog.Action.OTP_VERIFY,

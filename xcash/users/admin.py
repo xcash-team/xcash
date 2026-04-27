@@ -36,6 +36,7 @@ from .otp import get_primary_totp_device
 from .otp import get_totp_secret
 from .otp import record_admin_access
 from .otp import refresh_admin_otp_verification
+from .otp import verify_otp_token
 
 csrf_protect_m = method_decorator(csrf_protect)
 sensitive_post_parameters_m = method_decorator(sensitive_post_parameters())
@@ -166,8 +167,8 @@ class UserAdmin(BaseUserAdmin, ModelAdmin):
             form.add_error("current_password", _("当前密码不正确。"))
             return False
 
-        if current_device is not None and not current_device.verify_token(
-            form.cleaned_data["current_token"]
+        if current_device is not None and not verify_otp_token(
+            current_device, form.cleaned_data["current_token"]
         ):
             record_admin_access(
                 request=request,
@@ -192,7 +193,7 @@ class UserAdmin(BaseUserAdmin, ModelAdmin):
         user: User,
         device,
     ) -> bool:
-        if device.verify_token(form.cleaned_data["token"]):
+        if verify_otp_token(device, form.cleaned_data["token"]):
             return True
 
         record_admin_access(

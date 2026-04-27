@@ -19,6 +19,7 @@ from users.otp import get_pending_admin_user
 from users.otp import get_primary_totp_device
 from users.otp import record_admin_access
 from users.otp import set_pending_admin_otp
+from users.otp import verify_otp_token
 
 
 class HomeView(RedirectView):
@@ -607,7 +608,7 @@ def _handle_signer_modal_verification(request):
     if not form.is_valid():
         return _render_signer_otp_modal(request, form=form)
 
-    if not device.verify_token(form.cleaned_data["token"]):
+    if not verify_otp_token(device, form.cleaned_data["token"]):
         record_admin_access(
             request=request,
             action=AdminAccessLog.Action.OTP_VERIFY,
