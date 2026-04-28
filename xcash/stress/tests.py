@@ -1553,7 +1553,8 @@ class VerifyDepositCollectionSchedulingTests(SimpleTestCase):
         self.assertIsNotNone(state)
         # tuple 序列化兼容：用 list 存
         self.assertEqual(state["prev_progress"], [1, 0, 0])
-        self.assertEqual(state["stall_rounds"], 0)
+        # 首轮 stall_since_ts 初始化为 now（与 start_ts 同时刻）
+        self.assertIn("stall_since_ts", state)
         self.assertIn("start_ts", state)
 
         reschedule_mock.assert_called_once_with(
@@ -1605,13 +1606,20 @@ class VerifyDepositCollectionSchedulingTests(SimpleTestCase):
         self.assertEqual(case.collection_hash, "0xcollection")
         case.save.assert_called_once()
 
-    def test_verify_deposit_collection_stalls_after_two_rounds(self):
-        """prev_progress 已存在且 progress_key 不下降：stall +1，到 ≥2 触发判定阶段。"""
-        # 预置 cache：上一轮 progress=(1,0,0)，已积累 1 轮停滞
+    def test_verify_deposit_collection_stalls_when_progress_unchanged_for_timeout(self):
+        """progress_key 持续 STALL_TIMEOUT 秒不下降 → 触发停滞判定。
+
+        改造前是"连续 2 轮不下降"，但 webhook handler 的 100 次 burst 派发会
+        在几秒内连续被 dequeue 跑(singleton_task 锁释放后),3 次连续运行就
+        把 stall_rounds 累到 2,触发误判。改造后只看 progress 真实持续不变
+        的时间窗口,burst 调用因时间还短被自然忽略。
+        """
+        # 预置 cache：上一轮 progress=(1,0,0)，stall_since_ts 在 130 秒前
+        # （> _VERIFY_COLLECTION_STALL_TIMEOUT=120），本轮再次未推进即触发
         prev_state = {
             "prev_progress": [1, 0, 0],
-            "stall_rounds": 1,
-            "start_ts": time.time() - 60,
+            "stall_since_ts": time.time() - 130,
+            "start_ts": time.time() - 130,
         }
         cache_key = _verify_collection_cache_key(self.stress_run_id)
         django_cache.set(cache_key, prev_state, timeout=1900)
@@ -1643,12 +1651,51 @@ class VerifyDepositCollectionSchedulingTests(SimpleTestCase):
         self.assertIn(case.error, {"未找到 Deposit 记录", "归集未完成"})
         case.save.assert_called_once()
 
+    def test_verify_deposit_collection_burst_calls_do_not_falsely_stall(self):
+        """100 次 webhook 派的 verify task 被几秒内连续 dequeue 跑，progress 不变也不应触发停滞。
+
+        回归测试：StressRun 32 因这个 bug 在 41 秒内全部 100 笔 deposit 被
+        误判 FAILED("归集未完成")。改造后 stall 用绝对时间窗口，burst 调用
+        累计时间远小于 STALL_TIMEOUT，不应触发。
+        """
+        case = self._make_case()
+        stress = self._make_stress_run()
+        # 模拟 schedule 还没到期：deposit 已建但 collection_id=None
+        deposit = SimpleNamespace(
+            pk=1,
+            collection=None,
+            collection_id=None,
+            transfer=SimpleNamespace(hash="abc123"),
+        )
+        deposits = [deposit]
+
+        # 连续跑 5 次（模拟 burst dequeue），progress 一直 (0,1,0) 不变
+        with patch(
+            "stress.tasks.verify_deposit_collection.apply_async"
+        ) as reschedule_mock:
+            for _ in range(5):
+                patches = self._patch_normal_flow(stress, [case], deposits)
+                with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                    verify_deposit_collection.run(self.stress_run_id)
+
+        # 5 次 burst 内（实际耗时 < 1 秒，远小于 STALL_TIMEOUT=120 秒）：
+        # - 不能触发 finalize（case 不应被标 FAILED）
+        # - 每次都应正常 reschedule
+        case.save.assert_not_called()
+        self.assertEqual(case.status, DepositStressCaseStatus.WEBHOOK_OK)
+        self.assertEqual(reschedule_mock.call_count, 5)
+        # cache 持续维护，每次 stall_since_ts 保持首轮设的值
+        cache_key = _verify_collection_cache_key(self.stress_run_id)
+        state = django_cache.get(cache_key)
+        self.assertIsNotNone(state)
+        self.assertEqual(state["prev_progress"], [0, 1, 0])
+
     def test_verify_deposit_collection_overall_timeout(self):
         """start_ts 距今 > 1800 秒：直接进入判定阶段（兜底超时）。"""
         # 预置 cache：start_ts 在 31 分钟前
         prev_state = {
             "prev_progress": [1, 0, 0],
-            "stall_rounds": 0,
+            "stall_since_ts": time.time() - 1900,
             "start_ts": time.time() - 1900,
         }
         cache_key = _verify_collection_cache_key(self.stress_run_id)

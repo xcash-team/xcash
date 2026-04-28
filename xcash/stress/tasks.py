@@ -547,10 +547,11 @@ def _maybe_trigger_collection_verification(stress_run_id: int) -> None:
 # 归集验证 self-rescheduling 配置
 # - _VERIFY_COLLECTION_INTERVAL: 每轮自调度的间隔（秒）
 # - _VERIFY_COLLECTION_OVERALL_TIMEOUT: 整体兜底超时（秒），保留原 30 分钟语义
+# - _VERIFY_COLLECTION_STALL_TIMEOUT: progress 持续无进展多久判停滞
 # - _VERIFY_COLLECTION_CACHE_TIMEOUT: cache state 存活时间，需 > overall timeout
-#   以确保兜底判定能读到 start_ts
 _VERIFY_COLLECTION_INTERVAL = 30
 _VERIFY_COLLECTION_OVERALL_TIMEOUT = 1800
+_VERIFY_COLLECTION_STALL_TIMEOUT = 120
 _VERIFY_COLLECTION_CACHE_TIMEOUT = 1900
 
 
@@ -575,8 +576,14 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
 
     判定阶段触发条件：
     1) progress_key == (0, 0, 0) → 完成
-    2) prev_progress 与当前进度都不下降两轮 → 停滞
+    2) progress_key 持续 _VERIFY_COLLECTION_STALL_TIMEOUT 秒不下降 → 停滞
     3) start_ts 距今超过 overall timeout → 兜底超时
+
+    stall 用"时间窗口"而非"调用次数"：webhook handler 完成后会派 100 个
+    verify task(countdown=15)，singleton_task 锁释放后这些 task 会在几
+    秒内被连续 dequeue 跑。改造前 while True + sleep(30) 间隔由 sleep
+    保证；改造后必须用绝对时间窗口，否则 burst 调用 3 次就会误判停滞
+    (实测 stress run 32 触发：05:19-05:22 内 3 次连续跑 stall_rounds 0→1→2)。
 
     bind=True 是为了配合 self-reschedule 的语义清晰（虽然这里没用 self.retry，
     self.retry 是错误重试机制，max_retries=3 不够 30+ 轮等待，且语义不对）。
@@ -623,7 +630,7 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
     now_ts = time.time()
     if state is None:
         prev_progress_key: tuple[int, int, int] | None = None
-        stall_rounds = 0
+        stall_since_ts = now_ts
         start_ts = now_ts
     else:
         # cache 后端可能把 tuple 序列化成 list（JSON 化场景），统一转回 tuple。
@@ -632,7 +639,9 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
             prev_progress_key = None
         else:
             prev_progress_key = tuple(raw_prev)
-        stall_rounds = state.get("stall_rounds", 0)
+        # stall_since_ts: progress_key 第一次进入当前值的时间戳。
+        # progress 推进时重置为当前 now，未推进时保持不动。
+        stall_since_ts = state.get("stall_since_ts", now_ts)
         start_ts = state.get("start_ts", now_ts)
 
     # ── 3. 整体兜底超时：直接进入判定阶段 ──────────────────────
@@ -707,31 +716,31 @@ def verify_deposit_collection(self, stress_run_id: int) -> None:
         cache.delete(cache_key)
         return
 
-    # 第 1 轮无参考值；从第 2 轮开始比较阶段进度。只要任一 case 从
-    # "无 Deposit -> 无 Collection -> 待确认" 继续向前推进，就重置停滞计数。
-    if prev_progress_key is not None and progress_key >= prev_progress_key:
-        stall_rounds += 1
-        if stall_rounds >= 2:
-            logger.warning(
-                "stress.deposit_collection.stalled",
-                stress_run_id=stress_run_id,
-                missing_deposit_count=missing_deposit_count,
-                no_collection_count=no_collection_count,
-                pending_confirm_count=pending_confirm_count,
-            )
-            _finalize_collection_verification(
-                stress, webhook_ok_cases, reason="stalled"
-            )
-            cache.delete(cache_key)
-            return
-    else:
-        stall_rounds = 0
+    # 第 1 轮 prev=None 视为"刚开始观察"，stall_since_ts 已在 state 初始化为 now。
+    # progress 字典序严格变小才算推进（任一阶段计数下降都会让字典序变小）。
+    # 推进时重置 stall_since_ts；未推进时若距上次推进已超 STALL_TIMEOUT，判定停滞。
+    if prev_progress_key is None or progress_key < prev_progress_key:
+        stall_since_ts = now_ts
+    elif now_ts - stall_since_ts > _VERIFY_COLLECTION_STALL_TIMEOUT:
+        logger.warning(
+            "stress.deposit_collection.stalled",
+            stress_run_id=stress_run_id,
+            missing_deposit_count=missing_deposit_count,
+            no_collection_count=no_collection_count,
+            pending_confirm_count=pending_confirm_count,
+            stall_seconds=int(now_ts - stall_since_ts),
+        )
+        _finalize_collection_verification(
+            stress, webhook_ok_cases, reason="stalled"
+        )
+        cache.delete(cache_key)
+        return
 
     # ── 6. 未达终止条件：写 state，30 秒后自调度 ───────────────
     new_state = {
         # 用 list 而不是 tuple，兼容 JSON 序列化的 cache 后端。
         "prev_progress": list(progress_key),
-        "stall_rounds": stall_rounds,
+        "stall_since_ts": stall_since_ts,
         "start_ts": start_ts,
     }
     cache.set(cache_key, new_state, timeout=_VERIFY_COLLECTION_CACHE_TIMEOUT)
