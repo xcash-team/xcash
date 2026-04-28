@@ -68,6 +68,9 @@ services:
       - signer
     env_file:
       - .env
+    # django/worker/beat 都需要按 DNS 别名解析 saas 侧 Caddy：
+    # django 同步校验 SaaS permission，worker 推送内部回调，beat 调度刷新任务。
+    networks: [default, xcash_public]
     command: /start
 
   worker:
@@ -76,8 +79,6 @@ services:
     environment:
       REMAP_SIGTERM: SIGQUIT
     stop_grace_period: 60s
-    # worker 承担对 SaaS 的内部回调推送，需要能按 DNS 别名解析 saas 侧 Caddy。
-    networks: [default, xcash_public]
     command: /start-worker
 
   beat:

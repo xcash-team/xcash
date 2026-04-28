@@ -74,7 +74,6 @@ class ErrorCode(Enum):
     PROJECT_NOT_FOUND = ErrorInfo("6002", _("项目不存在"), 404)
     FEATURE_NOT_ENABLED = ErrorInfo("6003", _("该功能未开放"), 403)
     ACCOUNT_FROZEN = ErrorInfo("6004", _("账户已冻结"), 403)
-    PERMISSION_SERVICE_UNAVAILABLE = ErrorInfo("6005", _("权限服务不可用"), 503)
 
     def __init__(self, info: ErrorInfo):
         self._info = info
