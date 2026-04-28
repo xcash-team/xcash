@@ -233,7 +233,11 @@ class StressService:
         project = stress_run.project
         methods = _require_stress_methods_ready(project)
 
-        amount = str(round(random.uniform(0.1, 10), 2))  # noqa: S311
+        # 下限 1 USD：BTC ~6 万 USD/枚下，0.1-0.2 USD 折算 ≈ 170-340 sat，
+        # 加上 invoice differ_amount 微调后会落进 bech32 dust 区间(~294 sat)，
+        # 触发 sendtoaddress "Transaction amount too small"。提到 1 USD ≈
+        # 1700 sat，对任何地址类型 dust threshold 都有充足余量。
+        amount = str(round(random.uniform(1, 10), 2))  # noqa: S311
         out_no = f"STRESS-{stress_run.pk}-{case.sequence}"
 
         body = json.dumps(
