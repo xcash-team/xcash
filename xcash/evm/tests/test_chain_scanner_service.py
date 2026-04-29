@@ -1,50 +1,32 @@
-import threading
-from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock
-from unittest.mock import PropertyMock
 from unittest.mock import patch
 
-from django.contrib.admin.sites import AdminSite
-from django.core.cache import cache
-from django.db import connections
-from django.db import close_old_connections
 from django.test import TestCase
-from django.test import TransactionTestCase
 from django.test import override_settings
-from django.utils import timezone
 from web3 import Web3
 
 from chains.models import Address
 from chains.models import AddressUsage
 from chains.models import BroadcastTask
-from chains.models import BroadcastTaskFailureReason
 from chains.models import BroadcastTaskResult
 from chains.models import BroadcastTaskStage
 from chains.models import Chain
 from chains.models import ChainType
-from chains.models import OnchainTransfer
 from chains.models import TransferType
 from chains.models import TxHash
 from chains.models import Wallet
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
-from common.consts import ERC20_TRANSFER_GAS
-from currencies.models import ChainToken
 from currencies.models import Crypto
-from evm.admin import EvmScanCursorAdmin
 from evm.models import EvmBroadcastTask
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.erc20 import EvmErc20ScanResult
-from evm.scanner.erc20 import EvmErc20TransferScanner
-from evm.scanner.native import EvmNativeDirectScanner
 from evm.scanner.native import EvmNativeScanResult
 from evm.scanner.rpc import EvmScannerRpcError
-from projects.models import RecipientAddress
-from projects.models import RecipientAddressUsage
-
+from evm.scanner.service import EvmChainScannerService
 
 
 class EvmChainScannerServiceTests(TestCase):
@@ -72,8 +54,6 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
-        from evm.scanner.service import EvmChainScannerService
-
         EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
@@ -102,8 +82,6 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
-        from evm.scanner.service import EvmChainScannerService
-
         EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,
@@ -132,8 +110,6 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
-        from evm.scanner.service import EvmChainScannerService
-
         native_scan_mock.return_value = EvmNativeScanResult(
             from_block=1,
             to_block=1,
@@ -155,6 +131,31 @@ class EvmChainScannerServiceTests(TestCase):
         erc20_scan_mock.assert_called_once_with(chain=self.chain)
         self.assertEqual(result.native.created_transfers, 1)
         self.assertEqual(result.erc20.created_transfers, 1)
+
+    @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
+    @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
+    def test_native_rpc_failure_does_not_block_erc20_scan(
+        self,
+        native_scan_mock,
+        erc20_scan_mock,
+    ):
+        native_scan_mock.side_effect = EvmScannerRpcError("archive plan denied")
+        erc20_scan_mock.return_value = EvmErc20ScanResult(
+            from_block=10,
+            to_block=12,
+            latest_block=88,
+            observed_logs=4,
+            created_transfers=2,
+        )
+
+        result = EvmChainScannerService.scan_chain(chain=self.chain)
+
+        native_scan_mock.assert_called_once_with(chain=self.chain)
+        erc20_scan_mock.assert_called_once_with(chain=self.chain)
+        self.assertEqual(result.native.observed_transfers, 0)
+        self.assertEqual(result.native.created_transfers, 0)
+        self.assertEqual(result.erc20.observed_logs, 4)
+        self.assertEqual(result.erc20.created_transfers, 2)
 
     @override_settings(SIGNER_BACKEND="remote")
     def test_broadcast_rejects_local_fallback_when_remote_signer_enabled(self):
