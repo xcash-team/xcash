@@ -11,6 +11,9 @@ from django.utils import timezone
 class SyncScanCursorToLatestActionMixin:
     """为扫描游标后台提供“追平到最新区块”批量动作。"""
 
+    def get_sync_latest_block(self, *, chain) -> int:
+        return chain.latest_block_number
+
     @admin.action(description="启用所选扫描游标")
     def enable_selected_scanners(self, request, queryset) -> None:
         selected_ids = list(queryset.values_list("pk", flat=True))
@@ -63,7 +66,15 @@ class SyncScanCursorToLatestActionMixin:
 
         for chain_id, cursor_ids in cursor_ids_by_chain_id.items():
             chain = chains_by_id[chain_id]
-            latest_block = chain.latest_block_number
+            try:
+                latest_block = self.get_sync_latest_block(chain=chain)
+            except Exception as exc:  # noqa: BLE001
+                self.message_user(
+                    request,
+                    f"{chain.code} 获取最新区块失败，已跳过 {len(cursor_ids)} 个扫描游标：{exc}",
+                    level=messages.ERROR,
+                )
+                continue
             safe_block = max(0, latest_block - chain.confirm_block_count)
             with transaction.atomic():
                 queryset.model.objects.filter(pk__in=cursor_ids).update(

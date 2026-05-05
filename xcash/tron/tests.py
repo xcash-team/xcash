@@ -14,13 +14,18 @@ from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
+from tron.admin import TronWatchCursorAdmin
+from tron.client import TronClientError
+from tron.client import TronHttpClient
+from tron.codec import TronAddressCodec
+from tron.models import TronWatchCursor
 
 from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import Wallet
-from currencies.models import Crypto
 from currencies.models import ChainToken
+from currencies.models import Crypto
 from currencies.models import Fiat
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 from invoices.models import Invoice
@@ -28,11 +33,6 @@ from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
-from tron.admin import TronWatchCursorAdmin
-from tron.client import TronHttpClient
-from tron.client import TronClientError
-from tron.codec import TronAddressCodec
-from tron.models import TronWatchCursor
 
 
 @override_settings(TRON_RPC_TIMEOUT=3.0)
@@ -276,14 +276,17 @@ class TronWatchCursorAdminTests(TestCase):
         self.admin = TronWatchCursorAdmin(TronWatchCursor, AdminSite())
         self.admin.message_user = Mock()
 
+    @patch("tron.admin.TronHttpClient")
     @patch.object(Chain, "get_latest_block_number", new_callable=PropertyMock)
-    def test_sync_selected_to_latest_uses_cached_chain_latest_block_number(
-        self, get_latest_block_number_mock
+    def test_sync_selected_to_latest_fetches_realtime_solid_block_number(
+        self, get_latest_block_number_mock, client_cls
     ):
         get_latest_block_number_mock.side_effect = AssertionError(
             "should not fetch realtime block height"
         )
         Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=77)
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.return_value = 88
 
         self.admin.sync_selected_to_latest(
             request=Mock(),
@@ -294,14 +297,39 @@ class TronWatchCursorAdminTests(TestCase):
         self.other_cursor.refresh_from_db()
         self.chain.refresh_from_db()
 
-        self.assertEqual(self.cursor.last_scanned_block, 77)
-        self.assertEqual(self.cursor.last_safe_block, 77)
+        self.assertEqual(self.cursor.last_scanned_block, 88)
+        self.assertEqual(self.cursor.last_safe_block, 88)
         self.assertEqual(self.cursor.last_error, "")
         self.assertIsNone(self.cursor.last_error_at)
         self.assertEqual(self.other_cursor.last_scanned_block, 9)
-        self.assertEqual(self.chain.latest_block_number, 77)
+        self.assertEqual(self.chain.latest_block_number, 88)
         self.admin.message_user.assert_called_once()
         self.assertEqual(get_latest_block_number_mock.call_count, 0)
+        client_cls.assert_called_once()
+        self.assertEqual(client_cls.call_args.kwargs["chain"].pk, self.chain.pk)
+
+    @patch("tron.admin.TronHttpClient")
+    def test_sync_selected_to_latest_keeps_cursor_when_realtime_fetch_fails(
+        self, client_cls
+    ):
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.side_effect = TronClientError(
+            "latest failed"
+        )
+
+        self.admin.sync_selected_to_latest(
+            request=Mock(),
+            queryset=TronWatchCursor.objects.filter(pk=self.cursor.pk),
+        )
+
+        self.cursor.refresh_from_db()
+        self.chain.refresh_from_db()
+
+        self.assertEqual(self.cursor.last_scanned_block, 11)
+        self.assertEqual(self.cursor.last_safe_block, 11)
+        self.assertEqual(self.cursor.last_error, "old error")
+        self.assertEqual(self.chain.latest_block_number, 66)
+        self.admin.message_user.assert_called_once()
 
 
 class TronUsdtPaymentScannerTests(TestCase):
@@ -965,8 +993,9 @@ class TronUsdtPaymentScannerTests(TestCase):
         _enqueue_processing_mock,
         _confirm_delay_mock,
     ):
-        from chains.tasks import confirm_transfer
         from tron.scanner import TronUsdtPaymentScanner
+
+        from chains.tasks import confirm_transfer
 
         invoice = Invoice.objects.create(
             project=self.project,
