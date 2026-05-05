@@ -137,6 +137,28 @@ class CheckSaasPermissionTest(TestCase):
             crypto_symbol="USDT",
         )
 
+    def test_empty_chain_and_crypto_whitelists_mean_all_supported(self):
+        """SaaS 传空白名单时按未限制处理，兼容未设置的 Tier。"""
+
+        cache.set(
+            "saas:permission:XC-empty-whitelist",
+            {
+                "frozen": False,
+                "enable_deposit_withdrawal": True,
+                "allowed_chain_codes": [],
+                "allowed_crypto_symbols": [],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        check_saas_permission(
+            appid="XC-empty-whitelist",
+            action="deposit",
+            chain_code="bsc-mainnet",
+            crypto_symbol="ETH",
+        )
+
     def test_disallowed_chain_denied(self):
         """缓存里 chain 不在白名单 → 拒绝该 chain/token 组合。"""
 

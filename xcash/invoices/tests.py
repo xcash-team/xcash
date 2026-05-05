@@ -673,6 +673,80 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
         self.assertEqual(set(methods), {usdt.symbol})
         self.assertEqual(methods[usdt.symbol], [eth_chain.code])
 
+    @override_settings(INTERNAL_API_TOKEN="xcash-saas-token")
+    def test_available_methods_empty_saas_whitelists_keep_all_methods(self):
+        project = Project.objects.create(
+            name="Invoice SaaS Empty Whitelist Project",
+            wallet=Wallet.objects.create(),
+        )
+        eth_native = Crypto.objects.create(
+            name="Ethereum SaaS Empty",
+            symbol="ETHSAASEM",
+            coingecko_id="ethereum-saas-empty-methods",
+        )
+        bsc_native = Crypto.objects.create(
+            name="BNB SaaS Empty",
+            symbol="BNBSAASEM",
+            coingecko_id="bnb-saas-empty-methods",
+        )
+        eth_chain = Chain.objects.create(
+            name="Ethereum SaaS Empty",
+            code="eth-saas-empty-methods",
+            type=ChainType.EVM,
+            native_coin=eth_native,
+            chain_id=9921,
+            rpc="http://eth.invalid",
+            active=True,
+        )
+        bsc_chain = Chain.objects.create(
+            name="BSC SaaS Empty",
+            code="bsc-saas-empty-methods",
+            type=ChainType.EVM,
+            native_coin=bsc_native,
+            chain_id=9922,
+            rpc="http://bsc.invalid",
+            active=True,
+        )
+        usdt = Crypto.objects.create(
+            name="USDT SaaS Empty",
+            symbol="USDTSAASEM",
+            coingecko_id="usdt-saas-empty-methods",
+            decimals=6,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=eth_chain,
+            address="0x0000000000000000000000000000000000009921",
+            decimals=6,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=bsc_chain,
+            address="0x0000000000000000000000000000000000009922",
+            decimals=6,
+        )
+        RecipientAddress.objects.create(
+            name="evm-pay",
+            project=project,
+            chain_type=ChainType.EVM,
+            address="0x0000000000000000000000000000000000009923",
+            usage=RecipientAddressUsage.INVOICE,
+        )
+        cache.set(
+            f"saas:permission:{project.appid}",
+            {
+                "frozen": False,
+                "enable_deposit_withdrawal": True,
+                "allowed_chain_codes": [],
+                "allowed_crypto_symbols": [],
+            },
+            None,
+        )
+
+        methods = Invoice.available_methods(project)
+
+        self.assertEqual(set(methods[usdt.symbol]), {eth_chain.code, bsc_chain.code})
+
 
 class InvoiceConfirmDropStatusTests(TestCase):
     """confirm_invoice / drop_invoice 的状态前置校验测试。"""
