@@ -44,11 +44,6 @@ class TronUsdtPaymentScanner:
         if chain.type != ChainType.TRON:
             raise ValueError(f"仅支持 Tron 链扫描，当前链为 {chain.code}")
 
-        client = TronHttpClient(chain=chain)
-        previous_latest_block = chain.latest_block_number
-        latest_block = client.get_latest_solid_block_number()
-        Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_block)
-
         usdt_mapping = (
             ChainToken.objects.select_related("crypto")
             .filter(
@@ -68,12 +63,17 @@ class TronUsdtPaymentScanner:
             chain=chain,
             contract_address=usdt_mapping.address,
         )
+        client = TronHttpClient(chain=chain)
+        previous_latest_block = chain.latest_block_number
         created_transfers = 0
         events_seen = 0
         blocks_scanned = 0
 
-        if cursor.enabled:
-            try:
+        try:
+            latest_block = client.get_latest_solid_block_number()
+            Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_block)
+
+            if cursor.enabled:
                 cursor = cls._bootstrap_cursor_if_needed(
                     cursor=cursor,
                     latest_block=latest_block,
@@ -100,9 +100,9 @@ class TronUsdtPaymentScanner:
                         latest_block=latest_block,
                         scanned_block=block_number,
                     )
-            except TronClientError as exc:
-                cls._mark_cursor_error(cursor=cursor, exc=exc)
-                raise
+        except TronClientError as exc:
+            cls._mark_cursor_error(cursor=cursor, exc=exc)
+            raise
 
         if (
             latest_block > previous_latest_block

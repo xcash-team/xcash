@@ -422,6 +422,30 @@ class TronUsdtPaymentScannerTests(TestCase):
         TronUsdtPaymentScanner.scan_chain(chain=self.chain)
         client.list_confirmed_contract_events.assert_not_called()
 
+    @patch("tron.scanner.TronHttpClient")
+    def test_scan_chain_records_cursor_error_when_latest_block_rpc_fails(
+        self,
+        client_cls,
+    ):
+        from tron.scanner import TronUsdtPaymentScanner
+
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.side_effect = TronClientError(
+            "latest failed"
+        )
+
+        with self.assertRaisesMessage(TronClientError, "latest failed"):
+            TronUsdtPaymentScanner.scan_chain(chain=self.chain)
+
+        cursor = TronWatchCursor.objects.get(
+            chain=self.chain,
+            contract_address=self.usdt_mapping.address,
+        )
+        self.assertEqual(cursor.last_scanned_block, 0)
+        self.assertEqual(cursor.last_safe_block, 0)
+        self.assertEqual(cursor.last_error, "latest failed")
+        self.assertIsNotNone(cursor.last_error_at)
+
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")
     def test_scan_chain_creates_observed_transfer_and_advances_contract_cursor(
