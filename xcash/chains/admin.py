@@ -13,7 +13,6 @@ from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
 from common.utils.math import format_decimal_stripped
 
-
 # Register your models here.
 
 
@@ -28,10 +27,24 @@ class ChainAdmin(ModelAdmin):
     form = ChainAdminForm
     list_display = (
         "name",
+        "code",
         "type",
         "native_coin",
+        "active",
+        "confirm_block_count",
         "latest_block_number",
+        "chain_id",
+        "is_poa",
+        "evm_log_max_block_range",
     )
+    list_editable = (
+        "active",
+        "confirm_block_count",
+        "evm_log_max_block_range",
+    )
+    list_filter = ("active", "type", "is_poa")
+    list_select_related = ("native_coin",)
+    search_fields = ("name", "code")
 
     base_fieldsets = (
         (
