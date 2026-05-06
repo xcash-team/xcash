@@ -183,7 +183,7 @@ class Invoice(models.Model):
         逻辑 = 系统支持的 invoice (crypto, chain) 组合 ∩ 项目已配置收币地址的链 ∩ SaaS 白名单。
         """
         receivable_codes = ProjectService.receivable_chain_codes(project)
-        allowed = CryptoService.allowed_methods()
+        allowed = CryptoService.allowed_methods(chain_codes=receivable_codes)
 
         methods = {
             symbol: sorted(allowed[symbol] & receivable_codes)

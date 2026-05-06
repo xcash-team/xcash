@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import typing
 
+from django.db import IntegrityError
+from django.db import transaction
+
 from chains.capabilities import ChainProductCapabilityService
 from chains.service import ChainService
+from currencies.models import ChainToken
 from currencies.models import Crypto
 from currencies.models import Fiat
 
@@ -13,7 +17,6 @@ if typing.TYPE_CHECKING:
     from django.db.models import QuerySet
 
     from chains.models import Chain
-    from currencies.models import ChainToken
 
 
 class CryptoService:
@@ -60,8 +63,6 @@ class CryptoService:
         chain_code: str | None = None,
         chain=None,
     ) -> bool:
-        from chains.service import ChainService
-
         if chain is None and chain_code is None:
             raise ValueError("chain 或 chain_code 必须至少提供一个")
 
@@ -69,23 +70,23 @@ class CryptoService:
         return crypto.support_this_chain(target_chain)
 
     @staticmethod
-    def allowed_methods() -> dict[str, set[str]]:
+    def allowed_methods(*, chain_codes: set[str] | None = None) -> dict[str, set[str]]:
         """返回系统级 invoice 可用 (crypto_symbol → {chain_code}) 映射。
 
         实现：通过 ChainToken 一次查询带出所有 active crypto ↔ active chain 关系，
-        在内存中应用 capability 规则。避免了对每个 (crypto, chain) 组合重复查询
-        support_this_chain 的 N×M 次 SQL。
+        在内存中应用 capability 规则。chain_codes 可把查询收敛到项目已配置收币地址
+        的链，避免无关链币关系进入后续计算。
         """
-        from currencies.models import ChainToken
-
         tokens = (
             ChainToken.objects.select_related("crypto", "chain")
             .filter(crypto__active=True, chain__active=True)
         )
+        if chain_codes is not None:
+            tokens = tokens.filter(chain__code__in=chain_codes)
 
         sanitized: dict[str, set[str]] = {}
         for token in tokens:
-            if ChainProductCapabilityService.supports_invoice_method(
+            if ChainProductCapabilityService.supports_existing_invoice_method(
                 chain=token.chain,
                 crypto=token.crypto,
             ):
@@ -107,11 +108,6 @@ class CryptoService:
         2. 占位资产默认 inactive，不进入正式业务入口；
         3. (chain, address) 是真实身份，唯一约束负责兜底并发场景。
         """
-        from django.db import IntegrityError
-        from django.db import transaction
-
-        from currencies.models import ChainToken
-
         existing = (
             ChainToken.objects.select_related("crypto")
             .filter(chain=chain, address=address)

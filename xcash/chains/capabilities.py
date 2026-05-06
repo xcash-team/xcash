@@ -36,6 +36,13 @@ class ChainProductCapabilityService:
             return False
         if not crypto.support_this_chain(chain):
             return False
+        return cls.supports_existing_invoice_method(chain=chain, crypto=crypto)
+
+    @classmethod
+    def supports_existing_invoice_method(cls, *, chain, crypto) -> bool:
+        """判断已存在 ChainToken 关系的链币组合是否可用于 Invoice。"""
+        if chain.type not in cls.INVOICE_RECIPIENT_CHAIN_TYPES:
+            return False
         if not cls._allows_evm_native(chain=chain, crypto=crypto):
             return False
         if chain.type == ChainType.TRON:

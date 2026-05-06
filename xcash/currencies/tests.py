@@ -2,6 +2,7 @@ import threading
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.db import close_old_connections
 from django.db import connections
 from django.test import TestCase
@@ -19,6 +20,7 @@ from chains.models import Wallet
 from common.utils.math import format_decimal_stripped
 from currencies.models import ChainToken
 from currencies.models import Crypto
+from currencies.service import CryptoService
 
 
 class ChainNativeCryptoMappingTests(TestCase):
@@ -42,6 +44,60 @@ class ChainNativeCryptoMappingTests(TestCase):
         native_mapping = ChainToken.objects.get(crypto=native_coin, chain=chain)
         self.assertEqual(native_mapping.address, "")
         self.assertIsNone(native_mapping.decimals)
+
+
+class CryptoServiceAllowedMethodsTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_allowed_methods_reuses_chaintoken_relation_and_filters_chain_codes(self):
+        native = Crypto.objects.create(
+            name="Ethereum Allowed Methods Native",
+            symbol="ETH-AM",
+            coingecko_id="ethereum-allowed-methods-native",
+        )
+        token = Crypto.objects.create(
+            name="Allowed Methods Token",
+            symbol="AMT",
+            coingecko_id="allowed-methods-token",
+        )
+        included_chain = Chain.objects.create(
+            name="Allowed Methods Included",
+            code="am-included",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=8801,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        excluded_chain = Chain.objects.create(
+            name="Allowed Methods Excluded",
+            code="am-excluded",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=8802,
+            rpc="http://localhost:8546",
+            active=True,
+        )
+        ChainToken.objects.create(
+            crypto=token,
+            chain=included_chain,
+            address="0x0000000000000000000000000000000000008801",
+        )
+        ChainToken.objects.create(
+            crypto=token,
+            chain=excluded_chain,
+            address="0x0000000000000000000000000000000000008802",
+        )
+
+        with patch.object(
+            Crypto,
+            "support_this_chain",
+            side_effect=AssertionError("ChainToken row already proves support"),
+        ):
+            methods = CryptoService.allowed_methods(chain_codes={included_chain.code})
+
+        self.assertEqual(methods, {token.symbol: {included_chain.code}})
 
 
 class ChainTokenRemapTests(TestCase):
