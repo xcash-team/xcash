@@ -41,6 +41,7 @@ from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from core.models import PlatformSettings
 from core.runtime_settings import get_admin_sensitive_action_otp_max_age_seconds
 from core.runtime_settings import get_alerts_repeat_interval_minutes
+from core.runtime_settings import get_open_native_scanner
 from core.runtime_settings import get_webhook_delivery_breaker_threshold
 from core.runtime_settings import get_webhook_delivery_max_backoff_seconds
 from core.runtime_settings import get_webhook_delivery_max_retries
@@ -100,6 +101,7 @@ class PlatformSettingsRuntimeTests(TestCase):
     def test_runtime_settings_use_database_override_before_settings_fallback(self):
         # 平台运行参数中心存在记录时，业务读取应优先采用数据库值，而不是继续回退到 settings 常量。
         PlatformSettings.objects.create(
+            open_native_scanner=True,
             admin_sensitive_action_otp_max_age_seconds=480,
             alerts_repeat_interval_minutes=7,
             webhook_delivery_breaker_threshold=12,
@@ -112,6 +114,11 @@ class PlatformSettingsRuntimeTests(TestCase):
         self.assertEqual(get_webhook_delivery_breaker_threshold(), 12)
         self.assertEqual(get_webhook_delivery_max_retries(), 9)
         self.assertEqual(get_webhook_delivery_max_backoff_seconds(), 45)
+        self.assertTrue(get_open_native_scanner())
+
+    def test_open_native_scanner_defaults_to_closed_without_platform_settings(self):
+        # 没有平台运行参数记录时，原生币扫描及其业务入口必须保守关闭。
+        self.assertFalse(get_open_native_scanner())
 
 
 class LocalChainBootstrapCommandTests(TestCase):
@@ -657,6 +664,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 真实本地链联调：从签名建单到 anvil 广播，再到链上观察与业务完成必须能闭环。
         w3 = self._require_anvil()
+        PlatformSettings.objects.create(open_native_scanner=True)
         crypto = Crypto.objects.create(
             name="Ethereum Local",
             symbol="ETHL",
@@ -672,7 +680,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
-            open_native_scanner=True,
         )
         wallet = Wallet.generate()
         project = Project.objects.create(
@@ -747,6 +754,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 真实本地链联调：anvil 上的入账转账必须能生成 Deposit 并完成确认。
         w3 = self._require_anvil()
+        PlatformSettings.objects.create(open_native_scanner=True)
         crypto = Crypto.objects.create(
             name="Ethereum Deposit Local",
             symbol="ETHD",
@@ -763,7 +771,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
-            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Deposit Project",
@@ -815,6 +822,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 原生币归集要验证完整闭环：客户入账 -> Deposit 完成 -> 归集广播 -> 归集 OnchainTransfer 完成。
         w3 = self._require_anvil()
+        PlatformSettings.objects.create(open_native_scanner=True)
         crypto = Crypto.objects.create(
             name="Ethereum Collection Local",
             symbol="ETHC2",
@@ -831,7 +839,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
-            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Collection Project",
@@ -1251,6 +1258,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 真实链路不应只靠手工 confirm()；FULL 确认应能经由块高刷新任务推进到业务完成。
         w3 = self._require_anvil()
+        PlatformSettings.objects.create(open_native_scanner=True)
         crypto = Crypto.objects.create(
             name="Ethereum Deposit Task Local",
             symbol="ETHDT2",
@@ -1267,7 +1275,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
-            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Deposit Task Project",
@@ -1327,6 +1334,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 提币确认也必须经过统一块高任务链路，而不是测试里直接手工推状态。
         w3 = self._require_anvil()
+        PlatformSettings.objects.create(open_native_scanner=True)
         crypto = Crypto.objects.create(
             name="Ethereum Withdrawal Task Local",
             symbol="ETHWT2",
@@ -1342,7 +1350,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
-            open_native_scanner=True,
         )
         wallet = Wallet.generate()
         project = Project.objects.create(
@@ -1417,6 +1424,7 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
     ):
         # 真实链上重复扫描同一原生币转账时，只允许首轮创建 OnchainTransfer，后续必须走幂等重放。
         w3 = self._require_anvil()
+        PlatformSettings.objects.create(open_native_scanner=True)
         crypto = Crypto.objects.create(
             name="Ethereum Native Replay Local",
             symbol="ETHR2",
@@ -1432,7 +1440,6 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             rpc=self.EVM_RPC,
             active=True,
             confirm_block_count=1,
-            open_native_scanner=True,
         )
         project = Project.objects.create(
             name="Local EVM Native Replay Project",

@@ -41,6 +41,13 @@ class PlatformSettings(models.Model):
         validators=[MinValueValidator(1)],
         help_text=_("同一项目同一告警在该时间窗内不重复发送。"),
     )
+    open_native_scanner = models.BooleanField(
+        _("开启 EVM 原生币扫描"),
+        default=False,
+        help_text=_(
+            "全局控制 EVM 原生币直转扫描；关闭时 EVM 原生币支付、充币地址和提币入口不可用。"
+        ),
+    )
     webhook_delivery_breaker_threshold = models.PositiveIntegerField(
         _("Webhook 熔断阈值"),
         default=30,
@@ -107,6 +114,7 @@ class PlatformSettings(models.Model):
     )
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
     updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
+
     class Meta:
         verbose_name = _("平台运行参数")
         verbose_name_plural = verbose_name
@@ -118,7 +126,19 @@ class PlatformSettings(models.Model):
         # 强制收口为单例记录，避免后台误建第二份配置导致读取口径分叉。
         self.singleton_key = 1
         super().save(*args, **kwargs)
+        if not self.open_native_scanner:
+            self._delete_evm_native_scan_cursors()
         cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
 
     def delete(self, *args, **kwargs):
         raise RuntimeError("平台运行参数不允许删除")
+
+    @staticmethod
+    def _delete_evm_native_scan_cursors() -> None:
+        """全局关闭 native 扫描时清理游标，重新开启后从新游标开始。"""
+        from evm.models import EvmScanCursor
+        from evm.models import EvmScanCursorType
+
+        EvmScanCursor.objects.filter(
+            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+        ).delete()

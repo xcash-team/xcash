@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from chains.models import Chain
 from chains.models import ChainType
+from core.runtime_settings import get_open_native_scanner
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.erc20 import EvmErc20ScanResult
@@ -123,7 +124,7 @@ class EvmChainScannerService:
     def scan_native(*, chain: Chain) -> EvmNativeScanResult:
         if chain.type != ChainType.EVM:
             raise ValueError(f"仅支持扫描 EVM 链，当前链为 {chain.code}")
-        if not chain.open_native_scanner:
+        if not get_open_native_scanner():
             return EvmChainScannerService._empty_native_result(chain=chain)
         if not EvmChainScannerService._is_enabled(
             chain=chain,
@@ -177,7 +178,7 @@ class EvmChainScannerService:
         observed_native, created_native = 0, 0
         observed_erc20, created_erc20 = 0, 0
 
-        native_enabled = chain.open_native_scanner and cls._is_enabled(
+        native_enabled = get_open_native_scanner() and cls._is_enabled(
             chain=chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
         )

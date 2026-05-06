@@ -68,11 +68,6 @@ class Chain(models.Model):
     active = models.BooleanField(default=False, verbose_name=_("启用"))
 
     # For EVM
-    open_native_scanner = models.BooleanField(
-        _("开启原生币扫描"),
-        default=False,
-        help_text=_("仅 EVM 链有效；关闭时会删除原生币扫描游标，重新开启后从新游标开始扫描。"),
-    )
     base_transfer_gas = models.PositiveIntegerField(
         _("原生币转账 Gas Limit"),
         default=50_000,
@@ -145,35 +140,8 @@ class Chain(models.Model):
 
         with db_transaction.atomic():
             result = super().save(*args, **kwargs)
-            self._sync_evm_native_scan_cursor()
             self._sync_tron_usdt_watch_cursor()
         return result
-
-    def _sync_evm_native_scan_cursor(self) -> None:
-        """让 Chain 的原生币扫描开关成为 native cursor 生命周期的唯一配置源。"""
-        if self.type != ChainType.EVM:
-            return
-
-        from evm.models import EvmScanCursor
-        from evm.models import EvmScanCursorType
-
-        native_cursor_qs = EvmScanCursor.objects.filter(
-            chain=self,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-        )
-        if not self.open_native_scanner:
-            native_cursor_qs.delete()
-            return
-
-        EvmScanCursor.objects.get_or_create(
-            chain=self,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-            defaults={
-                "last_scanned_block": 0,
-                "last_safe_block": 0,
-                "enabled": True,
-            },
-        )
 
     def _sync_tron_usdt_watch_cursor(self) -> None:
         """活跃 Tron 链应在配置层持有 USDT 扫描游标，避免依赖首次 beat 扫描显式创建。"""

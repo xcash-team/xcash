@@ -1,6 +1,7 @@
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
@@ -12,6 +13,8 @@ from chains.models import Chain
 from chains.models import ChainType
 from chains.models import OnchainTransfer
 from chains.models import Wallet
+from core.models import PLATFORM_SETTINGS_CACHE_KEY
+from core.models import PlatformSettings
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from evm.models import EvmScanCursor
@@ -128,6 +131,7 @@ class EvmNativeScanWindowTests(SimpleTestCase):
 @override_settings(DEBUG=False)
 class EvmErc20ScannerTests(TestCase):
     def setUp(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
         self.native = Crypto.objects.create(
             name="Scanner BNB",
             symbol="BNB-SCANNER",
@@ -168,6 +172,10 @@ class EvmErc20ScannerTests(TestCase):
                 "0x00000000000000000000000000000000000000bb"
             ),
         )
+
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        super().tearDown()
 
     @staticmethod
     def _address_topic(address: str) -> str:
@@ -611,13 +619,23 @@ class EvmErc20ScannerTests(TestCase):
         delay_mock.assert_called_once_with(self.chain.pk)
 
     @patch("evm.tasks.scan_evm_native_chain.delay")
-    def test_scan_active_evm_native_chains_dispatches_native_task(
+    def test_scan_active_evm_native_chains_skips_when_global_native_scanner_closed(
         self,
         delay_mock,
     ):
         self._create_scan_dispatch_ignored_chains()
-        self.chain.open_native_scanner = True
-        self.chain.save(update_fields=["open_native_scanner"])
+
+        scan_active_evm_native_chains()
+
+        delay_mock.assert_not_called()
+
+    @patch("evm.tasks.scan_evm_native_chain.delay")
+    def test_scan_active_evm_native_chains_dispatches_native_task(
+        self,
+        delay_mock,
+    ):
+        PlatformSettings.objects.create(open_native_scanner=True)
+        self._create_scan_dispatch_ignored_chains()
 
         scan_active_evm_native_chains()
 

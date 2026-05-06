@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.db import IntegrityError
 from django.test import TestCase
 from django.test import override_settings
@@ -27,6 +28,7 @@ from chains.models import TransferType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from currencies.models import Crypto
 from evm.models import EvmBroadcastTask
 from projects.models import Project
@@ -36,9 +38,9 @@ from users.otp import build_admin_approval_context
 from withdrawals.models import Withdrawal
 from withdrawals.models import WithdrawalReviewLog
 from withdrawals.models import WithdrawalStatus
+from withdrawals.serializers import CreateWithdrawalSerializer
 from withdrawals.service import WithdrawalService
 from withdrawals.viewsets import WithdrawalViewSet
-from withdrawals.serializers import CreateWithdrawalSerializer
 
 
 class WithdrawalBroadcastTaskTests(TestCase):
@@ -334,6 +336,13 @@ class WithdrawalBalanceReservationTests(TestCase):
 
 
 class CreateWithdrawalSerializerCapabilityTests(TestCase):
+    def setUp(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        super().tearDown()
+
     def test_validate_rejects_tron_usdt_before_balance_check(self):
         wallet = Wallet.objects.create()
         project = Project.objects.create(
@@ -414,6 +423,74 @@ class CreateWithdrawalSerializerCapabilityTests(TestCase):
             ErrorCode.INVALID_CHAIN.code,
         )
         supports_withdrawal_mock.assert_called_once_with(chain=chain, crypto=usdt)
+        has_balance_mock.assert_not_called()
+
+    def test_validate_rejects_evm_native_when_global_native_scanner_closed(self):
+        wallet = Wallet.objects.create()
+        project = Project.objects.create(
+            name="EVM Native Withdrawal Guard Project",
+            wallet=wallet,
+        )
+        native = Crypto.objects.create(
+            name="Ethereum Native Withdrawal Guard",
+            symbol="ETHWGUARD",
+            coingecko_id="ethereum-native-withdrawal-guard",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Native Withdrawal Guard",
+            code="eth-native-withdrawal-guard",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=803,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        request = APIRequestFactory().post(
+            "/v1/withdrawal",
+            {},
+            format="json",
+            HTTP_XC_APPID=project.appid,
+        )
+        serializer = CreateWithdrawalSerializer(
+            context={"request": request},
+        )
+
+        with (
+            patch("withdrawals.serializers.Project.retrieve", return_value=project),
+            patch(
+                "withdrawals.serializers.AdapterFactory.get_adapter",
+                return_value=SimpleNamespace(validate_address=Mock(return_value=True)),
+            ),
+            patch(
+                "withdrawals.serializers.AddressService.find_by_address",
+                side_effect=AssertionError("地址保护不应执行"),
+            ),
+            patch.object(
+                CreateWithdrawalSerializer,
+                "_is_valid_address",
+                side_effect=AssertionError("地址格式校验不应执行"),
+            ),
+            patch(
+                "withdrawals.serializers.WithdrawalService.has_sufficient_balance",
+                side_effect=AssertionError("余额检查不应执行"),
+            ) as has_balance_mock,
+        ):
+            with self.assertRaises(APIError) as ctx:
+                serializer.validate(
+                    {
+                        "out_no": "evm-native-order",
+                        "to": "0x0000000000000000000000000000000000000803",
+                        "uid": None,
+                        "crypto": native.symbol,
+                        "chain": chain.code,
+                        "amount": Decimal("1"),
+                    }
+                )
+
+        self.assertEqual(
+            ctx.exception.error_code.code,
+            ErrorCode.INVALID_CHAIN.code,
+        )
         has_balance_mock.assert_not_called()
 
 

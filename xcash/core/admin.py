@@ -33,6 +33,10 @@ class PlatformSettingsAdmin(ModelAdmin):
             {"fields": ("alerts_repeat_interval_minutes",)},
         ),
         (
+            "链上扫描",
+            {"fields": ("open_native_scanner",)},
+        ),
+        (
             "Webhook 投递",
             {
                 "fields": (
@@ -69,6 +73,7 @@ class PlatformSettingsAdmin(ModelAdmin):
     readonly_fields = ("created_by", "updated_by", "created_at", "updated_at")
     list_display = (
         "id",
+        "open_native_scanner",
         "admin_sensitive_action_otp_max_age_seconds",
         "alerts_repeat_interval_minutes",
         "updated_by",

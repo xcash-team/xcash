@@ -23,6 +23,7 @@ from chains.models import TransferType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from core.models import PlatformSettings
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from currencies.models import Fiat
@@ -586,6 +587,82 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
 
         self.assertEqual(methods["USDT"], [tron_chain.code])
         self.assertNotIn("USDC", methods)
+
+    def test_available_methods_hide_evm_native_when_global_native_scanner_closed(self):
+        project = Project.objects.create(
+            name="Invoice Native Scanner Closed Project",
+            wallet=Wallet.objects.create(),
+        )
+        native = Crypto.objects.create(
+            name="Ethereum Invoice Native Closed",
+            symbol="ETHINVCLOSED",
+            coingecko_id="ethereum-invoice-native-closed",
+        )
+        usdt = Crypto.objects.create(
+            name="USDT Invoice Native Closed",
+            symbol="USDTINVCLOSED",
+            coingecko_id="usdt-invoice-native-closed",
+            decimals=6,
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Invoice Native Closed",
+            code="eth-invoice-native-closed",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=9931,
+            rpc="http://eth.invalid",
+            active=True,
+        )
+        ChainToken.objects.create(
+            crypto=usdt,
+            chain=chain,
+            address="0x0000000000000000000000000000000000009931",
+            decimals=6,
+        )
+        RecipientAddress.objects.create(
+            name="evm-pay-native-closed",
+            project=project,
+            chain_type=ChainType.EVM,
+            address="0x0000000000000000000000000000000000009932",
+            usage=RecipientAddressUsage.INVOICE,
+        )
+
+        methods = Invoice.available_methods(project)
+
+        self.assertNotIn(native.symbol, methods)
+        self.assertEqual(methods[usdt.symbol], [chain.code])
+
+    def test_available_methods_expose_evm_native_when_global_native_scanner_open(self):
+        PlatformSettings.objects.create(open_native_scanner=True)
+        project = Project.objects.create(
+            name="Invoice Native Scanner Open Project",
+            wallet=Wallet.objects.create(),
+        )
+        native = Crypto.objects.create(
+            name="Ethereum Invoice Native Open",
+            symbol="ETHINVOPEN",
+            coingecko_id="ethereum-invoice-native-open",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Invoice Native Open",
+            code="eth-invoice-native-open",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=9933,
+            rpc="http://eth.invalid",
+            active=True,
+        )
+        RecipientAddress.objects.create(
+            name="evm-pay-native-open",
+            project=project,
+            chain_type=ChainType.EVM,
+            address="0x0000000000000000000000000000000000009934",
+            usage=RecipientAddressUsage.INVOICE,
+        )
+
+        methods = Invoice.available_methods(project)
+
+        self.assertEqual(methods[native.symbol], [chain.code])
 
     @override_settings(INTERNAL_API_TOKEN="xcash-saas-token")
     def test_available_methods_filters_by_cached_saas_chain_crypto_whitelist(self):

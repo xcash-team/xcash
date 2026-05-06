@@ -24,6 +24,8 @@ from chains.models import OnchainTransfer
 from chains.models import TransferType
 from chains.models import TxHash
 from chains.models import Wallet
+from core.models import PLATFORM_SETTINGS_CACHE_KEY
+from core.models import PlatformSettings
 from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 
@@ -314,6 +316,10 @@ class EvmScanBlocksForReconcileTests(TestCase):
     """scan_blocks_for_reconcile 必须能复用主扫描的产出通路且不污染 cursor。"""
 
     def setUp(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        self.platform_settings = PlatformSettings.objects.create(
+            open_native_scanner=True,
+        )
         self.native = Crypto_create(
             "Ether Recon Scan", "ETHRS", "ethereum-recon-scan"
         )
@@ -326,7 +332,6 @@ class EvmScanBlocksForReconcileTests(TestCase):
             native_coin=self.native,
             confirm_block_count=6,
             active=True,
-            open_native_scanner=True,
             latest_block_number=500,
         )
         self.wallet = Wallet.objects.create()
@@ -341,15 +346,16 @@ class EvmScanBlocksForReconcileTests(TestCase):
             ),
         )
         # 固定 cursor，断言复扫前后不发生推进。
-        self.cursor = EvmScanCursor.objects.get(
+        self.cursor = EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-        )
-        EvmScanCursor.objects.filter(pk=self.cursor.pk).update(
             last_scanned_block=100,
             last_safe_block=94,
         )
-        self.cursor.refresh_from_db()
+
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        super().tearDown()
 
     @staticmethod
     def _native_tx(*, from_address: str, to_address: str, value: int, tx_hash_hex: str) -> dict:
@@ -516,15 +522,15 @@ class EvmScanBlocksForReconcileTests(TestCase):
     @patch(
         "evm.scanner.service.EvmNativeDirectScanner.scan_range_without_cursor",
     )
-    def test_reconcile_skips_native_scan_when_chain_native_scanner_is_closed(
+    def test_reconcile_skips_native_scan_when_global_native_scanner_is_closed(
         self,
         native_scan_mock,
         erc20_scan_mock,
     ):
         from evm.scanner.service import EvmChainScannerService
 
-        self.chain.open_native_scanner = False
-        self.chain.save(update_fields=["open_native_scanner"])
+        self.platform_settings.open_native_scanner = False
+        self.platform_settings.save(update_fields=["open_native_scanner"])
         erc20_scan_mock.return_value = ([object()], 1)
 
         result = EvmChainScannerService.scan_blocks_for_reconcile(

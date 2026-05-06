@@ -25,8 +25,11 @@ from chains.models import OnchainTransfer
 from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
-from currencies.models import Crypto
+from common.error_codes import ErrorCode
+from common.exceptions import APIError
+from core.models import PlatformSettings
 from currencies.models import ChainToken
+from currencies.models import Crypto
 from deposits.models import CollectSchedule
 from deposits.models import Deposit
 from deposits.models import DepositAddress
@@ -41,8 +44,6 @@ from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
 from users.models import Customer
 from users.models import User
-from common.error_codes import ErrorCode
-from common.exceptions import APIError
 from deposits.viewsets import DepositViewSet
 
 
@@ -2228,9 +2229,50 @@ class DepositAddressApiGuardTests(TestCase):
         )
         get_address_mock.assert_not_called()
 
+    def test_address_endpoint_rejects_evm_native_when_global_native_scanner_closed(
+        self,
+    ):
+        project = Project.objects.create(
+            name="EVM Native Deposit Guard Project",
+            wallet=Wallet.objects.create(),
+            ip_white_list="*",
+            webhook="https://example.com/webhook",
+        )
+        native = Crypto.objects.create(
+            name="Ethereum Native Deposit Guard",
+            symbol="ETH-DEPOSIT-GUARD",
+            coingecko_id="ethereum-native-deposit-guard",
+        )
+        chain = Chain.objects.create(
+            name="Ethereum Native Deposit Guard",
+            code="eth-native-deposit-guard",
+            type=ChainType.EVM,
+            native_coin=native,
+            chain_id=802,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        request = APIRequestFactory().get(
+            "/v1/deposit/address",
+            {"uid": "native-user", "chain": chain.code, "crypto": native.symbol},
+            HTTP_XC_APPID=project.appid,
+        )
+        force_authenticate(
+            request,
+            user=User.objects.create(username="deposit-api-evm-native"),
+        )
+
+        with patch("deposits.viewsets.DepositAddress.get_address") as get_address_mock:
+            response = DepositViewSet.as_view({"get": "address"})(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], ErrorCode.INVALID_CHAIN.code)
+        get_address_mock.assert_not_called()
+
     def test_get_deposit_address_rejects_when_recipient_not_configured(self):
         # L2：project 未配置 DEPOSIT_COLLECTION recipient 时，不允许新建充币地址；
         # 这是防止"用户充值进来无法归集 → gather 队头反复阻塞"的 DoS 攻击面。
+        PlatformSettings.objects.create(open_native_scanner=True)
         project = Project.objects.create(
             name="No Recipient Guard",
             wallet=Wallet.objects.create(),

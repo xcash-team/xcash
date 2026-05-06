@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase
 from django.test import override_settings
 from web3 import Web3
@@ -19,6 +20,8 @@ from chains.models import TxHash
 from chains.models import Wallet
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
+from core.models import PLATFORM_SETTINGS_CACHE_KEY
+from core.models import PlatformSettings
 from currencies.models import Crypto
 from evm.models import EvmBroadcastTask
 from evm.models import EvmScanCursor
@@ -31,6 +34,7 @@ from evm.scanner.service import EvmChainScannerService
 
 class EvmChainScannerServiceTests(TestCase):
     def setUp(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
         self.native = Crypto.objects.create(
             name="Ethereum Scanner Service",
             symbol="ETHSS",
@@ -44,9 +48,34 @@ class EvmChainScannerServiceTests(TestCase):
             rpc="http://localhost:8545",
             native_coin=self.native,
             active=True,
-            open_native_scanner=True,
             latest_block_number=88,
         )
+
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        super().tearDown()
+
+    @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
+    @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
+    def test_scan_chain_skips_native_when_global_native_scanner_is_closed(
+        self,
+        native_scan_mock,
+        erc20_scan_mock,
+    ):
+        erc20_scan_mock.return_value = EvmErc20ScanResult(
+            from_block=1,
+            to_block=2,
+            latest_block=88,
+            observed_logs=3,
+            created_transfers=1,
+        )
+
+        result = EvmChainScannerService.scan_chain(chain=self.chain)
+
+        native_scan_mock.assert_not_called()
+        erc20_scan_mock.assert_called_once_with(chain=self.chain)
+        self.assertEqual(result.native.created_transfers, 0)
+        self.assertEqual(result.erc20.created_transfers, 1)
 
     @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
     @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
@@ -55,10 +84,10 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
-        EvmScanCursor.objects.filter(
+        PlatformSettings.objects.create(open_native_scanner=True)
+        EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-        ).update(
             enabled=False,
         )
         erc20_scan_mock.return_value = EvmErc20ScanResult(
@@ -84,6 +113,7 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
+        PlatformSettings.objects.create(open_native_scanner=True)
         EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.ERC20_TRANSFER,
@@ -112,6 +142,7 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
+        PlatformSettings.objects.create(open_native_scanner=True)
         native_scan_mock.return_value = EvmNativeScanResult(
             from_block=1,
             to_block=1,
@@ -172,17 +203,17 @@ class EvmChainScannerServiceTests(TestCase):
         self.assertEqual(result.native.latest_block, 99)
         self.assertEqual(result.erc20.created_transfers, 1)
 
-    def test_closing_chain_native_scanner_deletes_native_cursor(self):
-        EvmScanCursor.objects.filter(
+    def test_closing_global_native_scanner_deletes_native_cursor(self):
+        settings = PlatformSettings.objects.create(open_native_scanner=True)
+        EvmScanCursor.objects.create(
             chain=self.chain,
             scanner_type=EvmScanCursorType.NATIVE_DIRECT,
-        ).update(
             last_scanned_block=88,
             last_safe_block=80,
         )
 
-        self.chain.open_native_scanner = False
-        self.chain.save(update_fields=["open_native_scanner"])
+        settings.open_native_scanner = False
+        settings.save(update_fields=["open_native_scanner"])
 
         self.assertFalse(
             EvmScanCursor.objects.filter(
@@ -191,20 +222,24 @@ class EvmChainScannerServiceTests(TestCase):
             ).exists()
         )
 
-    def test_opening_chain_native_scanner_creates_fresh_native_cursor(self):
-        self.chain.open_native_scanner = False
-        self.chain.save(update_fields=["open_native_scanner"])
-
-        self.chain.open_native_scanner = True
-        self.chain.save(update_fields=["open_native_scanner"])
-
-        cursor = EvmScanCursor.objects.get(
-            chain=self.chain,
-            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+    @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
+    def test_opening_global_native_scanner_does_not_require_existing_cursor(
+        self,
+        native_scan_mock,
+    ):
+        PlatformSettings.objects.create(open_native_scanner=True)
+        native_scan_mock.return_value = EvmNativeScanResult(
+            from_block=1,
+            to_block=1,
+            latest_block=88,
+            observed_transfers=1,
+            created_transfers=1,
         )
-        self.assertEqual(cursor.last_scanned_block, 0)
-        self.assertEqual(cursor.last_safe_block, 0)
-        self.assertTrue(cursor.enabled)
+
+        result = EvmChainScannerService.scan_native(chain=self.chain)
+
+        native_scan_mock.assert_called_once_with(chain=self.chain)
+        self.assertEqual(result.created_transfers, 1)
 
     @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
     @patch("evm.scanner.service.EvmNativeDirectScanner.scan_chain")
@@ -213,6 +248,7 @@ class EvmChainScannerServiceTests(TestCase):
         native_scan_mock,
         erc20_scan_mock,
     ):
+        PlatformSettings.objects.create(open_native_scanner=True)
         native_scan_mock.side_effect = EvmScannerRpcError("archive plan denied")
         erc20_scan_mock.return_value = EvmErc20ScanResult(
             from_block=10,

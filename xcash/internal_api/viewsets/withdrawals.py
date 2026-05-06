@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
+from chains.capabilities import ChainProductCapabilityService
 from chains.models import Chain
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
@@ -75,6 +76,11 @@ class InternalWithdrawalViewSet(ModelViewSet):
 
         if not crypto.chains.filter(pk=chain.pk).exists():
             raise APIError(ErrorCode.CHAIN_CRYPTO_NOT_SUPPORT)
+        if not ChainProductCapabilityService.supports_withdrawal(
+            chain=chain,
+            crypto=crypto,
+        ):
+            raise APIError(ErrorCode.INVALID_CHAIN)
 
         usd = FiatService.get_by_code("USD")
         worth = crypto.to_fiat(fiat=usd, amount=data["amount"])

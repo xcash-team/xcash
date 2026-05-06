@@ -14,6 +14,7 @@ from chains.models import Chain
 from chains.models import ChainType
 from common.decorators import singleton_task
 from common.time import ago
+from core.runtime_settings import get_open_native_scanner
 from evm.coordinator import InternalEvmTaskCoordinator
 from evm.models import EvmBroadcastTask
 from evm.scanner.rpc import EvmScannerRpcError
@@ -273,10 +274,11 @@ def scan_active_evm_erc20_chains() -> None:
 @shared_task(ignore_result=True)
 def scan_active_evm_native_chains() -> None:
     """批量调度所有启用中的 EVM 链原生币直转自扫描任务。"""
+    if not get_open_native_scanner():
+        return
     for chain_pk in Chain.objects.filter(
         active=True,
         type=ChainType.EVM,
-        open_native_scanner=True,
     ).values_list("pk", flat=True):
         scan_evm_native_chain.delay(chain_pk)
 
