@@ -13,6 +13,7 @@ from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.permission_check import _refresh_saas_permission
 from common.permission_check import check_saas_permission
+from common.permission_check import filter_saas_allowed_methods
 
 
 @override_settings(
@@ -114,6 +115,54 @@ class CheckSaasPermissionTest(TestCase):
         with self.assertRaises(APIError) as ctx:
             check_saas_permission(appid="XC-d", action="withdrawal")
         self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
+
+    def test_invoice_action_ignores_deposit_withdrawal_feature_flag(self):
+        """Invoice 收款不属于充提币功能锁，套餐关闭充提币时仍可创建/选择账单支付方式。"""
+
+        cache.set(
+            "saas:permission:XC-invoice",
+            {
+                "frozen": False,
+                "enable_deposit_withdrawal": False,
+                "allowed_chain_codes": ["ethereum-mainnet"],
+                "allowed_crypto_symbols": ["USDT"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        check_saas_permission(
+            appid="XC-invoice",
+            action="invoice",
+            chain_code="ethereum-mainnet",
+            crypto_symbol="USDT",
+        )
+
+    def test_invoice_action_still_respects_chain_and_crypto_whitelist(self):
+        """Invoice 不受充提币功能锁影响，但仍必须收敛在 SaaS Tier 链币白名单内。"""
+
+        cache.set(
+            "saas:permission:XC-invoice-denied",
+            {
+                "frozen": False,
+                "enable_deposit_withdrawal": False,
+                "allowed_chain_codes": ["ethereum-mainnet"],
+                "allowed_crypto_symbols": ["USDT"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        with self.assertRaises(APIError) as ctx:
+            check_saas_permission(
+                appid="XC-invoice-denied",
+                action="invoice",
+                chain_code="polygon-mainnet",
+                crypto_symbol="USDT",
+            )
+
+        self.assertEqual(ctx.exception.error_code, ErrorCode.FEATURE_NOT_ENABLED)
+        self.assertEqual(ctx.exception.detail["detail"], "polygon-mainnet")
 
     def test_allowed_chain_and_crypto_pass(self):
         """缓存里 chain/token 白名单同时命中 → 放行。"""
@@ -223,6 +272,31 @@ class CheckSaasPermissionTest(TestCase):
         )
 
         check_saas_permission(appid="XC-feature-only", action="deposit")
+
+    def test_filter_saas_allowed_methods_does_not_require_deposit_withdrawal(self):
+        """Invoice 可用支付方式只受账号冻结和链币白名单影响，不读取充提币功能开关。"""
+
+        cache.set(
+            "saas:permission:XC-invoice-methods",
+            {
+                "frozen": False,
+                "enable_deposit_withdrawal": False,
+                "allowed_chain_codes": ["ethereum-mainnet"],
+                "allowed_crypto_symbols": ["USDT"],
+                "_fetched_at": time.time(),
+            },
+            None,
+        )
+
+        methods = filter_saas_allowed_methods(
+            appid="XC-invoice-methods",
+            methods={
+                "USDT": ["ethereum-mainnet", "polygon-mainnet"],
+                "USDC": ["ethereum-mainnet"],
+            },
+        )
+
+        self.assertEqual(methods, {"USDT": ["ethereum-mainnet"]})
 
     def test_single_feature_flag_allows_withdrawal(self):
         """withdrawal 也只读取 enable_deposit_withdrawal，不再要求独立开关。"""

@@ -3,7 +3,6 @@ from datetime import timedelta
 import structlog
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
-from django.db import transaction as db_transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework import viewsets
@@ -75,10 +74,10 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         # 多事务争夺同一 Project tuple 的 MultiXact 锁元数据导致死锁。
         # IntegrityError（重复 out_no）在 autocommit 模式下仍可正常捕获。
 
-        # SaaS 模式：校验该 project 是否有权限创建充值账单
+        # SaaS 模式：Invoice 收款不属于充提币功能锁；这里只校验账号状态。
         check_saas_permission(
             appid=request.headers.get(APPID_HEADER),
-            action="deposit",
+            action="invoice",
         )
 
         serializer = self.get_serializer(
@@ -91,7 +90,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             for chain_code in chain_codes:
                 check_saas_permission(
                     appid=request.headers.get(APPID_HEADER),
-                    action="deposit",
+                    action="invoice",
                     chain_code=chain_code,
                     crypto_symbol=crypto_symbol,
                 )
@@ -152,7 +151,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
         check_saas_permission(
             appid=invoice.project.appid,
-            action="deposit",
+            action="invoice",
             chain_code=validated_data["chain"],
             crypto_symbol=validated_data["crypto"],
         )

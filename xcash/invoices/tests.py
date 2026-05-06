@@ -22,8 +22,9 @@ from chains.models import OnchainTransfer
 from chains.models import TransferType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
-from currencies.models import Crypto
+from common.exceptions import APIError
 from currencies.models import ChainToken
+from currencies.models import Crypto
 from currencies.models import Fiat
 from invoices.exceptions import InvoiceAllocationError
 from invoices.exceptions import InvoiceStatusError
@@ -1115,7 +1116,7 @@ class InvoiceAllocationRetryExhaustedTests(InvoiceTestMixin, TestCase):
 
 
 class InvoiceCreatePermissionCheckTests(TestCase):
-    """v2 SaaS 模式：充值账单创建入口调用 check_saas_permission。"""
+    """v2 SaaS 模式：账单收款入口调用 check_saas_permission。"""
 
     def setUp(self):
         self.project = Project.objects.create(
@@ -1149,7 +1150,7 @@ class InvoiceCreatePermissionCheckTests(TestCase):
 
     @patch("invoices.viewsets.check_saas_permission")
     def test_create_calls_permission_check_with_correct_args(self, mock_check):
-        """充值账单创建时必须以正确的 appid 和 action='deposit' 调用权限校验。"""
+        """账单创建时只校验 invoice 账号/白名单语义，不占用 deposit 功能锁。"""
         serializer_stub = self._make_serializer_stub()
 
         with (
@@ -1173,12 +1174,12 @@ class InvoiceCreatePermissionCheckTests(TestCase):
 
         mock_check.assert_called_once_with(
             appid=self.project.appid,
-            action="deposit",
+            action="invoice",
         )
 
     @patch("invoices.viewsets.check_saas_permission")
     def test_create_checks_each_requested_method(self, mock_check):
-        """充值账单创建时，每个 methods 链币组合都必须经过 SaaS 白名单校验。"""
+        """账单创建时，每个 methods 链币组合都必须经过 SaaS 白名单校验。"""
         serializer_stub = self._make_serializer_stub()
         serializer_stub.validated_data["methods"] = {
             "USDT": ["ethereum-mainnet", "bsc-mainnet"],
@@ -1204,22 +1205,22 @@ class InvoiceCreatePermissionCheckTests(TestCase):
         ):
             InvoiceViewSet.as_view({"post": "create"})(self._make_request())
 
-        mock_check.assert_any_call(appid=self.project.appid, action="deposit")
+        mock_check.assert_any_call(appid=self.project.appid, action="invoice")
         mock_check.assert_any_call(
             appid=self.project.appid,
-            action="deposit",
+            action="invoice",
             chain_code="ethereum-mainnet",
             crypto_symbol="USDT",
         )
         mock_check.assert_any_call(
             appid=self.project.appid,
-            action="deposit",
+            action="invoice",
             chain_code="bsc-mainnet",
             crypto_symbol="USDT",
         )
         mock_check.assert_any_call(
             appid=self.project.appid,
-            action="deposit",
+            action="invoice",
             chain_code="ethereum-mainnet",
             crypto_symbol="USDC",
         )
@@ -1264,29 +1265,51 @@ class InvoiceCreatePermissionCheckTests(TestCase):
 
         mock_check.assert_called_once_with(
             appid=self.project.appid,
-            action="deposit",
+            action="invoice",
             chain_code="ethereum-mainnet",
             crypto_symbol="USDT",
         )
 
     @patch("invoices.viewsets.check_saas_permission")
-    def test_create_blocked_when_feature_not_enabled(self, mock_check):
-        """check_saas_permission 抛出 APIError 时，充值账单创建应返回 403。"""
-        from common.error_codes import ErrorCode
-        from common.exceptions import APIError
+    def test_create_does_not_use_deposit_feature_gate(self, mock_check):
+        """创建 Invoice 时不应触发 deposit 功能锁，否则低套餐会被错误拒绝。"""
 
-        mock_check.side_effect = APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="deposit")
+        def reject_deposit_action(*, action, **kwargs):
+            if action == "deposit":
+                raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail="deposit")
 
-        response = InvoiceViewSet.as_view({"post": "create"})(self._make_request())
+        mock_check.side_effect = reject_deposit_action
 
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], ErrorCode.FEATURE_NOT_ENABLED.code)
+        serializer_stub = self._make_serializer_stub()
+
+        with (
+            patch.object(InvoiceViewSet, "get_serializer", return_value=serializer_stub),
+            patch(
+                "invoices.viewsets.Invoice.objects.create",
+                return_value=Mock(
+                    sys_no="inv-0003",
+                    out_no="perm-inv-order",
+                    project=self.project,
+                    status="waiting",
+                ),
+            ),
+            patch("invoices.viewsets.InvoiceService.initialize_invoice"),
+            patch(
+                "invoices.viewsets.InvoiceDisplaySerializer",
+                return_value=Mock(data={}),
+            ),
+        ):
+            response = InvoiceViewSet.as_view({"post": "create"})(self._make_request())
+
+        self.assertEqual(response.status_code, 201)
+        self.assertNotIn(
+            "deposit",
+            [call.kwargs.get("action") for call in mock_check.call_args_list],
+        )
 
     @patch("invoices.viewsets.check_saas_permission")
     def test_create_blocked_when_account_frozen(self, mock_check):
         """账户冻结时，充值账单创建应返回 403。"""
-        from common.error_codes import ErrorCode
-        from common.exceptions import APIError
 
         mock_check.side_effect = APIError(ErrorCode.ACCOUNT_FROZEN)
 

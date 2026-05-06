@@ -1,4 +1,4 @@
-"""SaaS 模式下，对锁定操作（deposit/withdrawal）做权限校验。
+"""SaaS 模式下，对锁定操作（deposit/withdrawal）和 Invoice 白名单做权限校验。
 
 设计原则（高可用优先，availability over consistency）：
 - INTERNAL_API_TOKEN 为空视为未对接 SaaS（自托管），直接放行
@@ -32,6 +32,7 @@ _SAAS_PERMISSION_PATH = "/callbacks/xcash/permission"
 REFRESH_AFTER = 60
 
 _TIMEOUT = httpx.Timeout(connect=2.0, read=3.0, write=3.0, pool=5.0)
+_DEPOSIT_WITHDRAWAL_ACTIONS = {"deposit", "withdrawal"}
 
 
 def _cache_key(appid: str) -> str:
@@ -65,8 +66,9 @@ def check_saas_permission(
 
     Args:
         appid: xcash Project appid
-        action: 'deposit' / 'withdrawal' 等，用于错误详情；功能开关统一读取
-            SaaS 返回的 enable_deposit_withdrawal
+        action: 'deposit' / 'withdrawal' 会读取 SaaS 返回的
+            enable_deposit_withdrawal；'invoice' 不读取该功能锁，只用于账号冻结
+            和链币白名单校验。
         chain_code: 可选，Chain.code。传入时会按 SaaS 返回的 allowed_chain_codes 校验
         crypto_symbol: 可选，Crypto.symbol。传入时会按 SaaS 返回的 allowed_crypto_symbols 校验
 
@@ -99,7 +101,10 @@ def check_saas_permission(
     if perm.get("frozen"):
         raise APIError(ErrorCode.ACCOUNT_FROZEN)
 
-    if not perm.get("enable_deposit_withdrawal", False):
+    if (
+        action in _DEPOSIT_WITHDRAWAL_ACTIONS
+        and not perm.get("enable_deposit_withdrawal", False)
+    ):
         raise APIError(ErrorCode.FEATURE_NOT_ENABLED, detail=action)
 
     allowed_chain_codes = _normalize_whitelist(perm.get("allowed_chain_codes"))
@@ -141,7 +146,7 @@ def filter_saas_allowed_methods(
     if time.time() - fetched_at > REFRESH_AFTER:
         _schedule_refresh(appid)
 
-    if perm.get("frozen") or not perm.get("enable_deposit_withdrawal", False):
+    if perm.get("frozen"):
         return {}
 
     allowed_chain_codes = _normalize_whitelist(perm.get("allowed_chain_codes"))
