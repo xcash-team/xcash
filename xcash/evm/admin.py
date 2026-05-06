@@ -120,7 +120,6 @@ class EvmScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
         "display_scan_gap",
         "display_lag_state",
         "last_error",
-        "display_error_summary",
         "last_error_at",
         "updated_at",
         "created_at",
@@ -180,5 +179,5 @@ class EvmScanCursorAdmin(SyncScanCursorToLatestActionMixin, ReadOnlyModelAdmin):
     def display_error_summary(self, obj: EvmScanCursor) -> str:
         if not obj.last_error:
             return "—"
-        # 列表页只展示摘要，详情页仍保留完整 last_error 原文。
+        # 列表页只展示摘要，详情页保留完整 last_error 原文。
         return obj.last_error[:60]

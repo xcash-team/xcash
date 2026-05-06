@@ -58,7 +58,7 @@ class EvmScanCursor(models.Model):
     last_scanned_block = models.PositiveIntegerField(_("已扫描到的区块"), default=0)
     last_safe_block = models.PositiveIntegerField(_("安全区块"), default=0)
     enabled = models.BooleanField(_("启用"), default=True)
-    last_error = models.CharField(_("最近错误"), max_length=255, blank=True, default="")
+    last_error = models.TextField(_("最近错误"), blank=True, default="")
     last_error_at = models.DateTimeField(_("最近错误时间"), blank=True, null=True)
     updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)

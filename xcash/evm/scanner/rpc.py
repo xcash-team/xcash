@@ -196,6 +196,4 @@ class EvmScannerRpcClient:
         raw_error = " ".join(str(exc).split())
         if not raw_error:
             raw_error = repr(exc)
-        if len(raw_error) > 160:
-            return f"{raw_error[:157]}..."
         return raw_error

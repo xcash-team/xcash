@@ -74,6 +74,43 @@ class EvmScannerRpcErrorMessageTests(SimpleTestCase):
         )
         self.assertIn("rpc=eth_getBlockByNumber", message[:60])
 
+    def test_get_transfer_logs_error_preserves_full_raw_reason(self):
+        # 节点错误文本会直接进入扫描游标；长错误不能被提前截断，否则后台无法看到
+        # 供应商返回的完整限制参数、建议区间或请求上下文。
+        raw_reason = "limit exceeded: " + "x" * 360
+        chain = SimpleNamespace(
+            code="arbitrum-mainnet",
+            evm_log_max_block_range=10,
+            w3=SimpleNamespace(
+                eth=SimpleNamespace(
+                    get_logs=Mock(
+                        side_effect=ValueError(
+                            {
+                                "code": -32005,
+                                "message": raw_reason,
+                            }
+                        )
+                    )
+                )
+            ),
+        )
+
+        with self.assertRaises(EvmScannerRpcError) as caught:
+            EvmScannerRpcClient(chain=chain).get_transfer_logs(
+                from_block=45_996_974,
+                to_block=45_996_983,
+                token_addresses=[
+                    Web3.to_checksum_address(
+                        "0x00000000000000000000000000000000000000aa"
+                    )
+                ],
+                topic0=Web3.to_hex(Web3.keccak(text="Transfer(address,address,uint256)")),
+            )
+
+        message = str(caught.exception)
+        self.assertIn(raw_reason, message)
+        self.assertIn("from=45996974 to=45996983", message)
+
 
 class EvmScannerRpcClientTests(TestCase):
     def setUp(self):

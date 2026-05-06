@@ -884,6 +884,23 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(cursor.last_error, "rpc timeout")
         self.assertIsNotNone(cursor.last_error_at)
 
+    def test_erc20_scan_records_full_cursor_error_when_rpc_error_is_long(self):
+        # RPC 供应商返回的长错误通常包含限制规则和建议查询范围，游标必须完整保留。
+        long_error = "rpc limit exceeded: " + "x" * 360
+
+        with patch(
+            "evm.scanner.erc20.EvmScannerRpcClient.get_latest_block_number",
+            side_effect=EvmScannerRpcError(long_error),
+        ):
+            with self.assertRaises(EvmScannerRpcError):
+                EvmErc20TransferScanner.scan_chain(chain=self.chain, batch_size=32)
+
+        cursor = EvmScanCursor.objects.get(
+            chain=self.chain,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
+        )
+        self.assertEqual(cursor.last_error, long_error)
+
     @patch("chains.service.TransferService.create_observed_transfer")
     @patch("evm.scanner.erc20.EvmScannerRpcClient.get_transfer_logs")
     @patch("evm.scanner.erc20.EvmScannerRpcClient.get_latest_block_number")

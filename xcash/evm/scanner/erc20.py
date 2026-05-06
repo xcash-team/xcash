@@ -388,7 +388,7 @@ class EvmErc20TransferScanner:
             error=str(exc),
         )
         EvmScanCursor.objects.filter(pk=cursor.pk).update(
-            last_error=str(exc)[:255],
+            last_error=str(exc),
             last_error_at=timezone.now(),
             updated_at=timezone.now(),
         )
