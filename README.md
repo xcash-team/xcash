@@ -78,6 +78,29 @@ graph LR
     Webhook -->|推送事件| Merchant
 ```
 
+## 部署前的准备
+
+在开始部署之前，请确保具备以下条件：
+
+### 1. 服务器
+
+- 最低配置：2 核 CPU、4 GB 内存（2c4g）
+- 操作系统：Linux（推荐 Ubuntu 22.04+ / Debian 12+）
+- 安装 Docker 和 Docker Compose
+
+### 2. 域名
+
+准备一个已解析到服务器 IP 的域名，用于访问管理后台和 API 接口。后续通过反向代理（Nginx/Caddy）处理 HTTPS 证书。
+
+### 3. 链 RPC 地址
+
+准备好所需公链的 RPC 访问凭证，网关需要与区块链节点通信才能正常工作：
+
+- **EVM 链**（Ethereum、BSC、Arbitrum、Base、Polygon 等）：各链的 RPC 节点地址。推荐使用 [QuickNode](https://www.quicknode.com/)、[Alchemy](https://www.alchemy.com/) 或 [Infura](https://www.infura.io/) 等节点服务商获取。
+- **Tron 链**：需要在 [TronGrid](https://www.trongrid.io/) 注册并获取 API Key。
+
+启动服务后，登录管理后台进入 **链管理** 页面填写以上 RPC 配置。
+
 ## 快速开始
 
 ### 环境要求
