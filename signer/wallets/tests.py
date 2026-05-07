@@ -341,6 +341,35 @@ class SignerWalletSignPolicyTests(TestCase):
         self.assertEqual(audit.status, SignerRequestAudit.Status.RATE_LIMITED)
         self.assertEqual(audit.error_code, ErrorCode.RATE_LIMIT_EXCEEDED.code)
 
+    def test_wallet_sign_rate_limit_rejects_before_private_key_derivation(self):
+        wallet = self._create_wallet(wallet_id=3004)
+
+        for nonce in (1, 2):
+            body = self._evm_sign_body(wallet=wallet, nonce=nonce)
+            response = self.client.post(
+                "/v1/sign/evm",
+                data=body,
+                content_type="application/json",
+                **self._signed_headers(body=body),
+            )
+            self.assertEqual(response.status_code, 200)
+
+        body = self._evm_sign_body(wallet=wallet, nonce=3)
+        with patch.object(
+            SignerWallet,
+            "derive_key_pair",
+            side_effect=AssertionError("私钥不应在限流拒绝前派生"),
+        ) as derive_key_pair_mock:
+            response = self.client.post(
+                "/v1/sign/evm",
+                data=body,
+                content_type="application/json",
+                **self._signed_headers(body=body),
+            )
+
+        self.assertEqual(response.status_code, 429)
+        derive_key_pair_mock.assert_not_called()
+
     def test_internal_erc20_transfer_bypasses_wallet_sign_rate_limit(self):
         # 系统内地址由 signer 自己的账户表判定，命中后仅放宽钱包签名频率限制，其余保护仍保留。
         wallet = self._create_wallet(wallet_id=3003)

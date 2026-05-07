@@ -546,8 +546,8 @@ class SignEvmView(SignerAPIView):
         # 签名操作使用行锁，保证冻结立即互斥。
         wallet = self._load_wallet(data["wallet_id"], for_signing=True)
         self._assert_wallet_can_sign(wallet=wallet)
-        # 一次派生同时取地址和私钥，避免重复解密助记词。
-        expected_from, privkey_hex = wallet.derive_key_pair(
+        # 先只派生公钥地址完成所有非密钥校验，避免拒绝路径过早把私钥放进栈帧。
+        expected_from = wallet.derive_address(
             chain_type=data["chain_type"],
             bip44_account=data["bip44_account"],
             address_index=data["address_index"],
@@ -565,7 +565,13 @@ class SignEvmView(SignerAPIView):
         ):
             self._assert_wallet_sign_rate_limit(wallet=wallet, endpoint=request.path)
 
+        privkey_hex = None
         try:
+            privkey_hex = wallet.private_key_hex(
+                chain_type=data["chain_type"],
+                bip44_account=data["bip44_account"],
+                address_index=data["address_index"],
+            )
             signed = Web3().eth.account.sign_transaction(
                 data["tx_dict"],
                 privkey_hex,
@@ -575,6 +581,9 @@ class SignEvmView(SignerAPIView):
             raise SignerAPIError(
                 ErrorCode.PARAMETER_ERROR, "EVM 交易签名失败"
             ) from None
+        finally:
+            # Python 字符串无法原地清零；这里及时释放局部引用，尽量缩短私钥在栈帧中的生命周期。
+            privkey_hex = None
 
         self._record_audit(
             request=request,
@@ -589,5 +598,4 @@ class SignEvmView(SignerAPIView):
             },
             status=status.HTTP_200_OK,
         )
-
 
