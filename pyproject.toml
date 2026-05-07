@@ -9,9 +9,9 @@ requires-python = "==3.13.*"
 dependencies = [
     "web3==7.14.1",
     "base58==2.1.1",
-    "bip-utils==2.9.3",
+    "bip-utils==2.12.1",
     # Bitcoin：P2WPKH SegWit 交易构建与 secp256k1 签名
-    "bitcoin-utils==0.8.1",
+    "bitcoin-utils==0.8.2",
     "redis==7.4.0",
     "hiredis==3.3.1",
     "cryptography==46.0.7",
@@ -27,13 +27,13 @@ dependencies = [
     "django-extensions==4.1",
     "django-environ==0.13.0",
     "django-model-utils==5.0.0",
-    "django-unfold==0.89.0",
+    "django-unfold==0.92.0",
     "django-sequences==3.0",
     "djangorestframework==3.17.1",
     "drf-extensions==0.8.0",
     "django-redis==6.0.0",
     "django-cors-headers==4.9.0",
-    "django-smart-ratelimit[redis]==2.2.0",
+    "django-smart-ratelimit[redis]==2.2.1",
     # Celery
     "celery==5.6.3",
     "django-celery-results==2.6.0",
@@ -41,11 +41,11 @@ dependencies = [
     "structlog==25.5.0",
     "django-otp>=1.7.0",
     "qrcode>=8.2",
-    "gunicorn==23.0.0",
+    "gunicorn==26.0.0",
 ]
 [dependency-groups]
 dev = [
-    "psycopg[binary]==3.3.3",
+    "psycopg[binary]==3.3.4",
     "celery-types>=0.26.0",
     "watchfiles==1.1.1",
     "werkzeug[watchdog]==3.1.6",
@@ -73,7 +73,7 @@ dev = [
     "pytest-django==4.12.0",
 ]
 production = [
-    "psycopg[c]==3.3.3",
+    "psycopg[c]==3.3.4",
 ]
 
 # ==== pytest ====
