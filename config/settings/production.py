@@ -48,14 +48,13 @@ CORS_ALLOWED_ORIGINS = [f"{SCHEME}://{DOMAIN}"]
 
 # Celery
 # ------------------------------------------------------------------------------
-# Redis broker 在 worker 收到 TERM 时，需要先进入 soft shutdown 才更容易把未确认任务重新入队。
-# 生产 worker 用 30s 软关闭窗口，且保持小于 compose 里的 60s stop_grace_period。
+# Redis broker 在 worker 收到 TERM 时，有活跃任务才进入 soft shutdown，
+# 避免空闲 worker 每次容器重建都固定等待；50s 仍小于 compose 里的 60s stop_grace_period。
 CELERY_WORKER_SOFT_SHUTDOWN_TIMEOUT = env.float(
-    "CELERY_WORKER_SOFT_SHUTDOWN_TIMEOUT", default=30.0
+    "CELERY_WORKER_SOFT_SHUTDOWN_TIMEOUT", default=50.0
 )
-# 项目存在 ETA 过期检查任务；空闲但已预留 ETA 消息时，也需要进入 soft shutdown。
 CELERY_WORKER_ENABLE_SOFT_SHUTDOWN_ON_IDLE = env.bool(
-    "CELERY_WORKER_ENABLE_SOFT_SHUTDOWN_ON_IDLE", default=True
+    "CELERY_WORKER_ENABLE_SOFT_SHUTDOWN_ON_IDLE", default=False
 )
 
 # LOGGING
