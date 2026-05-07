@@ -1,5 +1,11 @@
 # Xcash API 对接文档
 
+## 网关地址
+
+SaaS 官方网关 Base URL：`https://gateway.xca.sh`
+
+所有 API 路径均以此为前缀，例如创建账单的完整 URL 为 `https://gateway.xca.sh/v1/invoice`。
+
 ## 链与币种代码表
 
 本文档用于查询调用 Xcash 接口时常用的 `chain` code 与 `crypto` symbol。
@@ -198,7 +204,7 @@ const headers = {
 | `title` | string | 是 | 账单标题，最长 32 位 |
 | `currency` | string | 是 | 计价币种，支持法币（如 `USD`）或加密货币（如 `USDT`） |
 | `amount` | string | 是 | 金额，范围 0.00000001 ~ 1000000 |
-| `duration` | integer | 否 | 支付有效期（分钟），范围 5~60，默认 10 |
+| `duration` | integer | 否 | 支付有效期（分钟），范围 5~30，默认 10 |
 | `methods` | object | 否 | 限定支付方式，格式 `{"币种": ["链码"]}` |
 | `email` | string | 否 | 买家邮箱 |
 | `redirect_url` | string | 否 | 支付完成后跳转地址 |
@@ -245,7 +251,7 @@ const headers = {
   "crypto_address": null,
   "pay_address": null,
   "pay_amount": null,
-  "pay_url": "https://pay.xca.sh/payment/INV-xxxxxxxx",
+  "pay_url": "https://gateway.xca.sh/pay/INV-xxxxxxxx",
   "started_at": null,
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
@@ -291,7 +297,7 @@ const headers = {
   "crypto_address": "0x1234...abcd",
   "pay_address": "0x1234...abcd",
   "pay_amount": "29.87",
-  "pay_url": "https://pay.xca.sh/payment/INV-xxxxxxxx",
+  "pay_url": "https://gateway.xca.sh/pay/INV-xxxxxxxx",
   "started_at": "2024-01-01T00:00:05Z",
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
@@ -302,6 +308,45 @@ const headers = {
 ```
 
 > 注意：公开接口不返回 `appid` 和 `out_no` 字段。
+
+### 响应字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `sys_no` | string | 系统账单号，如 `INV-xxxxxxxx` |
+| `title` | string | 账单标题 |
+| `currency` | string | 计价币种 |
+| `amount` | string | 计价金额 |
+| `methods` | object | 可选的支付方式，格式 `{"币种": ["链码"]}` |
+| `chain` | string \| null | 已选的链码，未选时为空 |
+| `crypto` | string \| null | 已选的加密货币符号，未选时为空 |
+| `crypto_address` | string \| null | 加密货币在所选链上的合约地址（原生币为 null） |
+| `pay_address` | string \| null | 买家需付款的收款地址 |
+| `pay_amount` | string \| null | 应付加密货币数量 |
+| `pay_url` | string | 支付页面 URL，前端 SPA，根据 sys_no 自渲染 |
+| `started_at` | string \| null | 支付开始时间（ISO 8601），选择支付方式后分配 |
+| `created_at` | string | 账单创建时间（ISO 8601） |
+| `expires_at` | string | 支付截止时间（ISO 8601） |
+| `redirect_url` | string \| null | 支付完成后跳转地址 |
+| `payment` | object \| null | 匹配到的链上交易详情，未匹配时为空（见下方） |
+| `status` | string | 账单状态：`waiting` / `confirming` / `completed` / `expired` |
+
+#### `payment` 对象结构
+
+当账单匹配到链上转账后，`payment` 字段包含以下信息：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `chain` | string | 链码 |
+| `block` | integer | 区块高度 |
+| `hash` | string | 链上交易哈希 |
+| `from_address` | string | 付款方地址 |
+| `to_address` | string | 收款方地址（即 pay_address） |
+| `crypto` | string | 加密货币符号 |
+| `amount` | string | 链上实际到账金额 |
+| `datetime` | string | 交易时间（ISO 8601） |
+| `status` | string | 交易确认状态 |
+| `confirm_progress` | string | 确认进度（如 "10/12"） |
 
 ### 限流
 
@@ -359,7 +404,7 @@ const headers = {
   "crypto_address": "TXyz...1234",
   "pay_address": "TXyz...1234",
   "pay_amount": "29.87",
-  "pay_url": "https://pay.xca.sh/payment/INV-xxxxxxxx",
+  "pay_url": "https://gateway.xca.sh/pay/INV-xxxxxxxx",
   "started_at": "2024-01-01T00:00:05Z",
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
