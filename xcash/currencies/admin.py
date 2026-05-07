@@ -127,7 +127,9 @@ class CryptoAdmin(ModelAdmin):
 @admin.register(Fiat)
 class FiatAdmin(ModelAdmin):
     def get_readonly_fields(self, request, obj=None):
-        return ("code",)
+        if obj:
+            return ("code",)
+        return ()
 
     list_display = (
         "code",

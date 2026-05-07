@@ -200,12 +200,25 @@ class Fiat(models.Model):
     @property
     def icon(self):
         flags = {
-            "CNY": "🇨🇳",
-            "USD": "🇺🇸",
-            "EUR": "🇪🇺",
-            "GDB": "🇬🇧",
-            "HKD": "🇭🇰",
-            "JPY": "🇯🇵",
+            # 亚洲
+            "CNY": "🇨🇳", "HKD": "🇭🇰", "JPY": "🇯🇵", "KRW": "🇰🇷",
+            "SGD": "🇸🇬", "INR": "🇮🇳", "THB": "🇹🇭", "PHP": "🇵🇭",
+            "IDR": "🇮🇩", "MYR": "🇲🇾", "VND": "🇻🇳", "PKR": "🇵🇰",
+            "BDT": "🇧🇩", "ILS": "🇮🇱", "TWD": "🇹🇼",
+            # 中东
+            "AED": "🇦🇪", "SAR": "🇸🇦", "KWD": "🇰🇼", "QAR": "🇶🇦",
+            # 美洲
+            "USD": "🇺🇸", "CAD": "🇨🇦", "BRL": "🇧🇷", "MXN": "🇲🇽",
+            "ARS": "🇦🇷", "CLP": "🇨🇱", "COP": "🇨🇴",
+            # 欧洲
+            "EUR": "🇪🇺", "GBP": "🇬🇧", "GDB": "🇬🇧", "CHF": "🇨🇭",
+            "SEK": "🇸🇪", "NOK": "🇳🇴", "DKK": "🇩🇰", "PLN": "🇵🇱",
+            "CZK": "🇨🇿", "HUF": "🇭🇺", "RON": "🇷🇴", "BGN": "🇧🇬",
+            "RUB": "🇷🇺", "TRY": "🇹🇷", "UAH": "🇺🇦",
+            # 大洋洲
+            "AUD": "🇦🇺", "NZD": "🇳🇿",
+            # 非洲
+            "ZAR": "🇿🇦", "EGP": "🇪🇬", "NGN": "🇳🇬",
         }
 
         return flags.get(self.code, "")
