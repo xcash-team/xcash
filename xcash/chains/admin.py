@@ -33,8 +33,6 @@ class ChainAdmin(ModelAdmin):
         "active",
         "confirm_block_count",
         "latest_block_number",
-        "chain_id",
-        "is_poa",
         "evm_log_max_block_range",
     )
     list_editable = (
@@ -42,7 +40,7 @@ class ChainAdmin(ModelAdmin):
         "confirm_block_count",
         "evm_log_max_block_range",
     )
-    list_filter = ("active", "type", "is_poa")
+    list_filter = ("active", "type",)
     list_select_related = ("native_coin",)
     search_fields = ("name", "code")
 

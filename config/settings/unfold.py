@@ -221,27 +221,17 @@ SIDEBAR_UNFOLD = {
                 "collapsible": True,
                 "items": [
                     {
-                        "title": _("链"),
+                        "title": _("公链"),
                         "icon": "memory",
                         "link": reverse_lazy("admin:chains_chain_changelist"),
                     },
                     {
-                        "title": _("钱包"),
-                        "icon": "account_balance_wallet",
-                        "link": reverse_lazy("admin:chains_wallet_changelist"),
-                    },
-                    {
-                        "title": _("地址"),
-                        "icon": "wallet",
-                        "link": reverse_lazy("admin:chains_address_changelist"),
-                    },
-                    {
-                        "title": _("转账"),
+                        "title": _("链上转账"),
                         "icon": "sync_alt",
                         "link": reverse_lazy("admin:chains_onchaintransfer_changelist"),
                     },
                     {
-                        "title": _("EVM 链上任务"),
+                        "title": _("EVM 上链任务"),
                         "icon": "bolt",
                         "link": reverse_lazy("admin:evm_evmbroadcasttask_changelist"),
                     },
@@ -280,7 +270,7 @@ SIDEBAR_UNFOLD = {
                 ],
             },
             {
-                "title": _("代币"),
+                "title": _("货币"),
                 "collapsible": True,
                 "items": [
                     {
