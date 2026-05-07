@@ -1,10 +1,13 @@
 # Xcash API 对接文档
 
-## 网关地址
+## 官方地址
 
-SaaS 官方网关 Base URL：`https://gateway.xca.sh`
+| 用途 | URL | 说明 |
+|------|-----|------|
+| **API 网关** | `https://gateway.xca.sh` | 所有 API 接口的 Base URL，例如创建账单为 `https://gateway.xca.sh/v1/invoice` |
+| **SaaS 控制台** | `https://dash.xca.sh` | 项目管理后台，获取 AppID / HMAC Key、配置 Webhook、管理地址等 |
 
-所有 API 路径均以此为前缀，例如创建账单的完整 URL 为 `https://gateway.xca.sh/v1/invoice`。
+> `pay_url` 指向的是网关域名下的支付 SPA 页面（`https://gateway.xca.sh/pay/{sys_no}`），而非控制台。
 
 ## 链与币种代码表
 
