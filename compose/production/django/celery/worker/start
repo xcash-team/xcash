@@ -7,4 +7,4 @@ set -o nounset
 /app/compose/production/django/check-signer-preflight
 
 
-exec celery -A config.celery worker -l WARNING -Q celery,scan
+exec celery -A config.celery worker -l WARNING -Q celery,scan --pool=threads
