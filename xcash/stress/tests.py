@@ -50,6 +50,7 @@ from chains.models import OnchainTransfer
 from chains.models import TransferStatus
 from chains.models import TransferType
 from chains.models import Wallet
+from core.models import PlatformSettings
 from currencies.models import ChainToken
 from currencies.models import Crypto
 from deposits.models import Deposit
@@ -978,6 +979,7 @@ class StressPaymentTaskTests(SimpleTestCase):
 
 class StressRecipientSetupTests(TestCase):
     def setUp(self):
+        PlatformSettings.objects.create(open_native_scanner=True)
         self.eth, _ = Crypto.objects.update_or_create(
             symbol="ETH",
             defaults={

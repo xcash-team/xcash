@@ -57,6 +57,7 @@ from evm.models import EvmScanCursor
 from evm.models import EvmScanCursorType
 from evm.scanner.constants import ERC20_TRANSFER_TOPIC0
 from evm.scanner.service import EvmChainScannerService
+from evm.scanner.watchers import clear_evm_watch_set_cache
 from invoices.models import Invoice
 from invoices.models import InvoiceStatus
 from projects.models import Project
@@ -526,7 +527,7 @@ class LocalChainIntegrationMixin:
         - native: 预期由原生币直转扫描器命中
         - erc20: 预期由 ERC20 OnchainTransfer 扫描器命中
         """
-        summary = EvmChainScannerService.scan_chain(chain=chain)
+        summary = self._scan_evm_chain(chain=chain)
         normalized_tx_hash = tx_hash.hex() if hasattr(tx_hash, "hex") else str(tx_hash)
         if not normalized_tx_hash.startswith("0x"):
             normalized_tx_hash = f"0x{normalized_tx_hash}"
@@ -590,6 +591,7 @@ class LocalChainIntegrationMixin:
         真实 Anvil 在开发机上通常已经运行了很久；若测试链记录是刚创建的，而游标从 0 开始，
         单次扫描只会先扫最前面的少量区块，无法覆盖刚刚产生的最新交易。
         """
+        clear_evm_watch_set_cache(chain=chain)
         latest_block = chain.get_latest_block_number
         safe_block = max(0, latest_block - chain.confirm_block_count)
 
@@ -608,6 +610,11 @@ class LocalChainIntegrationMixin:
                     "last_error_at": None,
                 },
             )
+
+    @staticmethod
+    def _scan_evm_chain(*, chain: Chain):
+        clear_evm_watch_set_cache(chain=chain)
+        return EvmChainScannerService.scan_chain(chain=chain)
 
     def _mine_evm_block(self, w3: Web3) -> None:
         """通过发送一笔极小原生币转账推进 anvil 块高，供 FULL 确认链路使用。"""
@@ -1469,8 +1476,8 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
         )
         w3.eth.wait_for_transaction_receipt(tx_hash)
 
-        first_summary = EvmChainScannerService.scan_chain(chain=chain)
-        second_summary = EvmChainScannerService.scan_chain(chain=chain)
+        first_summary = self._scan_evm_chain(chain=chain)
+        second_summary = self._scan_evm_chain(chain=chain)
 
         self.assertGreaterEqual(first_summary.native.created_transfers, 1)
         self.assertEqual(second_summary.native.created_transfers, 0)
@@ -1543,8 +1550,8 @@ class LocalEvmScannerIntegrationTests(LocalChainIntegrationMixin, TestCase):
             )
         )
 
-        first_summary = EvmChainScannerService.scan_chain(chain=chain)
-        second_summary = EvmChainScannerService.scan_chain(chain=chain)
+        first_summary = self._scan_evm_chain(chain=chain)
+        second_summary = self._scan_evm_chain(chain=chain)
 
         self.assertGreaterEqual(first_summary.erc20.created_transfers, 1)
         self.assertEqual(second_summary.erc20.created_transfers, 0)
