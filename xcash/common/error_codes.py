@@ -74,6 +74,11 @@ class ErrorCode(Enum):
     PROJECT_NOT_FOUND = ErrorInfo("6002", _("项目不存在"), 404)
     FEATURE_NOT_ENABLED = ErrorInfo("6003", _("该功能未开放"), 403)
     ACCOUNT_FROZEN = ErrorInfo("6004", _("账户已冻结"), 403)
+    NATIVE_SCANNER_NOT_ENABLED = ErrorInfo(
+        "6005",
+        _("充提币功能未开启，请在后台系统参数中开启「EVM 原生币扫描」，并确保 EVM 链 RPC 支持高频调用"),
+        403,
+    )
 
     def __init__(self, info: ErrorInfo):
         self._info = info

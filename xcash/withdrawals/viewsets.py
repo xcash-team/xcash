@@ -12,6 +12,7 @@ from common.consts import APPID_HEADER
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.permission_check import check_saas_permission
+from core.runtime_settings import get_open_native_scanner
 from common.permissions import RejectAll
 from common.throttles import WithdrawalCreateThrottle
 from currencies.service import CryptoService
@@ -45,6 +46,10 @@ class WithdrawalViewSet(viewsets.ModelViewSet):
             appid=request.headers.get(APPID_HEADER),
             action="withdrawal",
         )
+
+        # 提币依赖原生币扫描（Gas 分发等交易必须通过扫描才能感知），未开启时拒绝服务。
+        if not get_open_native_scanner():
+            raise APIError(ErrorCode.NATIVE_SCANNER_NOT_ENABLED)
 
         serializer = CreateWithdrawalSerializer(
             data=request.data,
