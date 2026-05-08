@@ -33,7 +33,7 @@ FROM node:22-bookworm-slim AS frontend-build-stage
 
 WORKDIR /frontend
 
-COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml ./
+COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml pay-fronted/.npmrc ./
 
 RUN corepack enable && pnpm install --no-frozen-lockfile
 
