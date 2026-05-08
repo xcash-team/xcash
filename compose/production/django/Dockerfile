@@ -81,7 +81,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     DJANGO_SETTINGS_MODULE=config.settings.production
 
 RUN chmod +x ./compose/production/django/build-assets.sh && \
-    ./compose/production/django/build-assets.sh
+    ./compose/production/django/build-assets.sh && \
+    chown -R django:django /app/staticfiles
 
 USER django
 
