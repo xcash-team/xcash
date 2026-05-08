@@ -33,9 +33,9 @@ FROM node:22-bookworm-slim AS frontend-build-stage
 
 WORKDIR /frontend
 
-COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml pay-fronted/.npmrc ./
+COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml ./
 
-RUN corepack enable && pnpm approve-builds @tailwindcss/oxide esbuild && pnpm install --no-frozen-lockfile
+RUN corepack enable && pnpm approve-builds @tailwindcss/oxide esbuild && pnpm install --frozen-lockfile
 
 COPY pay-fronted/ ./
 

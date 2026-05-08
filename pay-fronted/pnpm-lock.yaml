@@ -3,9 +3,6 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
-  onlyBuiltDependencies:
-    - '@tailwindcss/oxide'
-    - esbuild
 
 importers:
 
