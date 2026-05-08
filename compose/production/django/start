@@ -19,5 +19,6 @@ python manage.py ensure_default_superuser
 exec gunicorn config.wsgi:application \
   --bind 0.0.0.0:8000 \
   --chdir=/app \
+  --worker-class gthread \
   --workers "${GUNICORN_WORKERS}" \
   --threads "${GUNICORN_THREADS}"
