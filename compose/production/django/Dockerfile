@@ -35,7 +35,7 @@ WORKDIR /frontend
 
 COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml pay-fronted/.npmrc ./
 
-RUN corepack enable && pnpm install --no-frozen-lockfile
+RUN corepack enable && pnpm approve-builds @tailwindcss/oxide esbuild && pnpm install --no-frozen-lockfile
 
 COPY pay-fronted/ ./
 
