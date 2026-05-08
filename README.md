@@ -96,12 +96,6 @@ graph LR
 
 `PERFORMANCE` 不设置时默认使用 `low`。部署规模较小时建议先从 `low` 启动，只开启实际需要的链与功能；业务量、链扫描压力或并发请求增加后再切换到 `middle` 或 `high`。
 
-> **配置建议**
->
-> - `middle` 档已将 signer_workers 设为 2，避免并发签名请求在 signer 侧排队。
-> - `high` 档 celery_worker_concurrency 设为 16，可支撑 10 条左右活跃 EVM 链的并发扫描；若活跃链更多，建议将 `scan` 队列拆到独立 worker，防止扫描任务占满业务线程池。
-> - gunicorn 已显式声明 `--worker-class gthread`，避免不同版本 gunicorn 的隐式行为差异。
-
 ### 2. 域名
 
 准备一个已解析到服务器 IP 的域名，用于访问管理后台和 API 接口。后续通过反向代理（Nginx/Caddy）处理 HTTPS 证书。
