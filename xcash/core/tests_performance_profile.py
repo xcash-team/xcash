@@ -19,7 +19,7 @@ class PerformanceProfileTests(SimpleTestCase):
     def test_explicit_env_overrides_profile_value(self):
         with patch.dict(
             os.environ,
-            {"PERFORMANCE": "middle", "CELERY_WORKER_CONCURRENCY": "9"},
+            {"PERFORMANCE": "medium", "CELERY_WORKER_CONCURRENCY": "9"},
             clear=True,
         ):
             self.assertEqual(get_int("CELERY_WORKER_CONCURRENCY", "celery_worker_concurrency"), 9)

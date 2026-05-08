@@ -31,7 +31,7 @@ PROFILES = {
         bitcoin_scan_seconds=60,
         bitcoin_watch_sync_seconds=600,
     ),
-    "middle": PerformanceProfile(
+    "medium": PerformanceProfile(
         django_workers=4,
         django_threads=4,
         signer_workers=2,

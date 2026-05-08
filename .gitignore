@@ -13,10 +13,10 @@ scripts/merchant_hmac/
 
 
 # AI tools
-.claude/
+.claude/*
 .worktrees/
-AGENTS.md
 **/CLAUDE.md
+!.claude/CLAUDE.MD
 **/GEMINI.md
 **/prompt.md
 **/docs/superpowers/
