@@ -88,9 +88,13 @@ graph LR
 
 ### 1. 服务器
 
-- 最低配置：2 核 CPU、4 GB 内存（2c4g）
+- 最低配置：1 核 CPU、4 GB 内存（`PERFORMANCE=low`）
+- 推荐配置：4 核 CPU、16 GB 内存（`PERFORMANCE=middle`）
+- 高性能配置：8 核 CPU、32 GB 内存（`PERFORMANCE=high`）
 - 操作系统：Linux（推荐 Ubuntu 22.04+ / Debian 12+）
 - 安装 Docker 和 Docker Compose
+
+`PERFORMANCE` 不设置时默认使用 `low`。部署规模较小时建议先从 `low` 启动，只开启实际需要的链与功能；业务量、链扫描压力或并发请求增加后再切换到 `middle` 或 `high`。
 
 ### 2. 域名
 

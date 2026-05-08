@@ -17,6 +17,8 @@ sys.path.append(str(APPS_DIR))
 
 from common.logger import configure_structlog  # noqa: E402
 from common.logger import shared_processors  # noqa: E402
+from config.performance import get_bool_default  # noqa: E402
+from config.performance import get_int  # noqa: E402
 
 configure_structlog()
 
@@ -155,7 +157,6 @@ THIRD_PARTY_APPS = [
     "rest_framework",
     "rest_framework.authtoken",
     "corsheaders",
-    "django_extensions",
     "sequences",
 ]
 
@@ -227,7 +228,6 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/dev/ref/settings/#middleware
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.locale.LocaleMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -357,7 +357,7 @@ CELERY_BROKER_URL = REDIS_URL
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_backend
 CELERY_RESULT_BACKEND = "django-db"
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-extended
-CELERY_RESULT_EXTENDED = True
+CELERY_RESULT_EXTENDED = get_bool_default("CELERY_RESULT_EXTENDED", default=False)
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#result-backend-always-retry
 # https://github.com/celery/celery/pull/6122
 CELERY_RESULT_BACKEND_ALWAYS_RETRY = True
@@ -369,6 +369,11 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std:setting-result_serializer
 CELERY_RESULT_SERIALIZER = "json"
+# 生产默认只保留失败任务记录，避免高频周期任务持续写入成功结果。
+CELERY_TASK_IGNORE_RESULT = get_bool_default(
+    "CELERY_TASK_IGNORE_RESULT",
+    default=True,
+)
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#task-time-limit
 # 默认 60s 硬超时：覆盖绝大多数链上轮询/投递任务，防止僵尸任务长期占用 worker。
 CELERY_TASK_TIME_LIMIT = 60
@@ -376,14 +381,23 @@ CELERY_TASK_TIME_LIMIT = 60
 # 默认 30s 软超时：给任务预留清理与记录日志时间，避免直接被硬杀。
 CELERY_TASK_SOFT_TIME_LIMIT = 30
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#worker-send-task-events
-CELERY_WORKER_SEND_TASK_EVENTS = True
+CELERY_WORKER_SEND_TASK_EVENTS = get_bool_default(
+    "CELERY_WORKER_SEND_TASK_EVENTS",
+    default=False,
+)
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html#std-setting-task_send_sent_event
-CELERY_TASK_SEND_SENT_EVENT = True
+CELERY_TASK_SEND_SENT_EVENT = get_bool_default(
+    "CELERY_TASK_SEND_SENT_EVENT",
+    default=False,
+)
 
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_STORE_ERRORS_EVEN_IF_IGNORED = True
 CELERY_WORKER_MAX_TASKS_PER_CHILD = 256
-CELERY_WORKER_CONCURRENCY = 4
+CELERY_WORKER_CONCURRENCY = get_int(
+    "CELERY_WORKER_CONCURRENCY",
+    "celery_worker_concurrency",
+)
 
 # Worker 内存管理配置
 CELERY_WORKER_MAX_MEMORY_PER_CHILD = 256 * 1024  # 256MB

@@ -4,10 +4,20 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
+eval "$(python /app/config/performance.py shell-env web)"
+
 # web 容器启动前先自动应用主库迁移，避免新环境还要手工分步执行 migrate。
+if [[ "${COLLECTSTATIC_ON_STARTUP:-true}" == "true" ]]; then
+  python manage.py collectstatic --noinput
+fi
+
 python manage.py migrate --noinput
 python manage.py ensure_default_superuser
 
 /app/compose/production/django/check-signer-preflight
 
-exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --chdir=/app --workers 2 --threads 2
+exec gunicorn config.wsgi:application \
+  --bind 0.0.0.0:8000 \
+  --chdir=/app \
+  --workers "${GUNICORN_WORKERS}" \
+  --threads "${GUNICORN_THREADS}"

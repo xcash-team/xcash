@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --project signer --locked --group production --no-group dev
 
 COPY signer ${APP_HOME}/signer
+COPY config/performance.py ${APP_HOME}/performance.py
 COPY signer/compose/production/entrypoint /entrypoint
 COPY signer/compose/production/start /start
 
@@ -38,7 +39,7 @@ RUN addgroup --system django \
   && adduser --system --ingroup django django
 
 RUN apt-get update && apt-get install --no-install-recommends -y \
-  libpq-dev \
+  libpq5 \
   wait-for-it \
   && rm -rf /var/lib/apt/lists/*
 

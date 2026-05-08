@@ -20,8 +20,8 @@ class EvmScannerDefaultsTests(TestCase):
         self.assertEqual(DEFAULT_NATIVE_SCAN_REPLAY_BLOCKS, 2)
 
     def test_evm_scanner_schedules_are_split_by_scan_type(self):
-        self.assertEqual(EVM_ERC20_SCAN_SCHEDULE_SECONDS, 10)
-        self.assertEqual(EVM_NATIVE_SCAN_SCHEDULE_SECONDS, 10)
+        self.assertEqual(EVM_ERC20_SCAN_SCHEDULE_SECONDS, 16)
+        self.assertEqual(EVM_NATIVE_SCAN_SCHEDULE_SECONDS, 16)
         self.assertEqual(
             evm_tasks["scan_active_evm_erc20_chains"]["task"],
             "evm.tasks.scan_active_evm_erc20_chains",

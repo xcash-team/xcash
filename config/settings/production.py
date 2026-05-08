@@ -1,5 +1,4 @@
 # ruff: noqa: E501, F405
-import logging
 
 from .base import *  # noqa
 from .base import env
@@ -21,7 +20,7 @@ STORAGES = {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
     },
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        "BACKEND": "django.contrib.staticfiles.storage.ManifestStaticFilesStorage",
     },
 }
 

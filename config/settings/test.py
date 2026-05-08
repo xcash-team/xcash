@@ -34,7 +34,6 @@ warnings.filterwarnings(
 
 from .base import *  # noqa: F403
 from .base import INSTALLED_APPS
-from .base import MIDDLEWARE
 from .base import TEMPLATES
 from .base import env
 
@@ -43,8 +42,7 @@ INTERNAL_API_TOKEN = "test-internal-token"
 # stress app 仅在开发/测试环境加载，生产环境不包含。
 INSTALLED_APPS += ["stress"]
 
-# 测试环境用内存静态文件后端，避免 WhiteNoise 因 staticfiles/ 目录缺失输出告警，
-# 也不会在项目根目录留下空目录。
+# 测试环境用内存静态文件后端，避免在项目根目录留下静态文件构建产物。
 STATIC_ROOT = str(BASE_DIR / "test-staticfiles")  # noqa: F405
 STORAGES = {
     "default": {
@@ -54,13 +52,6 @@ STORAGES = {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
     },
 }
-
-# 测试不经过生产静态文件中间件，避免空 STATIC_ROOT 目录在请求初始化阶段产生噪音告警。
-MIDDLEWARE = [
-    middleware
-    for middleware in MIDDLEWARE
-    if middleware != "whitenoise.middleware.WhiteNoiseMiddleware"
-]
 
 # GENERAL
 # ------------------------------------------------------------------------------

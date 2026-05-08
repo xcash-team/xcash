@@ -53,8 +53,8 @@ RUN addgroup --system django \
 
 # Install required system dependencies
 RUN apt-get update && apt-get install --no-install-recommends -y \
-  # psycopg dependencies \
-  libpq-dev \
+  # psycopg runtime dependency \
+  libpq5 \
   # Translations dependencies \
   gettext \
   # entrypoint \

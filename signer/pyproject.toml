@@ -14,15 +14,16 @@ dependencies = [
     "bip-utils==2.9.3",
     "bitcoin-utils==0.8.1",
     "cryptography==46.0.5",
-    "psycopg[binary]==3.3.2",
 ]
 
 [dependency-groups]
 dev = [
+    "psycopg[binary]==3.3.2",
     "pytest==8.3.5",
     "pytest-django==4.11.1",
 ]
 production = [
+    "psycopg[c]==3.3.2",
     "gunicorn==23.0.0",
 ]
 

@@ -133,19 +133,6 @@ wheels = [
 ]
 
 [[package]]
-name = "arrow"
-version = "1.4.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dateutil" },
-    { name = "tzdata" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/33/032cdc44182491aa708d06a68b62434140d8c50820a087fac7af37703357/arrow-1.4.0.tar.gz", hash = "sha256:ed0cc050e98001b8779e84d461b0098c4ac597e88704a655582b21d116e526d7", size = 152931, upload-time = "2025-10-18T17:46:46.761Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ed/c9/d7977eaacb9df673210491da99e6a247e93df98c715fc43fd136ce1d3d33/arrow-1.4.0-py3-none-any.whl", hash = "sha256:749f0769958ebdc79c173ff0b0670d59051a535fa26e8eba02953dc19eb43205", size = 68797, upload-time = "2025-10-18T17:46:45.663Z" },
-]
-
-[[package]]
 name = "asgiref"
 version = "3.11.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1276,15 +1263,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
-]
-
-[[package]]
-name = "ipaddress"
-version = "1.0.23"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b9/9a/3e9da40ea28b8210dd6504d3fe9fe7e013b62bf45902b458d1cdc3c34ed9/ipaddress-1.0.23.tar.gz", hash = "sha256:b7f8e0369580bb4a24d5ba1d7cc29660a4a6987763faf1d8a8046830e020e7e2", size = 32958, upload-time = "2019-10-18T01:30:24.58Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/f8/49697181b1651d8347d24c095ce46c7346c37335ddc7d255833e7cde674d/ipaddress-1.0.23-py2.py3-none-any.whl", hash = "sha256:6e0f4a39e66cb5bb9a137b00276a2eff74f93b71dcbdad6f10ff7df9d3557fcc", size = 18159, upload-time = "2019-10-18T01:30:27.002Z" },
 ]
 
 [[package]]
@@ -2658,21 +2636,11 @@ watchdog = [
 ]
 
 [[package]]
-name = "whitenoise"
-version = "6.12.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/cb/2a/55b3f3a4ec326cd077c1c3defeee656b9298372a69229134d930151acd01/whitenoise-6.12.0.tar.gz", hash = "sha256:f723ebb76a112e98816ff80fcea0a6c9b8ecde835f8ddda25df7a30a3c2db6ad", size = 26841, upload-time = "2026-02-27T00:05:42.028Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/eb/d5583a11486211f3ebd4b385545ae787f32363d453c19fffd81106c9c138/whitenoise-6.12.0-py3-none-any.whl", hash = "sha256:fc5e8c572e33ebf24795b47b6a7da8da3c00cff2349f5b04c02f28d0cc5a3cc2", size = 20302, upload-time = "2026-02-27T00:05:40.086Z" },
-]
-
-[[package]]
 name = "xcash"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "argon2-cffi" },
-    { name = "arrow" },
     { name = "base58" },
     { name = "bip-utils" },
     { name = "bitcoin-utils" },
@@ -2682,7 +2650,6 @@ dependencies = [
     { name = "django-celery-results" },
     { name = "django-cors-headers" },
     { name = "django-environ" },
-    { name = "django-extensions" },
     { name = "django-model-utils" },
     { name = "django-otp" },
     { name = "django-redis" },
@@ -2694,14 +2661,12 @@ dependencies = [
     { name = "gunicorn" },
     { name = "hiredis" },
     { name = "httpx" },
-    { name = "ipaddress" },
     { name = "qrcode" },
     { name = "redis" },
     { name = "shortuuid" },
     { name = "structlog" },
     { name = "ulid-py" },
     { name = "web3" },
-    { name = "whitenoise" },
 ]
 
 [package.dev-dependencies]
@@ -2710,6 +2675,7 @@ dev = [
     { name = "coverage" },
     { name = "django-coverage-plugin" },
     { name = "django-debug-toolbar" },
+    { name = "django-extensions" },
     { name = "django-stubs", extra = ["compatible-mypy"] },
     { name = "djangorestframework-stubs", extra = ["compatible-mypy"] },
     { name = "djlint" },
@@ -2736,7 +2702,6 @@ production = [
 [package.metadata]
 requires-dist = [
     { name = "argon2-cffi", specifier = "==25.1.0" },
-    { name = "arrow", specifier = "==1.4.0" },
     { name = "base58", specifier = "==2.1.1" },
     { name = "bip-utils", specifier = "==2.9.3" },
     { name = "bitcoin-utils", specifier = "==0.8.2" },
@@ -2746,7 +2711,6 @@ requires-dist = [
     { name = "django-celery-results", specifier = "==2.6.0" },
     { name = "django-cors-headers", specifier = "==4.9.0" },
     { name = "django-environ", specifier = "==0.13.0" },
-    { name = "django-extensions", specifier = "==4.1" },
     { name = "django-model-utils", specifier = "==5.0.0" },
     { name = "django-otp", specifier = ">=1.7.0" },
     { name = "django-redis", specifier = "==6.0.0" },
@@ -2758,14 +2722,12 @@ requires-dist = [
     { name = "gunicorn", specifier = "==26.0.0" },
     { name = "hiredis", specifier = "==3.3.1" },
     { name = "httpx", specifier = "==0.28.1" },
-    { name = "ipaddress", specifier = "==1.0.23" },
     { name = "qrcode", specifier = ">=8.2" },
     { name = "redis", specifier = "==7.4.0" },
     { name = "shortuuid", specifier = "==1.0.13" },
     { name = "structlog", specifier = "==25.5.0" },
     { name = "ulid-py", specifier = "==1.1.0" },
     { name = "web3", specifier = "==7.14.1" },
-    { name = "whitenoise", specifier = "==6.12.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -2774,6 +2736,7 @@ dev = [
     { name = "coverage", specifier = "==7.13.5" },
     { name = "django-coverage-plugin", specifier = "==3.2.0" },
     { name = "django-debug-toolbar", specifier = "==6.2.0" },
+    { name = "django-extensions", specifier = "==4.1" },
     { name = "django-stubs", extras = ["compatible-mypy"], specifier = "==6.0.2" },
     { name = "djangorestframework-stubs", extras = ["compatible-mypy"], specifier = "==3.16.9" },
     { name = "djlint", specifier = "==1.36.4" },

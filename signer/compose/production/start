@@ -6,7 +6,12 @@ set -o nounset
 
 cd /app/signer
 
+eval "$(python /app/performance.py shell-env signer)"
+
 # signer 作为独立 Django 项目，容器启动前自动应用 signer 库迁移。
 python manage.py migrate --noinput
 
-exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --chdir=/app/signer --workers 2
+exec gunicorn config.wsgi:application \
+  --bind 0.0.0.0:8000 \
+  --chdir=/app/signer \
+  --workers "${SIGNER_GUNICORN_WORKERS}"

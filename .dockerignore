@@ -8,9 +8,12 @@
 .readthedocs.yml
 .travis.yml
 venv
+.venv
 .git
 .envs/
 logs/
+docs/
+staticfiles/
 
 # Python 生成文件
 __pycache__/
@@ -26,6 +29,8 @@ __pycache__/
 # 依赖缓存
 pip-wheel-metadata/
 wheels/
+node_modules/
+pay-fronted/node_modules/
 
 # 编辑器 / IDE
 .idea/

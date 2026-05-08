@@ -11,7 +11,7 @@ def payment_view(request, sys_no=None):
 
     所有 /pay/* 请求都返回同一个 index.html，由 React 根据 URL 中的
     sys_no 读取对应 Invoice 并渲染支付页。静态资源（JS/CSS）由
-    WhiteNoise 通过 /static/pay/ 直接托管，不经过此 view。
+    反向代理通过 /static/pay/ 直接托管，不经过此 view。
     """
     index_html = Path(settings.BASE_DIR) / "pay-fronted" / "dist" / "index.html"
     try:
