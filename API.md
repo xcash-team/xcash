@@ -1,13 +1,31 @@
 # Xcash API 对接文档
 
-## 官方地址
+## 网关地址
+
+Xcash 支持**自托管部署**和 **Xcash 官方服务**两种使用方式，请根据你的情况确定 API 网关地址：
+
+### 自托管部署
+
+如果你已按 [README](README.md) 指引完成自托管部署，API 网关地址即为你在 `.env` 中配置的 `SITE_DOMAIN`：
+
+| 用途 | URL | 说明 |
+|------|-----|------|
+| **API 网关** | `https://{你的域名}` | 所有 API 接口的 Base URL，例如创建账单为 `https://{你的域名}/v1/invoice` |
+| **管理后台** | `https://{你的域名}` | 项目管理后台，获取 AppID / HMAC Key、配置 Webhook、管理地址等 |
+
+部署细节请参考 [README → 快速开始](README.md#快速开始)。
+
+### Xcash 官方服务
+
+如果你使用 Xcash 官方托管版本（[xca.sh](https://xca.sh)），请使用以下地址：
 
 | 用途 | URL | 说明 |
 |------|-----|------|
 | **API 网关** | `https://gateway.xca.sh` | 所有 API 接口的 Base URL，例如创建账单为 `https://gateway.xca.sh/v1/invoice` |
 | **SaaS 控制台** | `https://dash.xca.sh` | 项目管理后台，获取 AppID / HMAC Key、配置 Webhook、管理地址等 |
 
-> `pay_url` 指向的是网关域名下的支付 SPA 页面（`https://gateway.xca.sh/pay/{sys_no}`），而非控制台。
+
+
 
 ## 链与币种代码表
 
