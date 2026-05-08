@@ -35,7 +35,7 @@ WORKDIR /frontend
 
 COPY pay-fronted/package.json pay-fronted/pnpm-lock.yaml ./
 
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN corepack enable && pnpm install --no-frozen-lockfile
 
 COPY pay-fronted/ ./
 
