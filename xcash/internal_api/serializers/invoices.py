@@ -67,7 +67,6 @@ class InternalInvoiceDetailSerializer(serializers.ModelSerializer):
             "started_at",
             "expires_at",
             "redirect_url",
-            "generated_by",
             "created_at",
             "updated_at",
         ]

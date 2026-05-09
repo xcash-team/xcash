@@ -10,7 +10,6 @@ from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from common.permissions import RejectAll
 from invoices.models import Invoice
-from invoices.models import InvoiceGeneration
 from invoices.service import InvoiceService
 from projects.models import Project
 
@@ -56,7 +55,6 @@ class InternalInvoiceViewSet(ModelViewSet):
             project=project,
             started_at=now,
             expires_at=now + timezone.timedelta(minutes=duration),
-            generated_by=InvoiceGeneration.API,
         )
         InvoiceService.initialize_invoice(invoice)
         return Response(

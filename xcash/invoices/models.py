@@ -33,12 +33,6 @@ class InvoiceStatus(models.TextChoices):
     EXPIRED = "expired", _("已超时")
 
 
-class InvoiceGeneration(models.TextChoices):
-    API = "api", "API"
-    DASH = "dash", _("后台")
-    SHOPIFY = "shopify", "Shopify"
-
-
 class InvoiceProtocol(models.TextChoices):
     NATIVE = "native", _("Xcash 原生")
     EPAY_V1 = "epay_v1", _("EPay V1")
@@ -141,12 +135,6 @@ class Invoice(models.Model):
         choices=InvoiceStatus,
         default=InvoiceStatus.WAITING,
         verbose_name=_("状态"),
-    )
-    generated_by = models.CharField(
-        choices=InvoiceGeneration,
-        default=InvoiceGeneration.API,
-        max_length=16,
-        verbose_name=_("创建方式"),
     )
     protocol = models.CharField(
         choices=InvoiceProtocol,

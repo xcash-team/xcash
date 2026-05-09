@@ -64,7 +64,6 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         "chain",
         "crypto",
         "status",
-        "generated_by",
         "protocol",
     )
     fieldsets = (
@@ -85,7 +84,6 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
                     "created_at",
                     "expires_at",
                     "status",
-                    "generated_by",
                     "protocol",
                 )
             },
@@ -137,10 +135,6 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         return (
             format_decimal_stripped(instance.pay_amount) if instance.pay_amount else "-"
         )
-
-    @display(description=_("创建方式"))  # noqa
-    def display_generated_by(self, instance: Invoice):
-        return instance.get_generated_by_display()
 
     @display(description=_("支付链接"))  # noqa
     def display_pay_url(self, instance: Invoice):
