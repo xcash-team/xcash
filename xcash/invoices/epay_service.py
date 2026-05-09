@@ -9,6 +9,10 @@ from django.utils import timezone
 
 from common.permission_check import check_saas_permission
 
+from .epay import EPAY_V1_SUCCESS_TEXT
+from .epay import EPAY_V1_TRADE_SUCCESS
+from .epay import build_epay_v1_sign
+from .epay import format_epay_money
 from .epay import verify_epay_v1_sign
 from .epay_serializers import EpaySubmitSerializer
 from .models import EpayMerchant
@@ -202,3 +206,38 @@ class EpaySubmitService:
             values = value.getlist()
             value = values[-1] if values else ""
         return str(value)
+
+    # ── EPay 支付成功通知 ──
+
+    @classmethod
+    def build_notify_payload(cls, invoice: Invoice) -> dict[str, str]:
+        epay_order = invoice.epay_order
+        payload: dict[str, str] = {
+            "pid": epay_order.pid,
+            "trade_no": epay_order.trade_no,
+            "out_trade_no": epay_order.out_trade_no,
+            "type": epay_order.type,
+            "name": epay_order.name,
+            "money": format_epay_money(epay_order.money),
+            "trade_status": EPAY_V1_TRADE_SUCCESS,
+            "sign_type": epay_order.sign_type,
+        }
+        if epay_order.param:
+            payload["param"] = epay_order.param
+        payload["sign"] = build_epay_v1_sign(payload, epay_order.merchant.signing_key)
+        return payload
+
+    @classmethod
+    def enqueue_paid_notify(cls, invoice: Invoice) -> "WebhookEvent":
+        from webhooks.models import WebhookEvent
+        from webhooks.service import WebhookService
+
+        epay_order = invoice.epay_order
+        payload = cls.build_notify_payload(invoice)
+        return WebhookService.create_event(
+            project=invoice.project,
+            payload=payload,
+            delivery_url=epay_order.notify_url,
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body=EPAY_V1_SUCCESS_TEXT,
+        )

@@ -22,7 +22,7 @@ from webhooks.service import WebhookService
 
 from .exceptions import InvoiceStatusError
 from .models import Invoice
-from .models import InvoiceGeneration
+from .models import InvoiceProtocol
 from .models import InvoicePaySlot
 from .models import InvoicePaySlotDiscardReason
 from .models import InvoicePaySlotStatus
@@ -222,7 +222,7 @@ class InvoiceService:
 
         if (
             invoice.project.pre_notify
-            and invoice.generated_by == InvoiceGeneration.API
+            and invoice.protocol == InvoiceProtocol.NATIVE
             and confirm_mode == ConfirmMode.FULL
         ):
             WebhookService.create_event(
@@ -255,8 +255,11 @@ class InvoiceService:
         )
         invoice.refresh_from_db()
 
-        # 仅 API 创建的账单需要推送 webhook，后台/Shopify 建单由各自通道负责通知。
-        if invoice.generated_by == InvoiceGeneration.API:
+        if invoice.protocol == InvoiceProtocol.EPAY_V1:
+            from .epay_service import EpaySubmitService
+
+            EpaySubmitService.enqueue_paid_notify(invoice)
+        elif invoice.protocol == InvoiceProtocol.NATIVE:
             WebhookService.create_event(
                 project=invoice.project,
                 payload=cls.build_webhook_payload(invoice),

@@ -681,3 +681,104 @@ class EpaySubmitRouteTests(TestCase):
         self.assertTrue(response.content.decode().startswith("fail"))
         mock_check.assert_not_called()
         mock_initialize.assert_not_called()
+
+
+class EpayNotifyTests(TestCase):
+    def setUp(self):
+        EpaySubmitServiceTests.setUp(self)
+
+    def _signed_params(self, **overrides):
+        return EpaySubmitServiceTests._signed_params(self, **overrides)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_build_notify_payload_uses_epay_fields_and_signature(
+        self, mock_check, mock_initialize
+    ):
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params(param="u=42"))
+
+        payload = EpaySubmitService.build_notify_payload(invoice)
+
+        self.assertEqual(payload["pid"], str(self.merchant.pid))
+        self.assertEqual(payload["trade_no"], invoice.sys_no)
+        self.assertEqual(payload["out_trade_no"], "EPAY-SUBMIT-1001")
+        self.assertEqual(payload["type"], "usdt")
+        self.assertEqual(payload["name"], "VIP Package")
+        self.assertEqual(payload["money"], "18.50")
+        self.assertEqual(payload["trade_status"], "TRADE_SUCCESS")
+        self.assertEqual(payload["param"], "u=42")
+        self.assertEqual(payload["sign_type"], "MD5")
+        self.assertTrue(verify_epay_v1_sign(payload, self.merchant.signing_key))
+
+    @patch("webhooks.service.WebhookService.enqueue_delivery")
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_enqueue_paid_notify_creates_get_query_event(
+        self, mock_check, mock_initialize, enqueue_mock
+    ):
+        from webhooks.models import WebhookEvent
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params())
+
+        event = EpaySubmitService.enqueue_paid_notify(invoice)
+
+        self.assertEqual(event.delivery_url, "https://merchant.example.com/notify")
+        self.assertEqual(event.delivery_method, WebhookEvent.DeliveryMethod.GET_QUERY)
+        self.assertEqual(event.expected_response_body, "success")
+        self.assertEqual(event.payload["trade_status"], "TRADE_SUCCESS")
+        enqueue_mock.assert_called_once_with(event)
+
+    @patch("invoices.service.send_internal_callback")
+    @patch("invoices.epay_service.EpaySubmitService.enqueue_paid_notify")
+    @patch("webhooks.service.WebhookService.create_event")
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_confirm_epay_invoice_uses_epay_notify_not_native_webhook(
+        self, mock_check, mock_initialize, native_webhook_mock, epay_notify_mock, _
+    ):
+        from invoices.models import InvoiceStatus
+        from invoices.service import InvoiceService
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params())
+        Invoice.objects.filter(pk=invoice.pk).update(
+            status=InvoiceStatus.CONFIRMING,
+            crypto=self.crypto,
+        )
+        invoice.refresh_from_db()
+
+        InvoiceService.confirm_invoice(invoice)
+
+        epay_notify_mock.assert_called_once()
+        native_webhook_mock.assert_not_called()
+
+    @patch("invoices.service.send_internal_callback")
+    @patch("invoices.epay_service.EpaySubmitService.enqueue_paid_notify")
+    @patch("invoices.service.WebhookService.create_event")
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_confirm_native_invoice_uses_native_webhook_not_epay(
+        self, mock_check, mock_initialize, native_webhook_mock, epay_notify_mock, _
+    ):
+        from invoices.models import InvoiceStatus
+        from invoices.service import InvoiceService
+
+        native_invoice = Invoice.objects.create(
+            project=self.project,
+            out_no="NATIVE-1001",
+            title="Native Order",
+            currency="CNY",
+            amount=Decimal("10.00"),
+            methods={},
+            protocol=InvoiceProtocol.NATIVE,
+            expires_at=timezone.now() + timedelta(minutes=10),
+            status=InvoiceStatus.CONFIRMING,
+            crypto=self.crypto,
+        )
+
+        InvoiceService.confirm_invoice(native_invoice)
+
+        native_webhook_mock.assert_called_once()
+        epay_notify_mock.assert_not_called()
