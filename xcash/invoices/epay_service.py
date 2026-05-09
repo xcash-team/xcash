@@ -151,7 +151,7 @@ class EpaySubmitService:
                     amount=params["money"],
                     methods=Invoice.available_methods(project),
                     redirect_url=params["return_url"],
-                    expires_at=timezone.now() + timedelta(minutes=10),
+                    expires_at=timezone.now() + timedelta(minutes=15),
                     protocol=InvoiceProtocol.EPAY_V1,
                 )
                 EpayOrder.objects.create(
