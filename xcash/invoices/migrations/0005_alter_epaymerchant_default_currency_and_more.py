@@ -3,6 +3,31 @@
 from django.db import migrations, models
 
 
+def _verify_secret_keys_filled(apps, schema_editor):
+    """升级前显式校验：所有存量 EpayMerchant 必须已填 secret_key。
+
+    此前 secret_key 允许空（blank=True, default=""），AlterField 仅修改 schema、
+    不会清理遗留行。配合下游 signing_key 移除空字符串 fallback 后，
+    若任何 EpayMerchant 的 secret_key 仍为空串，签名会以空 KEY 计算——
+    任何攻击者都能伪造合法签名。这里 fail-loud，强制运维显式补齐再升级。
+    """
+    EpayMerchant = apps.get_model("invoices", "EpayMerchant")
+    empty_qs = EpayMerchant.objects.filter(secret_key="")
+    empty_count = empty_qs.count()
+    if empty_count == 0:
+        return
+
+    # 取前 11 条样本：前 10 条用于打印，第 11 条仅用于判断是否需要省略号。
+    sample = list(empty_qs.values_list("pid", flat=True)[:11])
+    preview = ", ".join(str(p) for p in sample[:10])
+    more = "..." if len(sample) > 10 else ""
+    raise RuntimeError(
+        f"存在 {empty_count} 条 EpayMerchant 记录的 secret_key 为空"
+        f"（pid: {preview}{more}）。"
+        "请在升级前到 admin 后台为这些商户填写独立的 EPay 协议签名密钥。"
+    )
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,6 +35,12 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # 必须放在 secret_key AlterField 之前：旧 schema 下查询带 default="" 的存量行，
+        # 一旦发现空值立即 abort，避免 schema 改完才发现遗留数据已无法分辨。
+        migrations.RunPython(
+            _verify_secret_keys_filled,
+            migrations.RunPython.noop,
+        ),
         migrations.AlterField(
             model_name="epaymerchant",
             name="default_currency",

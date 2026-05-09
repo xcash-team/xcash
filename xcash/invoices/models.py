@@ -526,6 +526,15 @@ class EpayMerchant(models.Model):
 
     @property
     def signing_key(self) -> str:
+        """EPay 协议签名密钥（独立于项目 HMAC 密钥）。"""
+        # 纵深防御：即使 admin 表单和 migration 0005 都拦截了空 secret_key，
+        # fixtures、bulk_create、test fixture 等仍可能绕过校验直接写入空串。
+        # 此处 fail-fast，避免下游用空 KEY 算签名导致任何人都能伪造合法 sign。
+        if not self.secret_key:
+            raise ValueError(
+                f"EpayMerchant(pid={self.pid}) secret_key 为空，"
+                "无法用于 EPay 协议签名。"
+            )
         return self.secret_key
 
 

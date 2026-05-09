@@ -159,6 +159,18 @@ class EpayModelTests(TestCase):
         self.assertEqual(merchant.signing_key, merchant.secret_key)
         self.assertNotEqual(merchant.signing_key, self.project.hmac_key)
 
+    def test_epay_merchant_signing_key_raises_when_secret_key_empty(self):
+        # 防御性 fail-fast：即便绕过 admin 表单/migration 写入空 secret_key，
+        # 也必须在签名前抛错，杜绝以空 KEY 计算合法签名的攻击面。
+        merchant = EpayMerchant(
+            project=self.project,
+            pid=9999,
+            secret_key="",
+        )
+
+        with self.assertRaises(ValueError):
+            _ = merchant.signing_key
+
     def test_epay_order_rejects_invoice_from_different_project(self):
         other_project = Project.objects.create(
             name="Other EPay Project",
