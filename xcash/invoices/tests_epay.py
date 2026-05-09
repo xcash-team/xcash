@@ -8,11 +8,75 @@ from django.test import TestCase
 from django.utils import timezone
 
 from chains.models import Wallet
+from invoices.epay import build_epay_v1_sign
+from invoices.epay import epay_v1_signing_string
+from invoices.epay import format_epay_money
+from invoices.epay import verify_epay_v1_sign
 from invoices.models import EpayMerchant
 from invoices.models import EpayOrder
 from invoices.models import Invoice
 from invoices.models import InvoiceProtocol
 from projects.models import Project
+
+
+class EpaySignatureTests(TestCase):
+    def test_epay_v1_signing_string_sorts_keys_and_skips_unsigned_values(self):
+        params = {
+            "pid": 1001,
+            "type": "usdt",
+            "out_trade_no": "ORDER1001",
+            "notify_url": "https://merchant.example.com/notify",
+            "name": "VIP",
+            "money": Decimal("18.50"),
+            "return_url": "",
+            "param": None,
+            "sign": "ignored",
+            "sign_type": "MD5",
+        }
+        expected_signing_string = (
+            "money=18.50&name=VIP"
+            "&notify_url=https://merchant.example.com/notify"
+            "&out_trade_no=ORDER1001&pid=1001&type=usdt"
+        )
+
+        self.assertEqual(epay_v1_signing_string(params), expected_signing_string)
+
+    def test_build_epay_v1_sign_appends_key_and_returns_lowercase_md5(self):
+        params = {
+            "pid": "1001",
+            "type": "usdt",
+            "out_trade_no": "ORDER1001",
+            "notify_url": "https://merchant.example.com/notify",
+            "name": "VIP",
+            "money": "18.50",
+        }
+
+        self.assertEqual(
+            build_epay_v1_sign(params, "epay-secret"),
+            "ebd914c3205469db3e7c755ea1e520d8",
+        )
+
+    def test_verify_epay_v1_sign_compares_supplied_sign(self):
+        params = {
+            "pid": "1001",
+            "type": "usdt",
+            "out_trade_no": "ORDER1001",
+            "notify_url": "https://merchant.example.com/notify",
+            "name": "VIP",
+            "money": "18.50",
+            "sign": "ebd914c3205469db3e7c755ea1e520d8",
+            "sign_type": "MD5",
+        }
+
+        self.assertTrue(verify_epay_v1_sign(params, "epay-secret"))
+
+        params["sign"] = "bad-sign"
+        self.assertFalse(verify_epay_v1_sign(params, "epay-secret"))
+
+    def test_format_epay_money_outputs_two_decimal_places(self):
+        self.assertEqual(format_epay_money(Decimal("18")), "18.00")
+        self.assertEqual(format_epay_money(Decimal("18.5")), "18.50")
+        self.assertEqual(format_epay_money(Decimal("18.999")), "19.00")
 
 
 class EpayModelTests(TestCase):
