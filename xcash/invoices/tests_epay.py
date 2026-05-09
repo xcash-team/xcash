@@ -608,3 +608,76 @@ class EpaySubmitServiceTests(TestCase):
 
         self.assertEqual(invoice, existing_invoice)
         mock_initialize.assert_not_called()
+
+
+class EpaySubmitRouteTests(TestCase):
+    def setUp(self):
+        EpaySubmitServiceTests.setUp(self)
+
+    def _signed_params(self, **overrides):
+        return EpaySubmitServiceTests._signed_params(self, **overrides)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_post_submit_php_redirects_to_hosted_checkout(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        mock_initialize.side_effect = lambda invoice: invoice
+
+        response = self.client.post("/submit.php", data=self._signed_params())
+
+        invoice = Invoice.objects.get(out_no="EPAY-SUBMIT-1001")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            f"http://testserver/pay/{invoice.sys_no}",
+        )
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="invoice",
+        )
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_get_epay_submit_php_redirects_to_hosted_checkout(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        mock_initialize.side_effect = lambda invoice: invoice
+
+        response = self.client.get(
+            "/epay/submit.php",
+            data=self._signed_params(out_trade_no="EPAY-SUBMIT-GET-1001"),
+        )
+
+        invoice = Invoice.objects.get(out_no="EPAY-SUBMIT-GET-1001")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response["Location"],
+            f"http://testserver/pay/{invoice.sys_no}",
+        )
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="invoice",
+        )
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_bad_sign_returns_fail_plain_text(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        params = self._signed_params()
+        params["sign"] = "bad-sign"
+
+        response = self.client.post("/submit.php", data=params)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response["Content-Type"], "text/plain; charset=utf-8")
+        self.assertTrue(response.content.decode().startswith("fail"))
+        mock_check.assert_not_called()
+        mock_initialize.assert_not_called()

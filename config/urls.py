@@ -6,10 +6,13 @@ from django.urls import path
 from django.views.generic import RedirectView
 
 from core.dashboard import operational_inspection_view, signer_overview_view
+from invoices.epay_views import EpaySubmitView
 from invoices.views import payment_view
 
 urlpatterns = [
     path("v1/", include("config.api_v1")),
+    path("submit.php", EpaySubmitView.as_view(), name="epay-submit"),
+    path("epay/submit.php", EpaySubmitView.as_view(), name="epay-submit-alias"),
     # 支付前端 SPA：/pay/ 和 /pay/<sys_no> 均返回 index.html
     path("pay/", payment_view, name="payment"),
     path("pay/<str:sys_no>", payment_view, name="payment-invoice"),
