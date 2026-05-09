@@ -1,6 +1,5 @@
 from django.http import HttpResponse
-from django.http import HttpResponseRedirect
-from django.urls import reverse
+from django.shortcuts import redirect
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
@@ -14,12 +13,12 @@ class EpaySubmitView(View):
     http_method_names = ["get", "post"]
 
     def get(self, request):
-        return self._submit(request, request.GET)
+        return self._submit(request.GET)
 
     def post(self, request):
-        return self._submit(request, request.POST)
+        return self._submit(request.POST)
 
-    def _submit(self, request, params):
+    def _submit(self, params):
         try:
             invoice = EpaySubmitService.submit(params)
         except EpaySubmitError as exc:
@@ -29,5 +28,4 @@ class EpaySubmitView(View):
                 content_type="text/plain; charset=utf-8",
             )
 
-        pay_path = reverse("payment-invoice", kwargs={"sys_no": invoice.sys_no})
-        return HttpResponseRedirect(request.build_absolute_uri(pay_path))
+        return redirect("payment-invoice", sys_no=invoice.sys_no)

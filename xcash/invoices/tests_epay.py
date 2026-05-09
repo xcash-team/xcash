@@ -630,10 +630,7 @@ class EpaySubmitRouteTests(TestCase):
 
         invoice = Invoice.objects.get(out_no="EPAY-SUBMIT-1001")
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            f"http://testserver/pay/{invoice.sys_no}",
-        )
+        self.assertEqual(response["Location"], f"/pay/{invoice.sys_no}")
         mock_check.assert_called_once_with(
             appid=self.project.appid,
             action="invoice",
@@ -655,10 +652,7 @@ class EpaySubmitRouteTests(TestCase):
 
         invoice = Invoice.objects.get(out_no="EPAY-SUBMIT-GET-1001")
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            f"http://testserver/pay/{invoice.sys_no}",
-        )
+        self.assertEqual(response["Location"], f"/pay/{invoice.sys_no}")
         mock_check.assert_called_once_with(
             appid=self.project.appid,
             action="invoice",
