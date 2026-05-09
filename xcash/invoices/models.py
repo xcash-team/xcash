@@ -2,6 +2,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import structlog
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import models
 from django.db import transaction as db_transaction
@@ -36,6 +37,11 @@ class InvoiceGeneration(models.TextChoices):
     API = "api", "API"
     DASH = "dash", _("后台")
     SHOPIFY = "shopify", "Shopify"
+
+
+class InvoiceProtocol(models.TextChoices):
+    NATIVE = "native", _("Xcash 原生")
+    EPAY_V1 = "epay_v1", _("EPay V1")
 
 
 class InvoicePaySlotStatus(models.TextChoices):
@@ -141,6 +147,13 @@ class Invoice(models.Model):
         default=InvoiceGeneration.API,
         max_length=16,
         verbose_name=_("创建方式"),
+    )
+    protocol = models.CharField(
+        choices=InvoiceProtocol,
+        default=InvoiceProtocol.NATIVE,
+        max_length=16,
+        db_index=True,
+        verbose_name=_("接入协议"),
     )
 
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
@@ -485,4 +498,104 @@ class InvoicePaySlot(models.Model):
             if self.project_id is not None and self.project_id != invoice_project_id:
                 raise ValueError("InvoicePaySlot.project must match invoice.project")
             self.project_id = invoice_project_id
+        return super().save(*args, **kwargs)
+
+
+class EpayMerchant(models.Model):
+    project = models.OneToOneField(
+        "projects.Project",
+        on_delete=models.CASCADE,
+        related_name="epay_merchant",
+        verbose_name=_("项目"),
+    )
+    pid = models.PositiveBigIntegerField(_("EPay 商户 ID"), unique=True)
+    secret_key = models.CharField(
+        _("EPay 密钥"),
+        max_length=128,
+        blank=True,
+        default="",
+        help_text=_("留空时使用项目 HMAC 密钥。"),
+    )
+    default_currency = models.CharField(
+        _("默认计价货币"),
+        max_length=8,
+        default="CNY",
+    )
+    active = models.BooleanField(_("启用"), default=True)
+    created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("EPay 商户")
+        verbose_name_plural = verbose_name
+
+    def __str__(self) -> str:
+        return f"{self.pid} / {self.project_id}"
+
+    @property
+    def signing_key(self) -> str:
+        return self.secret_key or self.project.hmac_key
+
+
+class EpayOrder(models.Model):
+    invoice = models.OneToOneField(
+        "invoices.Invoice",
+        on_delete=models.CASCADE,
+        related_name="epay_order",
+        verbose_name=_("账单"),
+    )
+    merchant = models.ForeignKey(
+        "invoices.EpayMerchant",
+        on_delete=models.PROTECT,
+        related_name="orders",
+        verbose_name=_("EPay 商户"),
+    )
+    pid = models.CharField(_("EPay 商户 ID"), max_length=32)
+    trade_no = models.CharField(_("EPay 平台订单号"), max_length=64, db_index=True)
+    out_trade_no = models.CharField(_("商户订单号"), max_length=64, db_index=True)
+    type = models.CharField(_("支付类型"), max_length=32, blank=True, default="")
+    name = models.CharField(_("商品名称"), max_length=128)
+    money = models.DecimalField(_("订单金额"), max_digits=32, decimal_places=2)
+    notify_url = models.URLField(_("异步通知地址"))
+    return_url = models.URLField(_("同步跳转地址"), blank=True, default="")
+    param = models.CharField(_("业务扩展参数"), max_length=512, blank=True, default="")
+    sign_type = models.CharField(_("签名类型"), max_length=16, default="MD5")
+    raw_request = models.JSONField(_("原始请求"), default=dict)
+    notified_at = models.DateTimeField(_("通知成功时间"), blank=True, null=True)
+    created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("EPay 订单")
+        verbose_name_plural = verbose_name
+        constraints = [
+            models.UniqueConstraint(
+                fields=("merchant", "out_trade_no"),
+                name="uniq_epay_order_merchant_out_trade_no",
+            ),
+            models.UniqueConstraint(
+                fields=("merchant", "trade_no"),
+                name="uniq_epay_order_merchant_trade_no",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.trade_no
+
+    def clean(self):
+        super().clean()
+        errors = {}
+
+        if self.invoice_id and self.merchant_id:
+            if self.invoice.project_id != self.merchant.project_id:
+                errors["invoice"] = _("账单项目必须与 EPay 商户项目一致。")
+
+        if self.merchant_id and self.pid != str(self.merchant.pid):
+            errors["pid"] = _("EPay 商户 ID 必须与所属商户一致。")
+
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
         return super().save(*args, **kwargs)

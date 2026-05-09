@@ -5,9 +5,12 @@ from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from unfold.decorators import display
 
+from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
 from common.utils.math import format_decimal_stripped
 
+from .models import EpayMerchant
+from .models import EpayOrder
 from .models import Invoice
 from .models import InvoicePaySlot
 
@@ -62,6 +65,7 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         "crypto",
         "status",
         "generated_by",
+        "protocol",
     )
     fieldsets = (
         (
@@ -82,6 +86,7 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
                     "expires_at",
                     "status",
                     "generated_by",
+                    "protocol",
                 )
             },
         ),
@@ -148,3 +153,26 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
     @display(description=_("链"))  # noqa
     def display_chain(self, obj: Invoice):
         return obj.chain.name if obj.chain else "-"
+
+
+@admin.register(EpayMerchant)
+class EpayMerchantAdmin(ModelAdmin):
+    list_display = ("pid", "project", "active", "default_currency", "created_at")
+    search_fields = ("=pid", "project__name", "project__appid")
+    list_filter = ("active", "default_currency")
+
+
+@admin.register(EpayOrder)
+class EpayOrderAdmin(ReadOnlyModelAdmin):
+    list_display = (
+        "trade_no",
+        "out_trade_no",
+        "merchant",
+        "money",
+        "type",
+        "created_at",
+        "notified_at",
+    )
+    search_fields = ("trade_no", "out_trade_no", "invoice__sys_no", "pid")
+    list_filter = ("type", "sign_type")
+    raw_id_fields = ("invoice", "merchant")
