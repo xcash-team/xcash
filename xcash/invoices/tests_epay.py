@@ -2,10 +2,12 @@ from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
 from django.test import TestCase
+from django.test import override_settings
 from django.utils import timezone
 from web3 import Web3
 
@@ -800,6 +802,49 @@ class EpaySubmitRouteTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
+
+    @override_settings(EPAY_SUBMIT_RATE_LIMIT="2/m")
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_php_rate_limited_after_threshold(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        # 防止有效 pid + 错误 sign 的查询型 DoS：同一 IP 每分钟超阈值后必须返回 429。
+        # 测试用 override_settings 把阈值从 60/m 调到 2/m，避免真发 60 个请求。
+        # 用独立 X-Forwarded-For，让计数 key 与其他测试隔离，避免 Redis 中遗留计数串扰。
+        mock_initialize.side_effect = lambda invoice: invoice
+        attacker_ip = "203.0.113.77"
+        # 库会优先读 X-Forwarded-For 作为 IP 维度 key，本测试单独清一下
+        # Django cache（即使 ratelimit 走的是独立 Redis backend，也保险）。
+        cache.clear()
+
+        # 前两个请求：合法签名，应当被放行。
+        first = self.client.post(
+            "/submit.php",
+            data=self._signed_params(out_trade_no="EPAY-RATELIMIT-1"),
+            HTTP_X_FORWARDED_FOR=attacker_ip,
+        )
+        self.assertEqual(first.status_code, 302)
+
+        second = self.client.post(
+            "/submit.php",
+            data=self._signed_params(out_trade_no="EPAY-RATELIMIT-2"),
+            HTTP_X_FORWARDED_FOR=attacker_ip,
+        )
+        self.assertEqual(second.status_code, 302)
+
+        # 第三个请求：超过阈值，必须 429，且未触发到下游建单逻辑。
+        before_initialize_calls = mock_initialize.call_count
+        third = self.client.post(
+            "/submit.php",
+            data=self._signed_params(out_trade_no="EPAY-RATELIMIT-3"),
+            HTTP_X_FORWARDED_FOR=attacker_ip,
+        )
+        self.assertEqual(third.status_code, 429)
+        # 限流必须在进入业务逻辑之前生效，不能空打一次 InvoiceService。
+        self.assertEqual(mock_initialize.call_count, before_initialize_calls)
 
 
 class EpayNotifyTests(TestCase):

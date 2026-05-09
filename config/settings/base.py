@@ -76,6 +76,11 @@ RATELIMIT_REDIS = {
     "port": REDIS_PORT,
     "db": REDIS_DB,
 }
+# EPay V1 /submit.php 入口的 IP 维度限流。
+# 该入口未经鉴权即触发 EpayMerchant.objects.get + serializer + 签名计算，
+# 攻击者可用有效 pid + 错误 sign 大量探测形成 DB 查询型 DoS。
+# 单独抽出来作为 setting，便于测试通过 override_settings 调阈值。
+EPAY_SUBMIT_RATE_LIMIT = "60/m"
 
 # GENERAL
 # ------------------------------------------------------------------------------

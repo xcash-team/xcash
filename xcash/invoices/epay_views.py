@@ -1,9 +1,11 @@
 import structlog
+from django.conf import settings
 from django.http import HttpResponse
 from django.shortcuts import redirect
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
+from django_smart_ratelimit import rate_limit
 
 from .epay_service import EpaySubmitError
 from .epay_service import EpaySubmitService
@@ -11,7 +13,19 @@ from .epay_service import EpaySubmitService
 logger = structlog.get_logger()
 
 
+def _epay_submit_rate(_group, _request):
+    # 把 rate 包成 callable，让测试可以通过 override_settings(EPAY_SUBMIT_RATE_LIMIT=...) 调阈值。
+    return getattr(settings, "EPAY_SUBMIT_RATE_LIMIT", "60/m")
+
+
+# /submit.php 是公开匿名入口，攻击者用有效 pid + 错误 sign 反复打就会持续触发
+# EpayMerchant.objects.get + serializer 校验 + 签名计算，对 DB 形成查询型 DoS。
+# 这里按 IP 维度做 60/min 软限流，超限直接 429（block=True），不阻断正常商户。
 @method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(
+    rate_limit(key="ip", rate=_epay_submit_rate, block=True),
+    name="dispatch",
+)
 class EpaySubmitView(View):
     http_method_names = ["get", "post"]
 
