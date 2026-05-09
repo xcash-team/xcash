@@ -1,22 +1,34 @@
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import transaction
 from django.test import TestCase
 from django.utils import timezone
+from web3 import Web3
 
+from chains.models import Chain
+from chains.models import ChainType
 from chains.models import Wallet
+from currencies.models import ChainToken
+from currencies.models import Crypto
+from currencies.models import Fiat
 from invoices.epay import build_epay_v1_sign
 from invoices.epay import epay_v1_signing_string
 from invoices.epay import format_epay_money
 from invoices.epay import verify_epay_v1_sign
+from invoices.epay_serializers import EpaySubmitSerializer
+from invoices.epay_service import EpaySubmitError
+from invoices.epay_service import EpaySubmitService
 from invoices.models import EpayMerchant
 from invoices.models import EpayOrder
 from invoices.models import Invoice
 from invoices.models import InvoiceProtocol
 from projects.models import Project
+from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 
 
 class EpaySignatureTests(TestCase):
@@ -317,3 +329,282 @@ class EpayModelTests(TestCase):
                 notify_url="https://merchant.example.com/notify",
                 raw_request={"pid": "1006", "out_trade_no": "ORDER1006-ALT"},
             )
+
+
+class EpaySubmitServiceTests(TestCase):
+    def setUp(self):
+        self.project = Project.objects.create(
+            name="EPay Submit Project",
+            wallet=Wallet.objects.create(),
+        )
+        self.merchant = EpayMerchant.objects.create(
+            project=self.project,
+            pid=2001,
+            secret_key="epay-submit-secret",
+            default_currency="CNY",
+        )
+        self.crypto = Crypto.objects.create(
+            name="EPay Submit USDT",
+            symbol="EPAY-USDT",
+            prices={"USD": "1"},
+            coingecko_id="epay-submit-usdt",
+        )
+        self.native = Crypto.objects.create(
+            name="EPay Submit ETH",
+            symbol="EPAY-ETH",
+            coingecko_id="epay-submit-eth",
+        )
+        self.chain = Chain.objects.create(
+            name="EPay Submit Chain",
+            code="epay-submit-chain",
+            type=ChainType.EVM,
+            native_coin=self.native,
+            chain_id=92001,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        ChainToken.objects.create(
+            crypto=self.crypto,
+            chain=self.chain,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000B1"
+            ),
+        )
+        Fiat.objects.get_or_create(code="CNY")
+        RecipientAddress.objects.create(
+            name="EPay Submit Recipient",
+            project=self.project,
+            chain_type=ChainType.EVM,
+            address=Web3.to_checksum_address(
+                "0x00000000000000000000000000000000000000C1"
+            ),
+            usage=RecipientAddressUsage.INVOICE,
+        )
+
+    def _signed_params(self, **overrides):
+        params = {
+            "pid": str(self.merchant.pid),
+            "type": "usdt",
+            "out_trade_no": "EPAY-SUBMIT-1001",
+            "notify_url": "https://merchant.example.com/notify",
+            "return_url": "https://merchant.example.com/return",
+            "name": "VIP Package",
+            "money": "18.50",
+            "param": "user=42",
+            "sign_type": "MD5",
+        }
+        params.update(overrides)
+        params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
+        return params
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_creates_invoice_and_epay_order(self, mock_check, mock_initialize):
+        mock_initialize.side_effect = lambda invoice: invoice
+
+        invoice = EpaySubmitService.submit(self._signed_params())
+
+        invoice.refresh_from_db()
+        epay_order = invoice.epay_order
+        self.assertEqual(invoice.project, self.project)
+        self.assertEqual(invoice.out_no, "EPAY-SUBMIT-1001")
+        self.assertEqual(invoice.title, "VIP Package")
+        self.assertEqual(invoice.currency, "CNY")
+        self.assertEqual(invoice.amount, Decimal("18.50"))
+        self.assertEqual(invoice.protocol, InvoiceProtocol.EPAY_V1)
+        self.assertEqual(invoice.redirect_url, "https://merchant.example.com/return")
+        self.assertEqual(invoice.methods, Invoice.available_methods(self.project))
+        self.assertEqual(invoice.methods[self.crypto.symbol], [self.chain.code])
+        self.assertEqual(epay_order.merchant, self.merchant)
+        self.assertEqual(epay_order.trade_no, invoice.sys_no)
+        self.assertEqual(epay_order.out_trade_no, invoice.out_no)
+        self.assertEqual(epay_order.notify_url, "https://merchant.example.com/notify")
+        self.assertEqual(epay_order.raw_request["out_trade_no"], "EPAY-SUBMIT-1001")
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="invoice",
+        )
+        mock_initialize.assert_called_once_with(invoice)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_rejects_bad_sign(self, mock_check, mock_initialize):
+        params = self._signed_params()
+        params["sign"] = "bad-sign"
+
+        with self.assertRaises(EpaySubmitError):
+            EpaySubmitService.submit(params)
+
+        self.assertFalse(Invoice.objects.filter(out_no="EPAY-SUBMIT-1001").exists())
+        mock_check.assert_not_called()
+        mock_initialize.assert_not_called()
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_verifies_sign_with_raw_parameter_shape(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        mock_initialize.side_effect = lambda invoice: invoice
+        raw_pid_params = self._signed_params(
+            pid=f"0{self.merchant.pid}",
+            out_trade_no="EPAY-RAW-PID-1001",
+        )
+
+        invoice = EpaySubmitService.submit(raw_pid_params)
+
+        self.assertEqual(invoice.out_no, "EPAY-RAW-PID-1001")
+        self.assertEqual(invoice.epay_order.pid, str(self.merchant.pid))
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="invoice",
+        )
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_rejects_sign_built_from_normalized_parameter_shape(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        params = self._signed_params(
+            pid=f"0{self.merchant.pid}",
+            out_trade_no="EPAY-RAW-PID-1002",
+        )
+        normalized_sign_params = {**params, "pid": str(self.merchant.pid)}
+        params["sign"] = build_epay_v1_sign(
+            normalized_sign_params,
+            self.merchant.signing_key,
+        )
+
+        with self.assertRaises(EpaySubmitError):
+            EpaySubmitService.submit(params)
+
+        self.assertFalse(Invoice.objects.filter(out_no="EPAY-RAW-PID-1002").exists())
+        mock_check.assert_not_called()
+        mock_initialize.assert_not_called()
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_reuses_existing_order_when_metadata_matches(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        mock_initialize.side_effect = lambda invoice: invoice
+        params = self._signed_params()
+        first_invoice = EpaySubmitService.submit(params)
+        second_invoice = EpaySubmitService.submit(params)
+
+        self.assertEqual(second_invoice.pk, first_invoice.pk)
+        self.assertEqual(Invoice.objects.count(), 1)
+        self.assertEqual(EpayOrder.objects.count(), 1)
+        self.assertEqual(mock_check.call_count, 2)
+        mock_initialize.assert_called_once_with(first_invoice)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_rejects_existing_order_when_money_differs(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        EpaySubmitService.submit(self._signed_params())
+        changed_params = self._signed_params(money="19.50")
+
+        with self.assertRaises(EpaySubmitError):
+            EpaySubmitService.submit(changed_params)
+
+        self.assertEqual(Invoice.objects.count(), 1)
+        self.assertEqual(EpayOrder.objects.count(), 1)
+        self.assertEqual(mock_check.call_count, 2)
+        mock_initialize.assert_called_once()
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_rejects_money_without_two_decimal_string(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        for money in ("18", "18.5"):
+            with self.subTest(money=money), self.assertRaises(EpaySubmitError):
+                EpaySubmitService.submit(
+                    self._signed_params(
+                        out_trade_no=f"EPAY-SUBMIT-{money}",
+                        money=money,
+                    )
+                )
+
+        self.assertFalse(Invoice.objects.exists())
+        mock_check.assert_not_called()
+        mock_initialize.assert_not_called()
+
+    def test_submit_serializer_requires_money_two_decimal_string(self):
+        valid_params = self._signed_params(money="18.50")
+        serializer = EpaySubmitSerializer(data=valid_params)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        for money in ("18", "18.5", Decimal("18.50")):
+            params = self._signed_params(money=money)
+            with self.subTest(money=money):
+                serializer = EpaySubmitSerializer(data=params)
+                self.assertFalse(serializer.is_valid())
+                self.assertIn("money", serializer.errors)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    def test_create_invoice_and_order_reuses_existing_order_after_integrity_error(
+        self,
+        mock_initialize,
+    ):
+        params = {
+            "pid": self.merchant.pid,
+            "type": "usdt",
+            "out_trade_no": "EPAY-CONCURRENT-1001",
+            "notify_url": "https://merchant.example.com/notify",
+            "return_url": "https://merchant.example.com/return",
+            "name": "VIP Package",
+            "money": Decimal("18.50"),
+            "param": "user=42",
+            "sign_type": "MD5",
+        }
+        existing_invoice = Invoice.objects.create(
+            project=self.project,
+            out_no=params["out_trade_no"],
+            title=params["name"],
+            currency=self.merchant.default_currency,
+            amount=params["money"],
+            methods=Invoice.available_methods(self.project),
+            redirect_url=params["return_url"],
+            expires_at=timezone.now() + timedelta(minutes=10),
+            protocol=InvoiceProtocol.EPAY_V1,
+        )
+        EpayOrder.objects.create(
+            invoice=existing_invoice,
+            merchant=self.merchant,
+            pid=str(self.merchant.pid),
+            trade_no=existing_invoice.sys_no,
+            out_trade_no=params["out_trade_no"],
+            type=params["type"],
+            name=params["name"],
+            money=params["money"],
+            notify_url=params["notify_url"],
+            return_url=params["return_url"],
+            param=params["param"],
+            sign_type=params["sign_type"],
+            raw_request={"out_trade_no": params["out_trade_no"]},
+        )
+
+        with patch(
+            "invoices.epay_service.Invoice.objects.create",
+            side_effect=IntegrityError("duplicate out_trade_no"),
+        ):
+            invoice = EpaySubmitService._create_invoice_and_order(
+                merchant=self.merchant,
+                params=params,
+                raw_request={"out_trade_no": params["out_trade_no"]},
+            )
+
+        self.assertEqual(invoice, existing_invoice)
+        mock_initialize.assert_not_called()
