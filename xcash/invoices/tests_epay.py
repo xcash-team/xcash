@@ -722,9 +722,64 @@ class EpaySubmitRouteTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response["Content-Type"], "text/plain; charset=utf-8")
-        self.assertTrue(response.content.decode().startswith("fail"))
+        # 严格相等：响应体只能是 "fail"，不允许带冒号或任何错误细节，
+        # 否则商户/攻击者可据此区分错误类型，造成 pid 枚举或验证规则泄漏。
+        self.assertEqual(response.content, b"fail")
         mock_check.assert_not_called()
         mock_initialize.assert_not_called()
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_invalid_pid_and_invalid_sign_return_identical_response(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        # 无效 pid（商户不存在）与无效签名（商户存在但签错）必须对外不可区分，
+        # 否则攻击者可遍历 pid 区间识别有效商户 ID。
+        invalid_pid_params = self._signed_params(pid="999999")
+        invalid_sign_params = self._signed_params()
+        invalid_sign_params["sign"] = "bad-sign"
+
+        responses = [
+            self.client.post("/submit.php", data=invalid_pid_params),
+            self.client.post("/submit.php", data=invalid_sign_params),
+        ]
+
+        for response in responses:
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(
+                response["Content-Type"],
+                "text/plain; charset=utf-8",
+            )
+            self.assertEqual(response.content, b"fail")
+
+        mock_check.assert_not_called()
+        mock_initialize.assert_not_called()
+
+    @patch("invoices.epay_views.logger")
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_error_logged_with_pid_and_client_ip(
+        self,
+        mock_check,
+        mock_initialize,
+        mock_logger,
+    ):
+        # 详情必须落到 structlog（pid / client_ip / error），
+        # 避免对外吞错后服务端也无法定位问题。
+        params = self._signed_params()
+        params["sign"] = "bad-sign"
+
+        response = self.client.post("/submit.php", data=params)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(mock_logger.warning.called)
+        _, kwargs = mock_logger.warning.call_args
+        self.assertEqual(kwargs["pid"], str(self.merchant.pid))
+        self.assertTrue(kwargs["client_ip"])
+        self.assertIsInstance(kwargs["error"], str)
+        self.assertTrue(kwargs["error"])
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
