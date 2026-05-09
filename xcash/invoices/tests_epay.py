@@ -576,7 +576,12 @@ class EpaySubmitServiceTests(TestCase):
                 serializer = EpaySubmitSerializer(data=params)
                 self.assertTrue(serializer.is_valid(), serializer.errors)
 
-        # 拒绝：非字符串、空串、纯字母、缺整数部分、3+ 位小数、负数、< 0.01。
+        # 拒绝：
+        # - 非字符串、空串、纯字母、缺整数部分、3+ 位小数、负数；
+        # - 0 / 0.0 / 0.00（< 0.01 拦下）；
+        # - 整数部分超过 26 位（27/30 边界，必须在 fullmatch / len>26 阶段
+        #   就被 ValidationError 拦下，而不能让 Decimal.quantize 因
+        #   prec=28 抛 InvalidOperation 冒到 view 层）。
         invalid_cases = (
             Decimal("18.50"),
             "",
@@ -584,7 +589,12 @@ class EpaySubmitServiceTests(TestCase):
             ".50",
             "18.555",
             "-18",
+            "0",
+            "0.0",
             "0.00",
+            "9" * 27,
+            "9" * 30,
+            "9" * 30 + ".99",
         )
         for money in invalid_cases:
             params = self._signed_params(money=money)
