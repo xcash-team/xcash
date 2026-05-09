@@ -638,7 +638,7 @@ class EpaySubmitRouteTests(TestCase):
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
-    def test_get_epay_submit_php_redirects_to_hosted_checkout(
+    def test_get_submit_php_redirects_to_hosted_checkout(
         self,
         mock_check,
         mock_initialize,
@@ -646,7 +646,7 @@ class EpaySubmitRouteTests(TestCase):
         mock_initialize.side_effect = lambda invoice: invoice
 
         response = self.client.get(
-            "/epay/submit.php",
+            "/submit.php",
             data=self._signed_params(out_trade_no="EPAY-SUBMIT-GET-1001"),
         )
 
