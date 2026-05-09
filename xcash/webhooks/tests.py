@@ -1,3 +1,4 @@
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 from django.core.cache import cache
@@ -385,6 +386,59 @@ class WebhookDeliveryPolicyTests(TestCase):
 
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
+
+
+class WebhookResponseMatchingTests(TestCase):
+    """验证 _execute_http_delivery 的响应文本匹配宽容度。
+
+    商户的 PHP/Java 框架 echo "success" 时经常带 \\n / \\r\\n / BOM 或前后空白，
+    严格相等会把这些合法响应误判为失败；strip 后精确匹配兼顾兼容性与严格度。
+    """
+
+    def _run(self, resp_text: str, expected: str = "success") -> bool:
+        from webhooks.tasks import _execute_http_delivery
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.text = resp_text
+
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = False
+        mock_client.get.return_value = mock_response
+        mock_client.post.return_value = mock_response
+
+        with patch("webhooks.tasks.httpx.Client", return_value=mock_client):
+            ok, *_ = _execute_http_delivery(
+                request_url="https://example.com",
+                method="POST",
+                headers={},
+                body_str="{}",
+                expected_response_body=expected,
+            )
+        return ok
+
+    def test_exact_match_is_ok(self):
+        self.assertTrue(self._run("success"))
+
+    def test_trailing_newline_is_ok(self):
+        self.assertTrue(self._run("success\n"))
+
+    def test_crlf_is_ok(self):
+        self.assertTrue(self._run("success\r\n"))
+
+    def test_surrounding_whitespace_is_ok(self):
+        self.assertTrue(self._run("  success  "))
+
+    def test_case_mismatch_is_failure(self):
+        self.assertFalse(self._run("Success"))
+
+    def test_extra_content_is_failure(self):
+        self.assertFalse(self._run("success ok"))
+
+    def test_empty_is_failure(self):
+        self.assertFalse(self._run(""))
 
 
 class SignalTests(TestCase):

@@ -81,7 +81,10 @@ def _execute_http_delivery(
             status_code = resp.status_code
             resp_headers = dict(resp.headers)
             resp_text = resp.text
-            ok = status_code == 200 and resp_text == expected_response_body
+            # 商户的 PHP/Java 框架 echo "success" 时常带回车 / BOM / 前后空白，
+            # 严格相等会把这些合法响应判为失败、触发重试与误熔断；strip 后精确匹配
+            # 兼顾兼容性与匹配严格度（仍区分大小写、不允许中间夹杂内容）。
+            ok = status_code == 200 and resp_text.strip() == expected_response_body
     except httpx.RequestError as e:
         err_text = f"{e.__class__.__name__}: {e}"
     except Exception as e:
