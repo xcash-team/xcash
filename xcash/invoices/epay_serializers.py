@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import re
+from decimal import ROUND_HALF_UP
 from decimal import Decimal
 
 from rest_framework import serializers
 
-_EPAY_MONEY_PATTERN = re.compile(r"^\d+\.\d{2}$")
+# EPay V1 协议文档原文是 "Amount in yuan with max 2 decimals"，即「最多」两位小数。
+# 真实 typecho/wordpress/discuz 等商户插件经常发送 "18" 或 "18.5"，因此放宽校验：
+# 允许整数 / 一位小数 / 两位小数三种形式，最终统一 quantize 到两位归一化。
+_EPAY_MONEY_PATTERN = re.compile(r"^\d+(\.\d{1,2})?$")
 
 
 class EpaySubmitSerializer(serializers.Serializer):
@@ -27,9 +31,11 @@ class EpaySubmitSerializer(serializers.Serializer):
         return normalized
 
     def validate_money(self, value: object) -> Decimal:
+        # 仍仅接受字符串：签名校验依赖原始字符串形态，
+        # 若上游传 Decimal 或其他类型，签名一致性无从谈起。
         if not isinstance(value, str) or not _EPAY_MONEY_PATTERN.fullmatch(value):
             raise serializers.ValidationError(
-                "money must be submitted as a two-decimal string."
+                "money must be a non-negative number string with at most 2 decimals."
             )
 
         integer_part = value.split(".", 1)[0]
@@ -38,7 +44,8 @@ class EpaySubmitSerializer(serializers.Serializer):
                 "Ensure that there are no more than 32 digits in total."
             )
 
-        money = Decimal(value)
+        # quantize 统一为两位小数 Decimal，以便 EpayOrder.money 与 Invoice.amount 落库一致。
+        money = Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if money < Decimal("0.01"):
             raise serializers.ValidationError(
                 "Ensure this value is greater than or equal to 0.01."

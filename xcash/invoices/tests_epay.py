@@ -536,32 +536,59 @@ class EpaySubmitServiceTests(TestCase):
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
-    def test_submit_rejects_money_without_two_decimal_string(
+    def test_submit_accepts_money_in_loose_format(
         self,
         mock_check,
         mock_initialize,
     ):
-        for money in ("18", "18.5"):
-            with self.subTest(money=money), self.assertRaises(EpaySubmitError):
-                EpaySubmitService.submit(
+        # EPay V1 协议允许 "整数"、"一位小数"、"两位小数" 三种 money 写法。
+        # 各 subTest 必须使用不同的 out_trade_no，否则会命中已有订单的幂等分支，
+        # 绕过对实际格式接受的验证。
+        mock_initialize.side_effect = lambda invoice: invoice
+
+        cases = (
+            ("18", Decimal("18.00")),
+            ("18.5", Decimal("18.50")),
+            ("18.50", Decimal("18.50")),
+        )
+        for money, expected in cases:
+            out_trade_no = f"EPAY-SUBMIT-LOOSE-{money}"
+            with self.subTest(money=money):
+                invoice = EpaySubmitService.submit(
                     self._signed_params(
-                        out_trade_no=f"EPAY-SUBMIT-{money}",
+                        out_trade_no=out_trade_no,
                         money=money,
                     )
                 )
+                invoice.refresh_from_db()
+                self.assertEqual(invoice.amount, expected)
+                self.assertEqual(invoice.epay_order.money, expected)
 
-        self.assertFalse(Invoice.objects.exists())
-        mock_check.assert_not_called()
-        mock_initialize.assert_not_called()
+        self.assertEqual(Invoice.objects.count(), len(cases))
+        self.assertEqual(mock_check.call_count, len(cases))
+        self.assertEqual(mock_initialize.call_count, len(cases))
 
-    def test_submit_serializer_requires_money_two_decimal_string(self):
-        valid_params = self._signed_params(money="18.50")
-        serializer = EpaySubmitSerializer(data=valid_params)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
-
-        for money in ("18", "18.5", Decimal("18.50")):
+    def test_submit_serializer_accepts_loose_money_format(self):
+        # 接受：整数、一位小数、两位小数。
+        for money in ("18", "18.5", "18.50"):
             params = self._signed_params(money=money)
-            with self.subTest(money=money):
+            with self.subTest(valid=money):
+                serializer = EpaySubmitSerializer(data=params)
+                self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        # 拒绝：非字符串、空串、纯字母、缺整数部分、3+ 位小数、负数、< 0.01。
+        invalid_cases = (
+            Decimal("18.50"),
+            "",
+            "abc",
+            ".50",
+            "18.555",
+            "-18",
+            "0.00",
+        )
+        for money in invalid_cases:
+            params = self._signed_params(money=money)
+            with self.subTest(invalid=money):
                 serializer = EpaySubmitSerializer(data=params)
                 self.assertFalse(serializer.is_valid())
                 self.assertIn("money", serializer.errors)
