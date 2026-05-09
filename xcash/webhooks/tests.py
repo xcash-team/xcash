@@ -266,6 +266,90 @@ class WebhookDeliveryPolicyTests(TestCase):
         self.assertEqual(call_kwargs["method"], "GET")
         self.assertEqual(call_kwargs["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"})
         self.assertEqual(call_kwargs["expected_response_body"], "success")
+        # 默认未配置出口代理，请求 header 中不应出现代理转发字段
+        self.assertNotIn("CF-Worker-Destination", call_kwargs["headers"])
+        self.assertNotIn("CF-Worker-Key", call_kwargs["headers"])
+
+    @patch("webhooks.tasks._egress_proxy_key", "proxy-key-secret")
+    @patch("webhooks.tasks._egress_proxy_url", "https://proxy.example.com/forward")
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_get_query_uses_egress_proxy_when_configured(self, mock_http):
+        """配置了出口代理后，GET 类型 webhook 必须走代理转发，避免暴露真实 IP / SSRF。"""
+        # 任务在投递完成后会从 headers 字典中 pop 掉代理鉴权字段，避免落库；
+        # 为了断言"调用 _execute_http_delivery 时刻"的 header，必须在 side_effect 里做快照。
+        captured = {}
+
+        def _capture(**kwargs):
+            captured["request_url"] = kwargs["request_url"]
+            captured["method"] = kwargs["method"]
+            captured["params"] = kwargs["params"]
+            captured["headers"] = dict(kwargs["headers"])
+            return (True, 200, {}, "success", "", 30)
+
+        mock_http.side_effect = _capture
+        project = _make_project()
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"pid": "1001", "trade_status": "TRADE_SUCCESS"},
+            delivery_url="https://merchant.example.com/notify",
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body="success",
+        )
+
+        deliver_event(event.pk)
+
+        # 请求 URL 改为代理地址，原商户 URL 通过 header 传递给代理
+        self.assertEqual(captured["request_url"], "https://proxy.example.com/forward")
+        self.assertEqual(
+            captured["headers"]["CF-Worker-Destination"],
+            "https://merchant.example.com/notify",
+        )
+        self.assertEqual(captured["headers"]["CF-Worker-Key"], "proxy-key-secret")
+        # GET 方法和 query payload 不变，签名校验交给商户端的 EPay MD5
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"})
+
+    @patch("webhooks.tasks._egress_proxy_url", None)
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_get_query_direct_when_proxy_not_configured(self, mock_http):
+        """未配置出口代理时按原状直连商户 URL。"""
+        mock_http.return_value = (True, 200, {}, "success", "", 30)
+        project = _make_project()
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"pid": "1001"},
+            delivery_url="https://merchant.example.com/notify",
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body="success",
+        )
+
+        deliver_event(event.pk)
+
+        call_kwargs = mock_http.call_args.kwargs
+        self.assertEqual(call_kwargs["request_url"], "https://merchant.example.com/notify")
+        self.assertNotIn("CF-Worker-Destination", call_kwargs["headers"])
+        self.assertNotIn("CF-Worker-Key", call_kwargs["headers"])
+
+    @patch("webhooks.tasks._egress_proxy_key", "proxy-key-secret")
+    @patch("webhooks.tasks._egress_proxy_url", "https://proxy.example.com/forward")
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_get_query_attempt_log_strips_proxy_credentials(self, mock_http):
+        """代理鉴权 header 不能写入 DeliveryAttempt 日志，避免密钥泄漏。"""
+        mock_http.return_value = (True, 200, {}, "success", "", 30)
+        project = _make_project()
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"pid": "1001"},
+            delivery_url="https://merchant.example.com/notify",
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body="success",
+        )
+
+        deliver_event(event.pk)
+
+        attempt = DeliveryAttempt.objects.get(event=event)
+        self.assertIsNone(attempt.request_headers.get("CF-Worker-Key"))
+        self.assertIsNone(attempt.request_headers.get("CF-Worker-Destination"))
 
     @patch("webhooks.tasks._execute_http_delivery")
     def test_native_json_delivery_keeps_existing_ok_contract(self, mock_http):

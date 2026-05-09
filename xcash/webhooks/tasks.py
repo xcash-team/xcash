@@ -141,21 +141,26 @@ def deliver_event(event_pk):
     timestamp = str(int(timezone.now().timestamp()))
 
     if event.delivery_method == WebhookEvent.DeliveryMethod.GET_QUERY:
+        # GET 请求由商户端用自有签名（如 EPay MD5）校验 query string，不附带 HMAC 头
         headers = {}
         http_method = "GET"
         query_params = event.payload
-        request_url = target_url
+        # GET 实际不发送 body，attempt 记录留空避免误导
+        body_str_for_attempt = ""
     else:
         headers = _build_delivery_headers(project, event, body_str, timestamp)
         http_method = "POST"
         query_params = None
-        # 出口代理模式：将真实目标 URL 放入代理 header，请求发往代理地址；直连模式直接请求商户 URL
-        if _egress_proxy_url:
-            request_url = _egress_proxy_url
-            headers["CF-Worker-Destination"] = target_url
-            headers["CF-Worker-Key"] = _egress_proxy_key
-        else:
-            request_url = target_url
+        body_str_for_attempt = body_str
+
+    # 出口代理模式：所有 delivery_method 一律走代理。商户配置的 notify_url 由 xcash worker
+    # 直连会暴露真实 IP，且无法防御内网/元数据端点的 SSRF 攻击。代理地址未配置时退回直连。
+    if _egress_proxy_url:
+        request_url = _egress_proxy_url
+        headers["CF-Worker-Destination"] = target_url
+        headers["CF-Worker-Key"] = _egress_proxy_key
+    else:
+        request_url = target_url
 
     ok, status_code, resp_headers, resp_text, err_text, duration_ms = (
         _execute_http_delivery(
@@ -177,7 +182,7 @@ def deliver_event(event_pk):
             event=event,
             try_number=try_number,
             request_headers=headers,
-            request_body=body_str,
+            request_body=body_str_for_attempt,
             response_status=status_code,
             response_headers=resp_headers,
             response_body=resp_text[:1024],
