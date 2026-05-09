@@ -149,14 +149,15 @@ class EpayModelTests(TestCase):
         self.assertEqual(invoice.protocol, InvoiceProtocol.EPAY_V1)
         self.assertEqual(epay_order.notify_url, "https://merchant.example.com/notify")
 
-    def test_epay_merchant_signing_key_falls_back_to_project_hmac_key(self):
+    def test_epay_merchant_signing_key_returns_secret_key(self):
         merchant = EpayMerchant.objects.create(
             project=self.project,
             pid=1002,
-            secret_key="",
+            secret_key="epay-test-secret",
         )
 
-        self.assertEqual(merchant.signing_key, self.project.hmac_key)
+        self.assertEqual(merchant.signing_key, merchant.secret_key)
+        self.assertNotEqual(merchant.signing_key, self.project.hmac_key)
 
     def test_epay_order_rejects_invoice_from_different_project(self):
         other_project = Project.objects.create(

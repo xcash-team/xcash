@@ -489,6 +489,11 @@ class InvoicePaySlot(models.Model):
         return super().save(*args, **kwargs)
 
 
+class EpayDefaultCurrency(models.TextChoices):
+    CNY = "CNY", _("人民币")
+    USD = "USD", _("美元")
+
+
 class EpayMerchant(models.Model):
     project = models.OneToOneField(
         "projects.Project",
@@ -500,14 +505,13 @@ class EpayMerchant(models.Model):
     secret_key = models.CharField(
         _("EPay 密钥"),
         max_length=128,
-        blank=True,
-        default="",
-        help_text=_("留空时使用项目 HMAC 密钥。"),
+        help_text=_("EPay 协议签名密钥。建议使用强随机字符串，不要与项目 HMAC 密钥重用。"),
     )
     default_currency = models.CharField(
         _("默认计价货币"),
         max_length=8,
-        default="CNY",
+        choices=EpayDefaultCurrency.choices,
+        default=EpayDefaultCurrency.CNY,
     )
     active = models.BooleanField(_("启用"), default=True)
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
@@ -522,7 +526,7 @@ class EpayMerchant(models.Model):
 
     @property
     def signing_key(self) -> str:
-        return self.secret_key or self.project.hmac_key
+        return self.secret_key
 
 
 class EpayOrder(models.Model):
