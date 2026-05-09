@@ -549,7 +549,14 @@ class EpayOrder(models.Model):
     param = models.CharField(_("业务扩展参数"), max_length=512, blank=True, default="")
     sign_type = models.CharField(_("签名类型"), max_length=16, default="MD5")
     raw_request = models.JSONField(_("原始请求"), default=dict)
-    notified_at = models.DateTimeField(_("通知成功时间"), blank=True, null=True)
+    notify_event = models.OneToOneField(
+        "webhooks.WebhookEvent",
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+        verbose_name=_("通知事件"),
+    )
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
     updated_at = models.DateTimeField(_("更新时间"), auto_now=True)
 

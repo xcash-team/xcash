@@ -1,12 +1,15 @@
 from django.http import HttpResponse
 from django.http import HttpResponseRedirect
 from django.urls import reverse
+from django.utils.decorators import method_decorator
 from django.views import View
+from django.views.decorators.csrf import csrf_exempt
 
 from .epay_service import EpaySubmitError
 from .epay_service import EpaySubmitService
 
 
+@method_decorator(csrf_exempt, name="dispatch")
 class EpaySubmitView(View):
     http_method_names = ["get", "post"]
 

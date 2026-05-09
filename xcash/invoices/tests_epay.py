@@ -682,6 +682,26 @@ class EpaySubmitRouteTests(TestCase):
         mock_check.assert_not_called()
         mock_initialize.assert_not_called()
 
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_post_submit_php_passes_csrf_check(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        """外部商户 POST 不携带 CSRF token，必须正常建单而非 403。"""
+        from django.test import Client
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        csrf_client = Client(enforce_csrf_checks=True)
+
+        response = csrf_client.post(
+            "/submit.php",
+            data=self._signed_params(out_trade_no="EPAY-CSRF-1001"),
+        )
+
+        self.assertEqual(response.status_code, 302)
+
 
 class EpayNotifyTests(TestCase):
     def setUp(self):
@@ -729,6 +749,8 @@ class EpayNotifyTests(TestCase):
         self.assertEqual(event.expected_response_body, "success")
         self.assertEqual(event.payload["trade_status"], "TRADE_SUCCESS")
         enqueue_mock.assert_called_once_with(event)
+        invoice.epay_order.refresh_from_db()
+        self.assertEqual(invoice.epay_order.notify_event_id, event.pk)
 
     @patch("invoices.service.send_internal_callback")
     @patch("invoices.epay_service.EpaySubmitService.enqueue_paid_notify")

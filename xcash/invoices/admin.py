@@ -165,8 +165,14 @@ class EpayOrderAdmin(ReadOnlyModelAdmin):
         "money",
         "type",
         "created_at",
-        "notified_at",
+        "display_notified_at",
     )
     search_fields = ("trade_no", "out_trade_no", "invoice__sys_no", "pid")
     list_filter = ("type", "sign_type")
-    raw_id_fields = ("invoice", "merchant")
+    raw_id_fields = ("invoice", "merchant", "notify_event")
+
+    @admin.display(description=_("通知成功时间"))
+    def display_notified_at(self, obj):
+        if obj.notify_event_id:
+            return obj.notify_event.delivered_at
+        return None

@@ -234,10 +234,12 @@ class EpaySubmitService:
 
         epay_order = invoice.epay_order
         payload = cls.build_notify_payload(invoice)
-        return WebhookService.create_event(
+        event = WebhookService.create_event(
             project=invoice.project,
             payload=payload,
             delivery_url=epay_order.notify_url,
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body=EPAY_V1_SUCCESS_TEXT,
         )
+        EpayOrder.objects.filter(pk=epay_order.pk).update(notify_event=event)
+        return event
