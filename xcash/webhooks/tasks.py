@@ -52,10 +52,16 @@ def _build_delivery_headers(project, event, body_str: str, timestamp: str) -> di
 
 
 def _execute_http_delivery(
-    request_url: str, headers: dict, body_str: str
+    *,
+    request_url: str,
+    method: str = "POST",
+    headers: dict,
+    body_str: str = "",
+    params: dict | None = None,
+    expected_response_body: str = "ok",
 ) -> tuple[bool, int | None, dict | None, str, str, int]:
     """
-    向目标地址发送 Webhook POST 请求，返回
+    向目标地址发送 Webhook 请求，返回
     (ok, status_code, resp_headers, resp_text, err_text, duration_ms)。
     不抛异常，所有错误均通过返回值传递。
     """
@@ -68,16 +74,17 @@ def _execute_http_delivery(
     start = time.perf_counter()
     try:
         with httpx.Client(timeout=5) as client:
-            resp = client.post(request_url, headers=headers, content=body_str)
+            if method == "GET":
+                resp = client.get(request_url, headers=headers, params=params)
+            else:
+                resp = client.post(request_url, headers=headers, content=body_str)
             status_code = resp.status_code
             resp_headers = dict(resp.headers)
             resp_text = resp.text
-            ok = status_code == 200 and resp_text == "ok"
+            ok = status_code == 200 and resp_text == expected_response_body
     except httpx.RequestError as e:
-        # 仅包含 httpx 自身错误信息（如超时、网络错误）
         err_text = f"{e.__class__.__name__}: {e}"
     except Exception as e:
-        # 其他未知异常，避免泄漏堆栈或自定义类信息
         err_text = f"UnexpectedError: {type(e).__name__}"
     duration_ms = int((time.perf_counter() - start) * 1000)
 
@@ -115,9 +122,10 @@ def deliver_event(event_pk):
         return
 
     project = event.project
+    target_url = event.delivery_url or project.webhook
 
-    # 同时检查熔断开关和 webhook URL 是否已配置
-    if not project.webhook_open or not project.webhook:
+    # 同时检查熔断开关和投递地址是否已配置
+    if not project.webhook_open or not target_url:
         reason = (
             "Endpoint not open."
             if not project.webhook_open
@@ -132,18 +140,32 @@ def deliver_event(event_pk):
     body_str = json.dumps(event.payload)
     timestamp = str(int(timezone.now().timestamp()))
 
-    headers = _build_delivery_headers(project, event, body_str, timestamp)
-
-    # 出口代理模式：将真实目标 URL 放入代理 header，请求发往代理地址；直连模式直接请求商户 URL
-    if _egress_proxy_url:
-        request_url = _egress_proxy_url
-        headers["CF-Worker-Destination"] = project.webhook
-        headers["CF-Worker-Key"] = _egress_proxy_key
+    if event.delivery_method == WebhookEvent.DeliveryMethod.GET_QUERY:
+        headers = {}
+        http_method = "GET"
+        query_params = event.payload
+        request_url = target_url
     else:
-        request_url = project.webhook
+        headers = _build_delivery_headers(project, event, body_str, timestamp)
+        http_method = "POST"
+        query_params = None
+        # 出口代理模式：将真实目标 URL 放入代理 header，请求发往代理地址；直连模式直接请求商户 URL
+        if _egress_proxy_url:
+            request_url = _egress_proxy_url
+            headers["CF-Worker-Destination"] = target_url
+            headers["CF-Worker-Key"] = _egress_proxy_key
+        else:
+            request_url = target_url
 
     ok, status_code, resp_headers, resp_text, err_text, duration_ms = (
-        _execute_http_delivery(request_url, headers, body_str)
+        _execute_http_delivery(
+            request_url=request_url,
+            method=http_method,
+            headers=headers,
+            body_str=body_str,
+            params=query_params,
+            expected_response_body=event.expected_response_body,
+        )
     )
 
     # 记录本次 attempt + 更新事件状态（事务保护）

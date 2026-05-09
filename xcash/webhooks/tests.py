@@ -238,6 +238,71 @@ class DeliverEventTests(TestCase):
         self.assertEqual(event.status, WebhookEvent.Status.FAILED)
 
 
+class WebhookDeliveryPolicyTests(TestCase):
+    """验证 GET_QUERY 与 POST_JSON 两种投递方式的分派逻辑。"""
+
+    def tearDown(self):
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+        super().tearDown()
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_get_query_delivery_uses_event_delivery_url_and_success_text(self, mock_http):
+        mock_http.return_value = (True, 200, {}, "success", "", 30)
+        project = _make_project(webhook="https://native.example.com/hook")
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"pid": "1001", "trade_status": "TRADE_SUCCESS"},
+            delivery_url="https://merchant.example.com/notify",
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body="success",
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
+        call_kwargs = mock_http.call_args.kwargs
+        self.assertEqual(call_kwargs["request_url"], "https://merchant.example.com/notify")
+        self.assertEqual(call_kwargs["method"], "GET")
+        self.assertEqual(call_kwargs["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"})
+        self.assertEqual(call_kwargs["expected_response_body"], "success")
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_native_json_delivery_keeps_existing_ok_contract(self, mock_http):
+        mock_http.return_value = (True, 200, {}, "ok", "", 30)
+        project = _make_project()
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"type": "invoice", "data": {"sys_no": "INV-1"}},
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
+        call_kwargs = mock_http.call_args.kwargs
+        self.assertEqual(call_kwargs["method"], "POST")
+        self.assertEqual(call_kwargs["expected_response_body"], "ok")
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_get_query_works_without_project_webhook_url(self, mock_http):
+        """EPay 事件使用 event.delivery_url，项目不需要配置原生 webhook。"""
+        mock_http.return_value = (True, 200, {}, "success", "", 30)
+        project = _make_project(webhook="")
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"pid": "1001"},
+            delivery_url="https://merchant.example.com/notify",
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body="success",
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
+
+
 class SignalTests(TestCase):
     """测试 projects signal 中重置 webhook 事件的行为。"""
 

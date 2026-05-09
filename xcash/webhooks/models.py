@@ -11,6 +11,10 @@ class WebhookEvent(models.Model):
         SUCCEEDED = "succeeded", _("已送达")
         FAILED = "failed", _("投递失败")
 
+    class DeliveryMethod(models.TextChoices):
+        POST_JSON = "post_json", _("POST JSON")
+        GET_QUERY = "get_query", _("GET Query")
+
     project = models.ForeignKey(
         "projects.Project",
         on_delete=models.CASCADE,
@@ -22,6 +26,18 @@ class WebhookEvent(models.Model):
         unique=True,
     )
     payload = models.JSONField(verbose_name=_("内容"))
+    delivery_url = models.URLField(_("投递地址"), blank=True, default="")
+    delivery_method = models.CharField(
+        _("投递方式"),
+        choices=DeliveryMethod,
+        default=DeliveryMethod.POST_JSON,
+        max_length=16,
+    )
+    expected_response_body = models.CharField(
+        _("成功响应内容"),
+        max_length=32,
+        default="ok",
+    )
 
     status = models.CharField(
         _("状态"),

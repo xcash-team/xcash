@@ -18,7 +18,20 @@ class WebhookService:
         transaction.on_commit(lambda event_id=event.pk: deliver_event.delay(event_id))
 
     @staticmethod
-    def create_event(*, project, payload: dict[str, Any]) -> WebhookEvent:
-        event = WebhookEvent.objects.create(project=project, payload=payload)
+    def create_event(
+        *,
+        project,
+        payload: dict[str, Any],
+        delivery_url: str = "",
+        delivery_method: str = WebhookEvent.DeliveryMethod.POST_JSON,
+        expected_response_body: str = "ok",
+    ) -> WebhookEvent:
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload=payload,
+            delivery_url=delivery_url,
+            delivery_method=delivery_method,
+            expected_response_body=expected_response_body,
+        )
         WebhookService.enqueue_delivery(event)
         return event
