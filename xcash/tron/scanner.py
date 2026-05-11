@@ -15,12 +15,11 @@ from chains.models import TransferStatus
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from currencies.models import ChainToken
-from projects.models import RecipientAddressUsage
-from projects.models import RecipientAddress
 from tron.client import TronClientError
 from tron.client import TronHttpClient
 from tron.codec import TronAddressCodec
 from tron.models import TronWatchCursor
+from tron.watchers import load_tron_filter_addresses
 
 # 单轮扫描最多向前推进的块数；walletsolidity 返回的是 BFT 不可逆块，故无需 replay。
 # Tron 3 秒一块、beat tick 30 秒 ≈ 每轮净新增 ~10 块，32 块留够冗余且能消化短暂积压；
@@ -58,12 +57,9 @@ class TronUsdtPaymentScanner:
             )
             .get()
         )
-        filter_addresses = set(
-            RecipientAddress.objects.filter(
-                chain_type=chain.type,
-                usage=RecipientAddressUsage.INVOICE,
-            ).values_list("address", flat=True)
-        )
+        # filter_addresses 命中 Redis 缓存，RecipientAddress 变更走 tron/signals.py 失效；
+        # 旧的"每轮 DB 全表读"模式对单 chain_type 而非单 chain pk 缓存，多 Tron 链共享一份。
+        filter_addresses = load_tron_filter_addresses()
         cursor = cls._get_or_create_cursor(
             chain=chain,
             contract_address=usdt_mapping.address,
@@ -74,6 +70,10 @@ class TronUsdtPaymentScanner:
         events_seen = 0
         blocks_scanned = 0
 
+        # 跨循环跟踪当 tick 成功扫完的最高块号；循环结束或异常中断时只 flush 一次，
+        # 替代"每块一次单行 update"，长追平时把 N 次写库压缩为 1 次。
+        latest_block: int = 0
+        last_successfully_scanned: int | None = None
         try:
             latest_block = client.get_latest_solid_block_number()
             Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_block)
@@ -106,14 +106,26 @@ class TronUsdtPaymentScanner:
                         if result.created:
                             created_transfers += 1
                     blocks_scanned += 1
-                    cls._advance_cursor(
-                        cursor=cursor,
-                        latest_block=latest_block,
-                        scanned_block=block_number,
-                    )
+                    last_successfully_scanned = block_number
         except TronClientError as exc:
+            # 已经成功扫完的块仍需落到游标，避免下一轮重新扫一遍 + 让错误信息可见。
+            # 顺序：先 advance（清 last_error），再 mark_error（写新 last_error），
+            # 保证 last_error 反映最近一次失败而非被 advance 覆盖。
+            if last_successfully_scanned is not None:
+                cls._advance_cursor(
+                    cursor=cursor,
+                    latest_block=latest_block,
+                    scanned_block=last_successfully_scanned,
+                )
             cls._mark_cursor_error(cursor=cursor, exc=exc)
             raise
+
+        if last_successfully_scanned is not None:
+            cls._advance_cursor(
+                cursor=cursor,
+                latest_block=latest_block,
+                scanned_block=last_successfully_scanned,
+            )
 
         if (
             latest_block > previous_latest_block

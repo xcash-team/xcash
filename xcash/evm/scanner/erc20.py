@@ -8,6 +8,8 @@ from typing import TypedDict
 
 import structlog
 from django.db import transaction
+from django.db.models import F
+from django.db.models.functions import Greatest
 from django.utils import timezone
 from web3 import Web3
 
@@ -65,16 +67,24 @@ class EvmErc20TransferScanner:
         *,
         chain: Chain,
         batch_size: int = DEFAULT_ERC20_SCAN_BATCH_SIZE,
+        rpc_client: EvmScannerRpcClient | None = None,
     ) -> EvmErc20ScanResult:
         if chain.type != ChainType.EVM:
             raise ValueError(f"仅支持 EVM 链扫描，当前链为 {chain.code}")
 
         cursor = cls._get_or_create_cursor(chain=chain)
-        rpc_client = EvmScannerRpcClient(chain=chain)
+        # 服务层会把 client 注入进来供 native + erc20 共用，单 tick 只打一次 eth_blockNumber；
+        # 单独调用时自建一个 client 维持原契约。
+        if rpc_client is None:
+            rpc_client = EvmScannerRpcClient(chain=chain)
 
         try:
             latest_block = rpc_client.get_latest_block_number()
-            Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_block)
+            # 用 Greatest 把 latest_block_number 锁成单调向前，避免并发 scanner 因 RPC
+            # 短暂滞后把链头记录回退到旧高度，confirm 链路读到回退值会误判确认进度。
+            Chain.objects.filter(pk=chain.pk).update(
+                latest_block_number=Greatest(F("latest_block_number"), latest_block)
+            )
             cursor = bootstrap_cursor_to_latest_for_debug(
                 cursor=cursor,
                 latest_block=latest_block,

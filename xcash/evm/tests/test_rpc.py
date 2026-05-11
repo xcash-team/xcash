@@ -10,10 +10,12 @@ from web3.exceptions import ExtraDataLengthError
 from chains.models import Chain
 from chains.models import ChainType
 from currencies.models import Crypto
+from evm.scanner import rpc as rpc_module
 from evm.scanner.rpc import EvmScannerRpcClient
 from evm.scanner.rpc import EvmScannerRpcError
 
 
+@patch.object(rpc_module, "_EVM_RPC_RETRY_BACKOFF_SECONDS", (0, 0))
 class EvmScannerRpcErrorMessageTests(SimpleTestCase):
     def test_get_transfer_logs_error_includes_rpc_method_and_raw_reason(self):
         # 游标 last_error 直接使用此异常文本；必须带上具体 RPC 方法和节点原始报错，
@@ -193,6 +195,54 @@ class EvmScannerRpcClientTests(TestCase):
         self.chain.refresh_from_db()
         self.assertTrue(self.chain.is_poa)
         build_poa_retry_w3_mock.assert_called_once()
+
+    @patch.object(rpc_module, "_EVM_RPC_RETRY_BACKOFF_SECONDS", (0, 0))
+    def test_get_full_block_retries_until_success_within_attempt_budget(self):
+        # 瞬时网络抖动应被重试吸收：第三次成功就当作整体成功，不应上抛 EvmScannerRpcError。
+        get_block_mock = Mock(
+            side_effect=[
+                TimeoutError("read timeout"),
+                TimeoutError("read timeout"),
+                {"number": 100, "transactions": []},
+            ]
+        )
+        self.chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(get_block=get_block_mock)
+        )
+
+        block = EvmScannerRpcClient(chain=self.chain).get_full_block(block_number=100)
+
+        self.assertEqual(block["number"], 100)
+        self.assertEqual(get_block_mock.call_count, 3)
+
+    @patch.object(rpc_module, "_EVM_RPC_RETRY_BACKOFF_SECONDS", (0, 0))
+    def test_get_full_block_exhausts_retries_and_wraps_as_rpc_error(self):
+        # 退避窗口耗尽后才包装成 EvmScannerRpcError 上抛；游标据此记录 last_error。
+        get_block_mock = Mock(side_effect=TimeoutError("read timeout"))
+        self.chain.__dict__["w3"] = SimpleNamespace(
+            eth=SimpleNamespace(get_block=get_block_mock)
+        )
+
+        with self.assertRaises(EvmScannerRpcError):
+            EvmScannerRpcClient(chain=self.chain).get_full_block(block_number=100)
+
+        self.assertEqual(get_block_mock.call_count, 3)
+
+    def test_get_latest_block_number_caches_result_within_single_client(self):
+        # 单 tick 内 native + erc20 共用同一 client 时，eth_blockNumber 只应打一次。
+        chain = SimpleNamespace(
+            code="bsc-mainnet",
+            get_latest_block_number=99,
+        )
+        client = EvmScannerRpcClient(chain=chain)
+
+        first = client.get_latest_block_number()
+        second = client.get_latest_block_number()
+
+        self.assertEqual(first, 99)
+        self.assertEqual(second, 99)
+        # 第二次调用读自实例缓存，不应再触达底层 Web3 / chain property。
+        self.assertIsNotNone(client._cached_latest_block)
 
     @patch("evm.scanner.rpc.EvmScannerRpcClient._build_poa_retry_w3")
     def test_get_full_block_retries_with_poa_when_extradata_is_too_long(

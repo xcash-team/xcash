@@ -1,5 +1,6 @@
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import ANY
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -73,7 +74,8 @@ class EvmChainScannerServiceTests(TestCase):
         result = EvmChainScannerService.scan_chain(chain=self.chain)
 
         native_scan_mock.assert_not_called()
-        erc20_scan_mock.assert_called_once_with(chain=self.chain)
+        # 服务层会注入共享 rpc_client，断言时用 ANY 兜住第二个参数。
+        erc20_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
         self.assertEqual(result.native.created_transfers, 0)
         self.assertEqual(result.erc20.created_transfers, 1)
 
@@ -101,7 +103,8 @@ class EvmChainScannerServiceTests(TestCase):
         result = EvmChainScannerService.scan_chain(chain=self.chain)
 
         native_scan_mock.assert_not_called()
-        erc20_scan_mock.assert_called_once_with(chain=self.chain)
+        # 服务层会注入共享 rpc_client，断言时用 ANY 兜住第二个参数。
+        erc20_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
         self.assertEqual(result.native.created_transfers, 0)
         self.assertEqual(result.native.latest_block, 88)
         self.assertEqual(result.erc20.created_transfers, 1)
@@ -129,7 +132,7 @@ class EvmChainScannerServiceTests(TestCase):
 
         result = EvmChainScannerService.scan_chain(chain=self.chain)
 
-        native_scan_mock.assert_called_once_with(chain=self.chain)
+        native_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
         erc20_scan_mock.assert_not_called()
         self.assertEqual(result.erc20.created_transfers, 0)
         self.assertEqual(result.erc20.latest_block, 88)
@@ -160,8 +163,9 @@ class EvmChainScannerServiceTests(TestCase):
 
         result = EvmChainScannerService.scan_chain(chain=self.chain)
 
-        native_scan_mock.assert_called_once_with(chain=self.chain)
-        erc20_scan_mock.assert_called_once_with(chain=self.chain)
+        native_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
+        # 服务层会注入共享 rpc_client，断言时用 ANY 兜住第二个参数。
+        erc20_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
         self.assertEqual(result.native.created_transfers, 1)
         self.assertEqual(result.erc20.created_transfers, 1)
 
@@ -198,7 +202,7 @@ class EvmChainScannerServiceTests(TestCase):
         result = EvmChainScannerService.scan_chain(chain=chain)
 
         native_scan_mock.assert_not_called()
-        erc20_scan_mock.assert_called_once_with(chain=chain)
+        erc20_scan_mock.assert_called_once_with(chain=chain, rpc_client=ANY)
         self.assertEqual(result.native.created_transfers, 0)
         self.assertEqual(result.native.latest_block, 99)
         self.assertEqual(result.erc20.created_transfers, 1)
@@ -238,7 +242,7 @@ class EvmChainScannerServiceTests(TestCase):
 
         result = EvmChainScannerService.scan_native(chain=self.chain)
 
-        native_scan_mock.assert_called_once_with(chain=self.chain)
+        native_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
         self.assertEqual(result.created_transfers, 1)
 
     @patch("evm.scanner.service.EvmErc20TransferScanner.scan_chain")
@@ -260,8 +264,9 @@ class EvmChainScannerServiceTests(TestCase):
 
         result = EvmChainScannerService.scan_chain(chain=self.chain)
 
-        native_scan_mock.assert_called_once_with(chain=self.chain)
-        erc20_scan_mock.assert_called_once_with(chain=self.chain)
+        native_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
+        # 服务层会注入共享 rpc_client，断言时用 ANY 兜住第二个参数。
+        erc20_scan_mock.assert_called_once_with(chain=self.chain, rpc_client=ANY)
         self.assertEqual(result.native.observed_transfers, 0)
         self.assertEqual(result.native.created_transfers, 0)
         self.assertEqual(result.erc20.observed_logs, 4)

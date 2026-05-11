@@ -36,6 +36,7 @@ from projects.models import RecipientAddressUsage
 
 
 @override_settings(TRON_RPC_TIMEOUT=3.0)
+@patch("tron.client._TRON_HTTP_RETRY_BACKOFF_SECONDS", (0, 0))
 class TronHttpClientTests(SimpleTestCase):
     @patch("tron.client.httpx.get")
     def test_get_latest_solid_block_number_reads_block_header_number(self, get_mock):
@@ -151,6 +152,112 @@ class TronHttpClientTests(SimpleTestCase):
                 event_name="Transfer",
                 block_number=61840405,
             )
+
+    @patch("tron.client.httpx.get")
+    def test_retries_transient_http_error_until_success(self, get_mock):
+        # 第一次抛瞬时网络错误、第二次成功：整体被重试吸收，不应上抛 TronClientError。
+        good_response = Mock()
+        good_response.raise_for_status.return_value = None
+        good_response.json.return_value = {
+            "block_header": {"raw_data": {"number": 42}}
+        }
+        get_mock.side_effect = [httpx.ReadTimeout("transient"), good_response]
+
+        chain = SimpleNamespace(
+            rpc="https://api.trongrid.io",
+            code="tron-mainnet",
+            tron_api_key="tron-key",
+        )
+
+        latest_block = TronHttpClient(chain=chain).get_latest_solid_block_number()
+
+        self.assertEqual(latest_block, 42)
+        self.assertEqual(get_mock.call_count, 2)
+
+    @patch("tron.client.httpx.get")
+    def test_does_not_retry_on_non_retriable_4xx(self, get_mock):
+        # 401 / 403 / 404 等客户端错误属永久故障，重试只会重复触发，应立即上抛。
+        bad_response = Mock()
+        bad_response.status_code = 401
+        bad_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Unauthorized",
+            request=Mock(),
+            response=bad_response,
+        )
+        get_mock.return_value = bad_response
+
+        chain = SimpleNamespace(
+            rpc="https://api.trongrid.io",
+            code="tron-mainnet",
+            tron_api_key="tron-key",
+        )
+
+        with self.assertRaises(TronClientError):
+            TronHttpClient(chain=chain).get_latest_solid_block_number()
+
+        # 永久错误必须只调一次；不应触发重试。
+        self.assertEqual(get_mock.call_count, 1)
+
+
+class TronFilterAddressesCacheTests(TestCase):
+    def setUp(self):
+        from tron.watchers import clear_tron_filter_addresses_cache
+
+        clear_tron_filter_addresses_cache()
+        self.project = Project.objects.create(
+            name="Tron Cache Project",
+            wallet=Wallet.objects.create(),
+        )
+
+    def tearDown(self):
+        from tron.watchers import clear_tron_filter_addresses_cache
+
+        clear_tron_filter_addresses_cache()
+        super().tearDown()
+
+    def test_load_caches_invoice_addresses_only(self):
+        from tron.watchers import load_tron_filter_addresses
+
+        invoice_addr = "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
+        evm_addr = "0x1111111111111111111111111111111111111111"
+        RecipientAddress.objects.create(
+            name="tron-invoice",
+            project=self.project,
+            chain_type=ChainType.TRON,
+            address=invoice_addr,
+            usage=RecipientAddressUsage.INVOICE,
+        )
+        # EVM 链上的 RecipientAddress 不应漏进 Tron 观察集，避免跨链型误观测。
+        RecipientAddress.objects.create(
+            name="evm-invoice",
+            project=self.project,
+            chain_type=ChainType.EVM,
+            address=evm_addr,
+            usage=RecipientAddressUsage.INVOICE,
+        )
+
+        addresses = load_tron_filter_addresses()
+
+        self.assertIn(invoice_addr, addresses)
+        self.assertNotIn(evm_addr, addresses)
+
+    def test_signal_invalidates_cache_on_recipient_address_create(self):
+        from tron.watchers import load_tron_filter_addresses
+
+        # 预热缓存：当前无 Tron RecipientAddress，缓存为空 frozenset。
+        self.assertEqual(load_tron_filter_addresses(), frozenset())
+
+        invoice_addr = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
+        RecipientAddress.objects.create(
+            name="tron-invoice-2",
+            project=self.project,
+            chain_type=ChainType.TRON,
+            address=invoice_addr,
+            usage=RecipientAddressUsage.INVOICE,
+        )
+
+        # post_save 信号挂 on_commit 重建缓存：事务提交后下一次 load 必须能看到新地址。
+        self.assertIn(invoice_addr, load_tron_filter_addresses())
 
 
 class TronWatchCursorTests(TestCase):
@@ -981,6 +1088,36 @@ class TronUsdtPaymentScannerTests(TestCase):
         )
         self.assertEqual(cursor.last_scanned_block, 123456)
         self.assertEqual(cursor.last_safe_block, 123456)
+
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("tron.scanner.TronUsdtPaymentScanner._advance_cursor")
+    @patch("tron.scanner.TronHttpClient")
+    def test_scan_chain_writes_cursor_only_once_for_full_batch(
+        self,
+        client_cls,
+        advance_cursor_mock,
+        _enqueue_processing_mock,
+    ):
+        # 一轮扫描多块只 flush 一次游标，避免追平时 N 次单行 update 压垮 DB；
+        # _advance_cursor 是统一的写入入口，命中次数等于实际写库次数。
+        from tron.scanner import DEFAULT_TRON_SCAN_BATCH_SIZE
+        from tron.scanner import TronUsdtPaymentScanner
+
+        start_cursor = 200_000
+        latest_block = start_cursor + DEFAULT_TRON_SCAN_BATCH_SIZE
+
+        self._get_or_create_contract_cursor(last_scanned_block=start_cursor)
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.return_value = latest_block
+        client.list_confirmed_contract_events.return_value = {"data": [], "meta": {}}
+
+        TronUsdtPaymentScanner.scan_chain(chain=self.chain)
+
+        self.assertEqual(advance_cursor_mock.call_count, 1)
+        _, kwargs = advance_cursor_mock.call_args
+        # 一次性 flush 时传入的 scanned_block 必须是当 tick 最后一个成功块，
+        # 否则游标会停在中间块、下一轮重新扫尾段，浪费 RPC。
+        self.assertEqual(kwargs["scanned_block"], latest_block)
 
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.scanner.TronHttpClient")

@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Callable
 
+import structlog
 from web3 import Web3
 from web3.exceptions import ExtraDataLengthError
 from web3.middleware import ExtraDataToPOAMiddleware
 
 if TYPE_CHECKING:
     from chains.models import Chain
+
+
+logger = structlog.get_logger()
+
+# RPC 失败时的退避时长（秒），数组长度即"最多重试次数"。
+# 初次失败 → 等 0.2s 重试 → 等 0.8s 重试 → 仍失败上抛，整体上限约 1s 的等待开销。
+_EVM_RPC_RETRY_BACKOFF_SECONDS = (0.2, 0.8)
 
 
 class EvmScannerRpcError(RuntimeError):
@@ -23,18 +33,21 @@ class EvmScannerRpcClient:
         # eth_getBlockReceipts 特性检测结果：None 未探测，True 支持，False 不支持。
         # 每个扫描 tick 构造新 client，单 tick 最多触发一次"不支持"探测，避免每块重试。
         self._block_receipts_supported: bool | None = None
+        # 单 tick 内 latest_block 缓存：native + erc20 共用同一 client 时只打一次 RPC。
+        self._cached_latest_block: int | None = None
 
     def get_latest_block_number(self) -> int:
-        try:
-            return int(self.chain.get_latest_block_number)
-        except Exception as exc:  # noqa: BLE001
-            raise EvmScannerRpcError(
-                self._format_rpc_error(
-                    "获取最新区块失败",
-                    method="eth_blockNumber",
-                    exc=exc,
-                )
-            ) from exc
+        if self._cached_latest_block is not None:
+            return self._cached_latest_block
+        latest_block = int(
+            self._call_with_retry(
+                fn=lambda: self.chain.get_latest_block_number,
+                summary="获取最新区块失败",
+                method="eth_blockNumber",
+            )
+        )
+        self._cached_latest_block = latest_block
+        return latest_block
 
     def get_transfer_logs(
         self,
@@ -73,61 +86,46 @@ class EvmScannerRpcClient:
         token_addresses: list[str],
         topic0: str,
     ) -> list[dict[str, Any]]:
-        try:
-            return list(
-                self.chain.w3.eth.get_logs(  # noqa: SLF001
+        return list(
+            self._call_with_retry(
+                fn=lambda: self.chain.w3.eth.get_logs(  # noqa: SLF001
                     {
                         "fromBlock": from_block,
                         "toBlock": to_block,
                         "address": token_addresses,
                         "topics": [topic0],
                     }
-                )
+                ),
+                summary="获取 ERC20 日志失败",
+                method="eth_getLogs",
+                context=f"from={from_block} to={to_block}",
             )
-        except Exception as exc:  # noqa: BLE001
-            raise EvmScannerRpcError(
-                self._format_rpc_error(
-                    "获取 ERC20 日志失败",
-                    method="eth_getLogs",
-                    exc=exc,
-                    context=f"from={from_block} to={to_block}",
-                )
-            ) from exc
+        )
 
     def get_block_timestamp(self, *, block_number: int) -> int:
-        try:
-            block = self._get_block_with_poa_retry(
+        block = self._call_with_retry(
+            fn=lambda: self._get_block_with_poa_retry(
                 block_number=block_number,
                 full_transactions=False,
-            )
-            return int(block["timestamp"])
-        except Exception as exc:  # noqa: BLE001
-            raise EvmScannerRpcError(
-                self._format_rpc_error(
-                    "获取区块时间失败",
-                    method="eth_getBlockByNumber",
-                    exc=exc,
-                    context=f"block={block_number}",
-                )
-            ) from exc
+            ),
+            summary="获取区块时间失败",
+            method="eth_getBlockByNumber",
+            context=f"block={block_number}",
+        )
+        return int(block["timestamp"])
 
     def get_full_block(self, *, block_number: int) -> dict[str, Any]:
-        try:
-            return dict(
-                self._get_block_with_poa_retry(
+        return dict(
+            self._call_with_retry(
+                fn=lambda: self._get_block_with_poa_retry(
                     block_number=block_number,
                     full_transactions=True,
-                )
+                ),
+                summary="获取完整区块失败",
+                method="eth_getBlockByNumber",
+                context=f"block={block_number}",
             )
-        except Exception as exc:  # noqa: BLE001
-            raise EvmScannerRpcError(
-                self._format_rpc_error(
-                    "获取完整区块失败",
-                    method="eth_getBlockByNumber",
-                    exc=exc,
-                    context=f"block={block_number}",
-                )
-            ) from exc
+        )
 
     def get_block_receipts_status(
         self,
@@ -138,24 +136,26 @@ class EvmScannerRpcClient:
 
         当节点不支持 eth_getBlockReceipts 时返回 None，调用方需 fallback 到
         逐笔 eth_getTransactionReceipt。支持探测结果缓存在 self._block_receipts_supported，
-        同一扫描 tick 内不会反复触发"方法不存在"探测。
+        同一扫描 tick 内不会反复触发"方法不存在"探测；method-unavailable 视为不可重试，
+        立即短路返回，避免在已知不支持的节点上空耗 1s 的退避等待。
         """
         if self._block_receipts_supported is False:
             return None
         try:
-            receipts = self.chain.w3.eth.get_block_receipts(block_number)  # noqa: SLF001
+            receipts = self._call_with_retry(
+                fn=lambda: self.chain.w3.eth.get_block_receipts(block_number),  # noqa: SLF001
+                summary="获取整块 receipt 失败",
+                method="eth_getBlockReceipts",
+                context=f"block={block_number}",
+                non_retriable_predicate=self._is_method_unavailable_error,
+            )
+        except EvmScannerRpcError:
+            raise
         except Exception as exc:  # noqa: BLE001
             if self._is_method_unavailable_error(exc):
                 self._block_receipts_supported = False
                 return None
-            raise EvmScannerRpcError(
-                self._format_rpc_error(
-                    "获取整块 receipt 失败",
-                    method="eth_getBlockReceipts",
-                    exc=exc,
-                    context=f"block={block_number}",
-                )
-            ) from exc
+            raise
 
         self._block_receipts_supported = True
         return self._extract_receipt_status_map(receipts)
@@ -211,22 +211,63 @@ class EvmScannerRpcClient:
         return hex_value.lower()
 
     def get_transaction_receipt_status(self, *, tx_hash: str) -> int | None:
-        try:
-            receipt = self.chain.w3.eth.get_transaction_receipt(tx_hash)  # noqa: SLF001
-        except Exception as exc:  # noqa: BLE001
-            raise EvmScannerRpcError(
-                self._format_rpc_error(
-                    "获取交易回执失败",
-                    method="eth_getTransactionReceipt",
-                    exc=exc,
-                    context=f"tx_hash={tx_hash}",
-                )
-            ) from exc
-
+        receipt = self._call_with_retry(
+            fn=lambda: self.chain.w3.eth.get_transaction_receipt(tx_hash),  # noqa: SLF001
+            summary="获取交易回执失败",
+            method="eth_getTransactionReceipt",
+            context=f"tx_hash={tx_hash}",
+        )
         if receipt is None:
             return None
         status = receipt.get("status")
         return int(status) if status in (0, 1) else None
+
+    def _call_with_retry(
+        self,
+        *,
+        fn: Callable[[], Any],
+        summary: str,
+        method: str,
+        context: str = "",
+        non_retriable_predicate: Callable[[Exception], bool] | None = None,
+    ) -> Any:
+        """对单次 RPC 调用做"指数退避重试 + 统一错误包装"。
+
+        重试时长：_EVM_RPC_RETRY_BACKOFF_SECONDS（默认 200ms、800ms 两档），
+        最多尝试 3 次（初次 + 2 次退避重试）；非瞬时错误（如 method unavailable）
+        通过 non_retriable_predicate 立即上抛，由调用方负责语义化处理，
+        避免在已知"必败"的错误上浪费 1s 的等待开销。
+        """
+        last_exc: Exception | None = None
+        max_attempts = len(_EVM_RPC_RETRY_BACKOFF_SECONDS) + 1
+        for attempt in range(max_attempts):
+            try:
+                return fn()
+            except Exception as exc:  # noqa: BLE001
+                if non_retriable_predicate is not None and non_retriable_predicate(exc):
+                    raise
+                last_exc = exc
+                if attempt == max_attempts - 1:
+                    break
+                backoff_seconds = _EVM_RPC_RETRY_BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "EVM RPC 调用失败，准备重试",
+                    chain=self.chain.code,
+                    method=method,
+                    attempt=attempt + 1,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                time.sleep(backoff_seconds)
+
+        raise EvmScannerRpcError(
+            self._format_rpc_error(
+                summary,
+                method=method,
+                exc=last_exc,
+                context=context,
+            )
+        ) from last_exc
 
     def _get_block_with_poa_retry(
         self,
