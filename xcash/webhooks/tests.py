@@ -401,13 +401,16 @@ class WebhookResponseMatchingTests(TestCase):
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.headers = {}
-        mock_response.text = resp_text
+        mock_response.iter_bytes.return_value = iter([resp_text.encode("utf-8")])
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__enter__.return_value = mock_response
+        mock_stream_ctx.__exit__.return_value = False
 
         mock_client = MagicMock()
         mock_client.__enter__.return_value = mock_client
         mock_client.__exit__.return_value = False
-        mock_client.get.return_value = mock_response
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value = mock_stream_ctx
 
         with patch("webhooks.tasks.httpx.Client", return_value=mock_client):
             ok, *_ = _execute_http_delivery(
@@ -439,6 +442,41 @@ class WebhookResponseMatchingTests(TestCase):
 
     def test_empty_is_failure(self):
         self.assertFalse(self._run(""))
+
+    def test_response_truncated_to_max_bytes(self):
+        """超大响应必须被截断到上限，避免恶意/异常商户回包撑爆 worker 内存。"""
+        from webhooks.tasks import MAX_RESPONSE_BYTES
+        from webhooks.tasks import _execute_http_delivery
+
+        huge = b"x" * (MAX_RESPONSE_BYTES * 2)
+        # 分块返回，验证迭代过程中能在到达上限时正确停止
+        chunks = [huge[i : i + 8192] for i in range(0, len(huge), 8192)]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.iter_bytes.return_value = iter(chunks)
+
+        mock_stream_ctx = MagicMock()
+        mock_stream_ctx.__enter__.return_value = mock_response
+        mock_stream_ctx.__exit__.return_value = False
+
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.__exit__.return_value = False
+        mock_client.stream.return_value = mock_stream_ctx
+
+        with patch("webhooks.tasks.httpx.Client", return_value=mock_client):
+            ok, _, _, resp_text, _, _ = _execute_http_delivery(
+                request_url="https://example.com",
+                method="POST",
+                headers={},
+                body_str="{}",
+                expected_response_body="ok",
+            )
+
+        self.assertLessEqual(len(resp_text.encode("utf-8")), MAX_RESPONSE_BYTES)
+        self.assertFalse(ok)
 
 
 class SignalTests(TestCase):

@@ -23,6 +23,9 @@ from webhooks.models import DeliveryAttempt
 from webhooks.models import WebhookEvent
 
 EVENT_ATTEMPT_TIMEOUT = 10
+# 商户回执通常只有 "ok"/"success" 等几字节。设置 64KB 上限既能兼容偶发的 HTML
+# 错误页等场景，又能挡掉恶意商户回包放大 celery worker 内存。
+MAX_RESPONSE_BYTES = 64 * 1024
 
 # 出口代理配置（可选）：设置后 webhook 请求通过代理转发，隐藏服务器真实 IP
 # XCASH_EGRESS_PROXY      — 代理转发地址（不设则直连商户 webhook URL）
@@ -74,13 +77,24 @@ def _execute_http_delivery(
     start = time.perf_counter()
     try:
         with httpx.Client(timeout=5) as client:
-            if method == "GET":
-                resp = client.get(request_url, headers=headers, params=params)
-            else:
-                resp = client.post(request_url, headers=headers, content=body_str)
-            status_code = resp.status_code
-            resp_headers = dict(resp.headers)
-            resp_text = resp.text
+            with client.stream(
+                method,
+                request_url,
+                headers=headers,
+                params=params,
+                content=body_str if method != "GET" else None,
+            ) as resp:
+                status_code = resp.status_code
+                resp_headers = dict(resp.headers)
+                # 流式读取并在累计达到 MAX_RESPONSE_BYTES 时截断，避免恶意/异常
+                # 商户回执（如 100MB HTML 错误页）撑爆 worker 内存。
+                buf = bytearray()
+                for chunk in resp.iter_bytes():
+                    if len(buf) + len(chunk) > MAX_RESPONSE_BYTES:
+                        buf.extend(chunk[: MAX_RESPONSE_BYTES - len(buf)])
+                        break
+                    buf.extend(chunk)
+                resp_text = bytes(buf).decode("utf-8", errors="replace")
             # 商户的 PHP/Java 框架 echo "success" 时常带回车 / BOM / 前后空白，
             # 严格相等会把这些合法响应判为失败、触发重试与误熔断；strip 后精确匹配
             # 兼顾兼容性与匹配严格度（仍区分大小写、不允许中间夹杂内容）。

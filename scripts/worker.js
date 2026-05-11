@@ -1,7 +1,29 @@
+// 转发到商户 webhook 时只放行下列 header，避免 Cloudflare 自动注入的
+// CF-Connecting-IP / X-Forwarded-For / True-Client-IP 等头携带 xcash 出网 IP，
+// 击穿藏 IP 设计。代理鉴权头 CF-Worker-Key/Destination 不在白名单内自然被剔除。
+const FORWARD_HEADER_ALLOWLIST = [
+    'content-type',
+    'xc-appid',
+    'xc-nonce',
+    'xc-timestamp',
+    'xc-signature',
+];
+
+// 常量时间字符串比较，避免基于响应时长的 key 猜测
+function timingSafeEqual(a, b) {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) {
+        diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return diff === 0;
+}
+
 export default {
     async fetch(request, env) {
         // 验证 Key
-        if (request.headers.get('CF-Worker-Key') !== env.KEY) {
+        const provided = request.headers.get('CF-Worker-Key') || '';
+        if (!timingSafeEqual(provided, env.KEY || '')) {
             return new Response('Unauthorized: Invalid Key', {status: 401});
         }
 
@@ -11,14 +33,16 @@ export default {
             return new Response('Only GET/POST is allowed', {status: 405});
         }
 
-        // 取出并剔除控制头，剩余 header 原样转发
-        const headers = new Headers(request.headers);
-        const destination = headers.get('CF-Worker-Destination');
-        headers.delete('CF-Worker-Destination');
-        headers.delete('CF-Worker-Key');
-
+        const destination = request.headers.get('CF-Worker-Destination');
         if (!destination) {
             return new Response('CF-Worker-Destination header is required', {status: 400});
+        }
+
+        // 从空 Headers 出发显式构造，只带白名单内的头
+        const headers = new Headers();
+        for (const name of FORWARD_HEADER_ALLOWLIST) {
+            const v = request.headers.get(name);
+            if (v !== null) headers.set(name, v);
         }
 
         try {
