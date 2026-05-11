@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from unittest.mock import PropertyMock
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
@@ -27,6 +28,7 @@ from chains.models import TransferType
 from chains.models import Wallet
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
+from core.models import PLATFORM_SETTINGS_CACHE_KEY
 from core.models import PlatformSettings
 from currencies.models import ChainToken
 from currencies.models import Crypto
@@ -2128,6 +2130,8 @@ class DepositAddressApiGuardTests(TestCase):
         patcher = patch("deposits.viewsets.check_saas_permission")
         self.mock_check_saas = patcher.start()
         self.addCleanup(patcher.stop)
+        # 充币入口的第一道硬门是原生币扫描开关；默认放开，单独的 scanner_closed 用例自行 reset。
+        PlatformSettings.objects.create(open_native_scanner=True)
 
     def test_address_endpoint_rejects_bitcoin_chain_without_allocating_deposit_address(
         self,
@@ -2232,6 +2236,9 @@ class DepositAddressApiGuardTests(TestCase):
     def test_address_endpoint_rejects_evm_native_when_global_native_scanner_closed(
         self,
     ):
+        # 该用例专门覆盖原生币扫描全局开关被关闭的拒绝路径；setUp 默认放开，这里恢复为关闭。
+        PlatformSettings.objects.all().delete()
+        cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
         project = Project.objects.create(
             name="EVM Native Deposit Guard Project",
             wallet=Wallet.objects.create(),
@@ -2265,14 +2272,14 @@ class DepositAddressApiGuardTests(TestCase):
         with patch("deposits.viewsets.DepositAddress.get_address") as get_address_mock:
             response = DepositViewSet.as_view({"get": "address"})(request)
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data["code"], ErrorCode.INVALID_CHAIN.code)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], ErrorCode.NATIVE_SCANNER_NOT_ENABLED.code)
         get_address_mock.assert_not_called()
 
     def test_get_deposit_address_rejects_when_recipient_not_configured(self):
         # L2：project 未配置 DEPOSIT_COLLECTION recipient 时，不允许新建充币地址；
         # 这是防止"用户充值进来无法归集 → gather 队头反复阻塞"的 DoS 攻击面。
-        PlatformSettings.objects.create(open_native_scanner=True)
+        # 原生币扫描开关由 setUp 统一打开。
         project = Project.objects.create(
             name="No Recipient Guard",
             wallet=Wallet.objects.create(),
@@ -2749,6 +2756,8 @@ class DepositAddressPermissionCheckTests(TestCase):
     """v2 SaaS 模式：GET /deposits/address 调用 check_saas_permission(action='deposit')。"""
 
     def setUp(self):
+        # 走到链/币级 SaaS 权限校验前要先过原生币扫描开关，否则 viewset 会直接返回 6005。
+        PlatformSettings.objects.create(open_native_scanner=True)
         self.wallet = Wallet.objects.create()
         self.project = Project.objects.create(
             name="DepositPermCheckProject",

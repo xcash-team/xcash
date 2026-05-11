@@ -49,3 +49,15 @@ def _short_circuit_chain_rpc_probe(django_db_setup):
     ):
         detect_poa_mock.real_implementation = real_detect_poa
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_platform_settings_cache():
+    # PlatformSettings 单例走 Redis 缓存 timeout=None；TestCase 事务回滚后缓存里仍残留旧对象，
+    # 会让下一个用例读到上一个测试创建的 open_native_scanner 等开关，造成跨用例污染。
+    from django.core.cache import cache  # noqa: PLC0415
+    from core.models import PLATFORM_SETTINGS_CACHE_KEY  # noqa: PLC0415
+
+    cache.delete(PLATFORM_SETTINGS_CACHE_KEY)
+    yield
+    cache.delete(PLATFORM_SETTINGS_CACHE_KEY)

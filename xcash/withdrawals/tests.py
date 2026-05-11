@@ -29,6 +29,7 @@ from chains.models import Wallet
 from common.error_codes import ErrorCode
 from common.exceptions import APIError
 from core.models import PLATFORM_SETTINGS_CACHE_KEY
+from core.models import PlatformSettings
 from currencies.models import Crypto
 from evm.models import EvmBroadcastTask
 from projects.models import Project
@@ -595,6 +596,9 @@ class WithdrawalViewSetTests(TestCase):
         patcher = patch("withdrawals.viewsets.check_saas_permission")
         self.mock_check_saas = patcher.start()
         self.addCleanup(patcher.stop)
+        # 创建提币的前置硬门：必须打开原生币扫描；这里关注 viewset 自身的业务路径，
+        # 全局开关相关的拒绝行为放在专门的扫描器关闭用例里覆盖。
+        PlatformSettings.objects.create(open_native_scanner=True)
 
     def test_viewset_create_translates_unique_conflict_to_api_error(self):
         # 提币创建命中数据库唯一约束时必须返回业务错误，而不是数据库异常或 500。
@@ -2371,6 +2375,8 @@ class WithdrawalCreatePermissionCheckTests(TestCase):
     """v2 SaaS 模式：提币创建入口调用 check_saas_permission。"""
 
     def setUp(self):
+        # 走到链/币级 SaaS 权限校验必须先过原生币扫描开关，否则会在入口被直接拒绝。
+        PlatformSettings.objects.create(open_native_scanner=True)
         self.wallet = Wallet.objects.create()
         self.project = Project.objects.create(
             name="PermissionCheckProject",
