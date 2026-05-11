@@ -22,6 +22,11 @@ from tron.client import TronHttpClient
 from tron.codec import TronAddressCodec
 from tron.models import TronWatchCursor
 
+# 单轮扫描最多向前推进的块数；walletsolidity 返回的是 BFT 不可逆块，故无需 replay。
+# Tron 3 秒一块、beat tick 30 秒 ≈ 每轮净新增 ~10 块，32 块留够冗余且能消化短暂积压；
+# 单块 USDT 事件最差几百条、分页 200 一页，batch=32 时单 tick 最坏约 96 次 RPC，符合 TronGrid 限速。
+DEFAULT_TRON_SCAN_BATCH_SIZE = 32
+
 
 @dataclass(frozen=True)
 class TronScanSummary:
@@ -79,7 +84,13 @@ class TronUsdtPaymentScanner:
                     latest_block=latest_block,
                 )
                 start_block = cursor.last_scanned_block + 1
-                for block_number in range(start_block, latest_block + 1):
+                # 单轮最多推进 DEFAULT_TRON_SCAN_BATCH_SIZE 块，避免大幅落后时 range 无界，
+                # 把当次 beat task 拖垮、阻塞下一轮调度。
+                end_block = min(
+                    latest_block,
+                    start_block + DEFAULT_TRON_SCAN_BATCH_SIZE - 1,
+                )
+                for block_number in range(start_block, end_block + 1):
                     parsed_events = cls._collect_block_events(
                         client=client,
                         chain=chain,

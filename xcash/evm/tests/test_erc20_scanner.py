@@ -673,6 +673,10 @@ class EvmErc20ScannerTests(TestCase):
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
@@ -681,6 +685,7 @@ class EvmErc20ScannerTests(TestCase):
         get_latest_block_number_mock,
         get_full_block_mock,
         _get_receipt_status_mock,
+        _get_block_receipts_status_mock,
         _enqueue_processing_mock,
         _mark_pending_confirm_mock,
     ):
@@ -704,6 +709,10 @@ class EvmErc20ScannerTests(TestCase):
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
@@ -712,6 +721,7 @@ class EvmErc20ScannerTests(TestCase):
         get_latest_block_number_mock,
         get_full_block_mock,
         get_receipt_status_mock,
+        _get_block_receipts_status_mock,
         _enqueue_processing_mock,
         _mark_pending_confirm_mock,
     ):
@@ -752,6 +762,10 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(cursor.last_safe_block, 14)
 
     @patch("chains.service.TransferService.create_observed_transfer")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
@@ -760,6 +774,7 @@ class EvmErc20ScannerTests(TestCase):
         get_latest_block_number_mock,
         get_full_block_mock,
         get_receipt_status_mock,
+        _get_block_receipts_status_mock,
         create_observed_transfer_mock,
     ):
         # status=0 的原生交易不应落成 OnchainTransfer；失败语义只属于内部任务协调器。
@@ -826,6 +841,10 @@ class EvmErc20ScannerTests(TestCase):
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
@@ -834,6 +853,7 @@ class EvmErc20ScannerTests(TestCase):
         get_latest_block_number_mock,
         get_full_block_mock,
         get_receipt_status_mock,
+        _get_block_receipts_status_mock,
         _enqueue_processing_mock,
         _mark_pending_confirm_mock,
     ):
@@ -864,6 +884,90 @@ class EvmErc20ScannerTests(TestCase):
         self.assertEqual(
             OnchainTransfer.objects.filter(event_id="native:tx").count(), 1
         )
+
+    @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
+    def test_native_scan_uses_block_receipts_when_supported(
+        self,
+        get_latest_block_number_mock,
+        get_full_block_mock,
+        get_receipt_status_mock,
+        get_block_receipts_status_mock,
+        _enqueue_processing_mock,
+        _mark_pending_confirm_mock,
+    ):
+        # 节点支持 eth_getBlockReceipts 时，命中块只调一次整块 receipt 拉取，
+        # 不应再走逐笔 eth_getTransactionReceipt 的老路径。
+        tx_hash_hex = "ab"
+        tx_hash = "0x" + tx_hash_hex * 32
+        get_latest_block_number_mock.return_value = 20
+        get_full_block_mock.side_effect = lambda *, block_number: (
+            self._build_native_block(
+                txs=[
+                    self._build_native_tx(
+                        from_address=Web3.to_checksum_address(
+                            "0x00000000000000000000000000000000000000cc"
+                        ),
+                        to_address=self.addr.address,
+                        value=10**18,
+                        tx_hash_hex=tx_hash_hex,
+                    )
+                ]
+            )
+            if block_number == 20
+            else self._build_native_block(txs=[])
+        )
+        get_block_receipts_status_mock.return_value = {tx_hash: 1}
+
+        result = EvmNativeDirectScanner.scan_chain(chain=self.chain, batch_size=4)
+
+        self.assertEqual(result.created_transfers, 1)
+        get_receipt_status_mock.assert_not_called()
+        self.assertTrue(
+            OnchainTransfer.objects.filter(hash=tx_hash, event_id="native:tx").exists()
+        )
+
+    @patch("chains.service.TransferService.create_observed_transfer")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
+    def test_native_scan_skips_block_receipts_for_blocks_without_matches(
+        self,
+        get_latest_block_number_mock,
+        get_full_block_mock,
+        get_receipt_status_mock,
+        get_block_receipts_status_mock,
+        _create_observed_transfer_mock,
+    ):
+        # 空块 / 无命中的块不应再多付一次 eth_getBlockReceipts；
+        # 老路径每块只 1 次 eth_getBlockByNumber，新路径必须保持相同上限。
+        get_latest_block_number_mock.return_value = 20
+        get_full_block_mock.side_effect = lambda *, block_number: (
+            self._build_native_block(
+                txs=[
+                    self._build_native_tx(
+                        from_address=Web3.to_checksum_address(
+                            "0x00000000000000000000000000000000000000cc"
+                        ),
+                        to_address=Web3.to_checksum_address(
+                            "0x00000000000000000000000000000000000000dd"
+                        ),
+                        value=10**18,
+                        tx_hash_hex="ee",
+                    )
+                ]
+            )
+        )
+
+        EvmNativeDirectScanner.scan_chain(chain=self.chain, batch_size=4)
+
+        get_block_receipts_status_mock.assert_not_called()
+        get_receipt_status_mock.assert_not_called()
 
     @patch(
         "evm.scanner.erc20.EvmScannerRpcClient.get_latest_block_number",

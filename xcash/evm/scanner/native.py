@@ -227,19 +227,37 @@ class EvmNativeDirectScanner:
                 timestamp,
                 tz=timezone.get_current_timezone(),
             )
+
+            # 先把整块的命中 tx 集中起来；空块不去触发 receipt 拉取，避免在主路径上
+            # 给绝大多数无命中的块都多付一次 eth_getBlockReceipts。
+            matched_parsed: list[ParsedNativeTransfer] = []
             for tx in block.get("transactions", []) or []:
                 parsed = cls._parse_transaction(
                     tx=tx,
                     watched_addresses=watch_set.watched_addresses,
                     decimals=decimals,
                 )
-                if parsed is None:
-                    continue
+                if parsed is not None:
+                    matched_parsed.append(parsed)
 
+            if not matched_parsed:
+                continue
+
+            # 优先用 eth_getBlockReceipts 整块取回；命中数 ≥1 时单块只 1 次 RPC，
+            # 与之前"逐笔 eth_getTransactionReceipt"相比，命中越多收益越大、上限恒定。
+            # 节点不支持时（status_map=None）回退到老路径，逐笔确认状态。
+            receipt_status_map = rpc_client.get_block_receipts_status(
+                block_number=block_number,
+            )
+
+            for parsed in matched_parsed:
                 # OnchainTransfer 只表示成功链上资产移动；status=0 的失败交易不得落库。
-                receipt_status = rpc_client.get_transaction_receipt_status(
-                    tx_hash=parsed["tx_hash"]
-                )
+                if receipt_status_map is not None:
+                    receipt_status = receipt_status_map.get(parsed["tx_hash"])
+                else:
+                    receipt_status = rpc_client.get_transaction_receipt_status(
+                        tx_hash=parsed["tx_hash"]
+                    )
                 if receipt_status != 1:
                     continue
 

@@ -369,12 +369,17 @@ class EvmScanBlocksForReconcileTests(TestCase):
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
     def test_scan_blocks_for_reconcile_creates_onchain_transfer_without_touching_cursor(
         self,
         get_full_block_mock,
         get_receipt_status_mock,
+        _get_block_receipts_status_mock,
         _enqueue_processing_mock,
         _mark_pending_confirm_mock,
     ):
@@ -422,12 +427,17 @@ class EvmScanBlocksForReconcileTests(TestCase):
 
     @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
     @patch("chains.service.TransferService.enqueue_processing")
+    @patch(
+        "evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status",
+        return_value=None,
+    )
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
     def test_reconcile_is_idempotent_when_onchain_transfer_already_exists(
         self,
         get_full_block_mock,
         get_receipt_status_mock,
+        _get_block_receipts_status_mock,
         _enqueue_processing_mock,
         _mark_pending_confirm_mock,
     ):

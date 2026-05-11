@@ -982,6 +982,40 @@ class TronUsdtPaymentScannerTests(TestCase):
         self.assertEqual(cursor.last_scanned_block, 123456)
         self.assertEqual(cursor.last_safe_block, 123456)
 
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("tron.scanner.TronHttpClient")
+    def test_scan_chain_caps_single_tick_advance_at_batch_size(
+        self,
+        client_cls,
+        _enqueue_processing_mock,
+    ):
+        # 单 tick 内 Tron 推进的块数必须被 DEFAULT_TRON_SCAN_BATCH_SIZE 限制，
+        # 避免大幅落后时 range(start, latest+1) 无界拖垮当次 beat task。
+        from tron.scanner import DEFAULT_TRON_SCAN_BATCH_SIZE
+        from tron.scanner import TronUsdtPaymentScanner
+
+        start_cursor = 100_000
+        latest_block = start_cursor + DEFAULT_TRON_SCAN_BATCH_SIZE * 4
+        expected_end_block = start_cursor + DEFAULT_TRON_SCAN_BATCH_SIZE
+
+        self._get_or_create_contract_cursor(last_scanned_block=start_cursor)
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.return_value = latest_block
+        client.list_confirmed_contract_events.return_value = {"data": [], "meta": {}}
+
+        summary = TronUsdtPaymentScanner.scan_chain(chain=self.chain)
+
+        self.assertEqual(summary.blocks_scanned, DEFAULT_TRON_SCAN_BATCH_SIZE)
+        self.assertEqual(
+            client.list_confirmed_contract_events.call_count,
+            DEFAULT_TRON_SCAN_BATCH_SIZE,
+        )
+        cursor = TronWatchCursor.objects.get(
+            chain=self.chain,
+            contract_address=self.usdt_mapping.address,
+        )
+        self.assertEqual(cursor.last_scanned_block, expected_end_block)
+
     @patch("chains.tasks.confirm_transfer.delay")
     @patch("chains.service.TransferService.enqueue_processing")
     @patch("tron.adapter.TronHttpClient.get_transaction_info_by_id")
