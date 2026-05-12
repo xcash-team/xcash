@@ -151,9 +151,9 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
 
 @admin.register(EpayMerchant)
 class EpayMerchantAdmin(ModelAdmin):
-    list_display = ("pid", "project", "active", "default_currency", "created_at")
+    list_display = ("pid", "project", "active", "created_at")
     search_fields = ("=pid", "project__name", "project__appid")
-    list_filter = ("active", "default_currency")
+    list_filter = ("active",)
 
 
 @admin.register(EpayOrder)

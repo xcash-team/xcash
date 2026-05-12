@@ -119,7 +119,6 @@ class EpayModelTests(TestCase):
             project=self.project,
             pid=1001,
             secret_key="epay-secret",
-            default_currency="CNY",
         )
         invoice = Invoice.objects.create(
             project=self.project,
@@ -357,7 +356,6 @@ class EpaySubmitServiceTests(TestCase):
             project=self.project,
             pid=2001,
             secret_key="epay-submit-secret",
-            default_currency="CNY",
         )
         self.crypto = Crypto.objects.create(
             name="EPay Submit USDT",
@@ -406,6 +404,7 @@ class EpaySubmitServiceTests(TestCase):
             "return_url": "https://merchant.example.com/return",
             "name": "VIP Package",
             "money": "18.50",
+            "currency": "CNY",
             "param": "user=42",
             "sign_type": "MD5",
         }
@@ -441,6 +440,60 @@ class EpaySubmitServiceTests(TestCase):
             action="invoice",
         )
         mock_initialize.assert_called_once_with(invoice)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_uses_currency_from_request(self, mock_check, mock_initialize):
+        # 商户必须显式指定 currency，且会写到 Invoice.currency 上；
+        # CNY 在 setUp 中已注入 Fiat 表。
+        mock_initialize.side_effect = lambda invoice: invoice
+
+        invoice = EpaySubmitService.submit(self._signed_params(currency="CNY"))
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.currency, "CNY")
+        mock_check.assert_called_once()
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_defaults_to_cny_when_currency_omitted(
+        self, mock_check, mock_initialize,
+    ):
+        # EPay V1 标准协议没有 currency 字段（typecho/wordpress/discuz 插件都不会传），
+        # 缺省时按协议事实默认 CNY 落库；签名也基于不含 currency 的原始参数计算。
+        mock_initialize.side_effect = lambda invoice: invoice
+        params = self._signed_params()
+        del params["currency"]
+        params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
+
+        invoice = EpaySubmitService.submit(params)
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.currency, "CNY")
+
+    def test_submit_rejects_currency_not_in_fiat_table(self):
+        # JPY 不在 setUp 注入的 Fiat 中，应触发 Fiat 校验失败。
+        params = self._signed_params(currency="JPY")
+        params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
+
+        with self.assertRaises(EpaySubmitError):
+            EpaySubmitService.submit(params)
+        self.assertFalse(Invoice.objects.filter(out_no=params["out_trade_no"]).exists())
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_normalizes_currency_to_uppercase(self, mock_check, mock_initialize):
+        # 商户大小写不一致是常见错配，落库统一为大写避免后续匹配失败。
+        # 注意签名是按原始 "cny" 计算的：currency 进入签名前 raw_params 还是小写。
+        mock_initialize.side_effect = lambda invoice: invoice
+        params = self._signed_params(currency="cny")
+        # 用 currency="cny" 重新签名才能通过签名校验
+        params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
+
+        invoice = EpaySubmitService.submit(params)
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.currency, "CNY")
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
@@ -591,6 +644,7 @@ class EpaySubmitServiceTests(TestCase):
             "notify_url": "https://merchant.example.com/notify",
             "name": "VIP Package",
             "money": "18.50",
+            "currency": "CNY",
             "sign_type": "MD5",
         }
         params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
@@ -657,6 +711,7 @@ class EpaySubmitServiceTests(TestCase):
             "return_url": "https://merchant.example.com/return",
             "name": "VIP Package",
             "money": Decimal("18.50"),
+            "currency": "CNY",
             "param": "user=42",
             "sign_type": "MD5",
         }
@@ -664,7 +719,7 @@ class EpaySubmitServiceTests(TestCase):
             project=self.project,
             out_no=params["out_trade_no"],
             title=params["name"],
-            currency=self.merchant.default_currency,
+            currency=params["currency"],
             amount=params["money"],
             methods=Invoice.available_methods(self.project),
             return_url=params["return_url"],
@@ -1001,6 +1056,7 @@ class EpayNotifyTests(TestCase):
             "notify_url": "https://merchant.example.com/notify",
             "name": "VIP Package",
             "money": "18.50",
+            "currency": "CNY",
             "sign_type": "MD5",
         }
         params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)

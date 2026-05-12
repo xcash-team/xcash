@@ -123,7 +123,7 @@ class EpaySubmitService:
             invoice.project_id != order.merchant.project_id
             or invoice.out_no != params["out_trade_no"]
             or invoice.title != params["name"]
-            or invoice.currency != order.merchant.default_currency
+            or invoice.currency != params["currency"]
             or invoice.amount != params["money"]
             or invoice.return_url != params["return_url"]
             or invoice.protocol != InvoiceProtocol.EPAY_V1
@@ -152,7 +152,7 @@ class EpaySubmitService:
                     project=project,
                     out_no=params["out_trade_no"],
                     title=params["name"],
-                    currency=merchant.default_currency,
+                    currency=params["currency"],
                     amount=params["money"],
                     methods=Invoice.available_methods(project),
                     return_url=params["return_url"],

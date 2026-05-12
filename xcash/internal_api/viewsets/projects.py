@@ -9,6 +9,7 @@ from internal_api.authentication import InternalTokenAuthentication
 from internal_api.serializers.projects import ProjectCreateSerializer
 from internal_api.serializers.projects import ProjectDetailSerializer
 from internal_api.serializers.projects import ProjectUpdateSerializer
+from invoices.models import EpayMerchant
 from projects.models import Project
 
 
@@ -38,6 +39,9 @@ class ProjectViewSet(ModelViewSet):
     def perform_create(self, serializer):
         wallet = Wallet.generate()
         serializer.save(wallet=wallet)
+        # 系统级 lazy create：项目落库后立即分配 EpayMerchant，
+        # 保证每个项目从注册一刻起就具备 EPay 收款能力，无需用户在 UI 手动启用。
+        EpayMerchant.ensure_for_project(serializer.instance)
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

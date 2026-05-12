@@ -1,3 +1,4 @@
+import secrets
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -6,6 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db import models
 from django.db import transaction as db_transaction
+from django.db.models import Max
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
@@ -489,12 +491,14 @@ class InvoicePaySlot(models.Model):
         return super().save(*args, **kwargs)
 
 
-class EpayDefaultCurrency(models.TextChoices):
-    CNY = "CNY", _("人民币")
-    USD = "USD", _("美元")
-
-
 class EpayMerchant(models.Model):
+    # pid 分配策略：从 1688 起步，避免与 EPay 生态中常见的小 pid 撞号；
+    # 后续每次自动分配都基于当前最大 pid + 1，单调递增。
+    PID_BASELINE = 1688
+    # 自动生成的 secret_key 字符串长度，恰好满足 EpayMerchantUpdateSerializer
+    # 的 16~128 校验区间下限。
+    SECRET_KEY_LENGTH = 16
+
     project = models.OneToOneField(
         "projects.Project",
         on_delete=models.CASCADE,
@@ -506,12 +510,6 @@ class EpayMerchant(models.Model):
         _("EPay 密钥"),
         max_length=128,
         help_text=_("EPay 协议签名密钥。建议使用强随机字符串，不要与项目 HMAC 密钥重用。"),
-    )
-    default_currency = models.CharField(
-        _("默认计价货币"),
-        max_length=8,
-        choices=EpayDefaultCurrency.choices,
-        default=EpayDefaultCurrency.CNY,
     )
     active = models.BooleanField(_("启用"), default=True)
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)
@@ -536,6 +534,53 @@ class EpayMerchant(models.Model):
                 "无法用于 EPay 协议签名。"
             )
         return self.secret_key
+
+    @classmethod
+    def _generate_secret_key(cls) -> str:
+        # token_urlsafe(12) 稳定产出 16 位 base64url 字符串；
+        # 加密强度由 secrets 模块保证，无需手工加盐。
+        return secrets.token_urlsafe(12)
+
+    @classmethod
+    def _allocate_pid(cls) -> int:
+        # 表为空 / 最大值仍低于 baseline 时取 baseline，否则单调递增。
+        # 调用方负责持有事务锁，避免两个并发请求拿到相同 pid 后再都 INSERT。
+        max_pid = cls.objects.aggregate(Max("pid"))["pid__max"]
+        if max_pid is None or max_pid < cls.PID_BASELINE:
+            return cls.PID_BASELINE
+        return max_pid + 1
+
+    @classmethod
+    def ensure_for_project(cls, project) -> "EpayMerchant":
+        """幂等地为 project 拿到 EpayMerchant：存在则返回，不存在则系统级 lazy 创建。
+
+        商户级配置由系统接管：用户既不指定 pid 也不指定 secret_key，仅能后续
+        修改 active / secret_key。并发创建依赖 pid unique 兜底，IntegrityError
+        后重试，最多 5 次（实际并发量极低，5 次已足够）。
+        """
+        existing = cls.objects.filter(project=project).first()
+        if existing is not None:
+            return existing
+
+        for _attempt in range(5):
+            try:
+                with db_transaction.atomic():
+                    return cls.objects.create(
+                        project=project,
+                        pid=cls._allocate_pid(),
+                        secret_key=cls._generate_secret_key(),
+                        active=True,
+                    )
+            except IntegrityError:
+                # 两种可能：(a) pid 与并发请求撞号、(b) 另一个并发请求已为本 project 建好
+                # OneToOne。前者重新计算 pid 再尝试；后者直接返回已存在的记录。
+                existing = cls.objects.filter(project=project).first()
+                if existing is not None:
+                    return existing
+
+        raise RuntimeError(
+            f"Failed to allocate EpayMerchant for project {project.pk} after retries"
+        )
 
 
 class EpayOrder(models.Model):

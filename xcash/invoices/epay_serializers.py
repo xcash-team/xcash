@@ -6,6 +6,8 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from currencies.models import Fiat
+
 # EPay V1 协议文档原文是 "Amount in yuan with max 2 decimals"，即「最多」两位小数。
 # 真实 typecho/wordpress/discuz 等商户插件经常发送 "18" 或 "18.5"，因此放宽校验：
 # 允许整数 / 一位小数 / 两位小数三种形式，最终统一 quantize 到两位归一化。
@@ -24,6 +26,12 @@ class EpaySubmitSerializer(serializers.Serializer):
     return_url = serializers.URLField(required=False, allow_blank=True, default="")
     name = serializers.CharField(max_length=128)
     money = serializers.CharField()
+    # currency 是 xcash 对 EPay V1 的扩展：标准协议没有该字段，默认按 CNY 元计价
+    # （typecho/wordpress/discuz 等主流商户插件都不会传），因此设为可选，缺省落库 CNY。
+    # 商户若显式传值则进入签名（签名层会自动把所有非 sign/sign_type 字段按字典序纳入），
+    # 此时签名必须基于 raw_params 中的 currency 计算才能通过校验。
+    # 无论传与不传，最终落库的 currency 必须命中 currencies.Fiat 表，避免下游计价崩溃。
+    currency = serializers.CharField(max_length=8, required=False, default="CNY")
     param = serializers.CharField(
         max_length=512, required=False, allow_blank=True, default=""
     )
@@ -34,6 +42,19 @@ class EpaySubmitSerializer(serializers.Serializer):
         normalized = value.upper()
         if normalized != "MD5":
             raise serializers.ValidationError("EPay v1 only supports MD5 sign_type.")
+        return normalized
+
+    def validate_currency(self, value: str) -> str:
+        # 大小写规范化到大写，避免商户传 "cny" 与系统数据 "CNY" 字面不一致；
+        # 签名校验已在 validate 之前用 raw_params 完成，这里只决定落库形态。
+        # 即便走 default="CNY" 分支，DRF 也会调用此方法，所以 Fiat 校验对
+        # 「显式传值」与「缺省回退」都生效。
+        normalized = value.strip().upper()
+        # Fiat.code 是主键，存在即支持；不存在直接 400 拒掉，避免落库后下游计价崩溃。
+        if not Fiat.objects.filter(code=normalized).exists():
+            raise serializers.ValidationError(
+                f"currency '{normalized}' is not a supported fiat code."
+            )
         return normalized
 
     def validate_money(self, value: object) -> Decimal:

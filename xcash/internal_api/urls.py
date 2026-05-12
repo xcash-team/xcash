@@ -12,6 +12,7 @@ router.register("chains", InternalChainViewSet, basename="internal-chain")
 
 # 嵌套在 /projects/{appid}/ 下的业务端点
 from internal_api.viewsets.deposits import InternalDepositViewSet
+from internal_api.viewsets.epay import EpayMerchantView
 from internal_api.viewsets.invoices import InternalInvoiceViewSet
 from internal_api.viewsets.operations import DepositCollectionViewSet
 from internal_api.viewsets.operations import GasRechargeViewSet
@@ -60,5 +61,11 @@ urlpatterns = [
     path(
         "projects/<str:project_appid>/",
         include(project_router.urls),
+    ),
+    # EpayMerchant 在外部视角下是项目的单例配置，不走 SimpleRouter
+    path(
+        "projects/<str:project_appid>/epay-merchant",
+        EpayMerchantView.as_view(),
+        name="internal-epay-merchant",
     ),
 ]
