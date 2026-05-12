@@ -206,6 +206,7 @@ const headers = {
 | POST | `/v1/invoice/{sys_no}/select-method` | 选择支付方式 | 不需要 |
 | GET | `/v1/deposit/address` | 获取充币地址 | 需要 |
 | POST | `/v1/withdrawal` | 发起提币 | 需要 |
+| GET / POST | `/submit.php` | 易支付（EPay）创建订单 | 需要（MD5） |
 
 ---
 
@@ -836,3 +837,193 @@ signature = HMAC-SHA256(message, hmac_key).hexdigest()
     |<-- Webhook: withdrawal -------|
     |-- 响应 "ok" ---------------->|
 ```
+
+---
+
+## 易支付（EPay）兼容
+
+Xcash 内置对易支付 V1 协议的兼容，typecho、wordpress、discuz 等主流开源系统的易支付插件可直接对接，无需额外改造。
+
+### 接口地址
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` / `POST` | `/submit.php` | 创建易支付订单 |
+
+> 所有 EPay 接口均无需 HMAC 签名，使用 EPay 自有 MD5 签名机制。
+
+### 商户身份
+
+每个 Xcash 项目在创建时由系统自动分配 EPay 商户身份，无需在后台再手动开通：
+
+- **pid**：商户 ID，系统从 `1688` 起单调递增分配，全局唯一且不可修改
+- **secret_key**：签名密钥，系统初始化为 16 位随机字符串，商户可在控制台旋转
+- **active**：是否启用，默认开启；关闭后所有 EPay 协议下单请求会返回 `fail`
+
+商户可以登录控制台「项目配置 → EPay 易支付」查看 pid 与当前密钥，并修改启用状态或旋转密钥。pid 一旦分配不会变化，可放心配置到第三方收银台。
+
+### 创建订单
+
+**GET / POST** `/submit.php`
+
+#### 请求参数
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `pid` | integer | 是 | 商户 ID，从控制台「项目配置 → EPay 易支付」查看 |
+| `type` | string | 否 | 支付方式标识，最长 32 位 |
+| `out_trade_no` | string | 是 | 商户订单号，最长 64 位，同一商户下唯一 |
+| `notify_url` | string | 是 | 异步通知地址 |
+| `return_url` | string | 否 | 同步跳转地址 |
+| `name` | string | 是 | 商品名称，最长 128 位 |
+| `money` | string | 是 | 订单金额，最多 2 位小数，最小 0.01 |
+| `currency` | string | 否 | 计价货币代码，缺省按 EPay 协议事实默认 `CNY`；如需 `USD` 等其他法币，需显式传入，且必须命中系统已配置的法币代码 |
+| `param` | string | 否 | 业务扩展参数，最长 512 位 |
+| `sign` | string | 是 | MD5 签名 |
+| `sign_type` | string | 是 | 固定值 `MD5` |
+
+> `currency` 是 Xcash 对 EPay V1 协议的扩展字段，标准协议中并不存在。若客户端不传 currency（如未改造过的 typecho/wordpress/discuz 插件），系统会按 CNY 元计价，不影响 EPay 标准客户端的对接；若显式传 currency，因协议规定所有非 `sign`/`sign_type` 字段都进入签名，请确保签名基于含 `currency` 的原始参数计算。
+
+#### 签名算法
+
+1. 过滤参数：去除 `sign`、`sign_type` 以及值为空字符串或 `null` 的字段
+2. 按键名 ASCII 升序排列剩余参数
+3. 拼接为 `key1=value1&key2=value2` 格式
+4. 在拼接结果末尾直接追加商户密钥（无需 `&key=` 前缀）
+5. 对整体字符串进行 MD5 加密，输出 32 位小写十六进制字符串
+
+##### 签名示例（Python）
+
+```python
+import hashlib
+
+params = {
+    "pid": 1001,
+    "out_trade_no": "order-001",
+    "notify_url": "https://merchant.example.com/notify",
+    "return_url": "https://merchant.example.com/return",
+    "name": "Premium Plan",
+    "money": "29.99",
+    "param": "extra_data",
+    "sign_type": "MD5",
+}
+
+# 1. 过滤并排序
+unsigned_keys = {"sign", "sign_type"}
+filtered = {
+    k: str(v)
+    for k, v in params.items()
+    if k not in unsigned_keys and v not in (None, "")
+}
+sorted_pairs = sorted(filtered.items())
+sign_string = "&".join(f"{k}={v}" for k, v in sorted_pairs)
+
+# 2. 追加密钥并 MD5
+secret_key = "your_epay_secret_key"
+raw = f"{sign_string}{secret_key}"
+sign = hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
+print(sign)
+```
+
+##### 签名示例（PHP）
+
+```php
+<?php
+$params = [
+    "pid" => 1001,
+    "out_trade_no" => "order-001",
+    "notify_url" => "https://merchant.example.com/notify",
+    "return_url" => "https://merchant.example.com/return",
+    "name" => "Premium Plan",
+    "money" => "29.99",
+    "param" => "extra_data",
+    "sign_type" => "MD5",
+];
+
+$unsigned_keys = ["sign", "sign_type"];
+$filtered = [];
+foreach ($params as $k => $v) {
+    if (in_array($k, $unsigned_keys) || $v === "" || $v === null) {
+        continue;
+    }
+    $filtered[$k] = $v;
+}
+ksort($filtered);
+$sign_string = http_build_query($filtered);
+$sign_string = urldecode($sign_string);  // 避免 URL 编码影响签名
+
+$secret_key = "your_epay_secret_key";
+$sign = md5($sign_string . $secret_key);
+echo $sign;
+?>
+```
+
+#### 响应
+
+- **成功**：HTTP `302` 重定向到支付页面，买家可在页面中选择加密货币和链完成支付
+- **失败**：HTTP `400`，响应体为纯文本 `fail`
+
+> 为避免信息泄露，所有失败场景（参数错误、签名错误、商户不存在等）统一返回 `fail`，具体原因请查看服务端日志。
+
+### 异步通知
+
+当买家支付完成且链上交易达到最终确认后，Xcash 会向 `notify_url` 发送 `GET` 请求，参数以 query string 形式附加。
+
+#### 通知参数
+
+| 字段 | 说明 |
+|------|------|
+| `pid` | 商户 ID |
+| `trade_no` | Xcash 系统订单号 |
+| `out_trade_no` | 商户订单号 |
+| `type` | 支付方式标识 |
+| `name` | 商品名称 |
+| `money` | 订单金额（固定 2 位小数） |
+| `trade_status` | 固定值 `TRADE_SUCCESS` |
+| `param` | 创建订单时传入的扩展参数（如有） |
+| `sign_type` | 固定值 `MD5` |
+| `sign` | MD5 签名，商户应验证签名确保来源可信 |
+
+#### 商户响应要求
+
+- 返回 HTTP `200`，响应体为纯文本 `success`
+- 非 `200` 或响应体不为 `success` 视为投递失败
+- 投递失败后系统会自动按退避策略重试
+
+#### 验证签名示例（Python）
+
+```python
+import hashlib
+
+payload = {
+    "pid": "1001",
+    "trade_no": "INV-xxxxxxxx",
+    "out_trade_no": "order-001",
+    "type": "",
+    "name": "Premium Plan",
+    "money": "29.99",
+    "trade_status": "TRADE_SUCCESS",
+    "param": "extra_data",
+    "sign_type": "MD5",
+    "sign": "...",
+}
+
+unsigned_keys = {"sign", "sign_type"}
+filtered = {
+    k: str(v)
+    for k, v in payload.items()
+    if k not in unsigned_keys and v not in (None, "")
+}
+sorted_pairs = sorted(filtered.items())
+sign_string = "&".join(f"{k}={v}" for k, v in sorted_pairs)
+
+secret_key = "your_epay_secret_key"
+expected = hashlib.md5(f"{sign_string}{secret_key}".encode()).hexdigest()
+assert payload["sign"] == expected, "签名验证失败"
+```
+
+### 同步跳转
+
+支付完成后，若创建订单时传入了 `return_url`，系统会将买家跳转至该地址，并在 query string 中附加与异步通知完全一致的参数字段和签名。
+
+> 同步跳转仅表示支付流程结束，不应作为订单完成的最终依据；商户应以异步通知为准完成发货等核心逻辑。
