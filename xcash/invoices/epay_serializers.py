@@ -17,10 +17,16 @@ class EpaySubmitSerializer(serializers.Serializer):
     type = serializers.CharField(max_length=32, allow_blank=True)
     out_trade_no = serializers.CharField(max_length=64)
     notify_url = serializers.URLField()
-    return_url = serializers.URLField(allow_blank=True)
+    # EPay V1 协议中 return_url（同步跳转地址）与 param（业务扩展参数）均为可选字段，
+    # typecho/wordpress/discuz 等主流商户插件经常完全不发送，DRF 默认 required=True 会
+    # 直接 400 拒掉合规请求，因此显式 required=False + default=""。
+    # 签名层 (epay.py:epay_v1_signing_string) 已经会跳过空值，"" 与「不发」在签名上等价。
+    return_url = serializers.URLField(required=False, allow_blank=True, default="")
     name = serializers.CharField(max_length=128)
     money = serializers.CharField()
-    param = serializers.CharField(max_length=512, allow_blank=True)
+    param = serializers.CharField(
+        max_length=512, required=False, allow_blank=True, default=""
+    )
     sign = serializers.CharField(max_length=128)
     sign_type = serializers.CharField(max_length=16)
 

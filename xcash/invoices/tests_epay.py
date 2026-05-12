@@ -570,6 +570,44 @@ class EpaySubmitServiceTests(TestCase):
         self.assertEqual(mock_check.call_count, len(cases))
         self.assertEqual(mock_initialize.call_count, len(cases))
 
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_accepts_missing_optional_param_and_return_url(
+        self,
+        mock_check,
+        mock_initialize,
+    ):
+        # EPay V1 协议中 param 与 return_url 都是可选字段，typecho/wordpress/discuz 等
+        # 真实商户插件常常完全不发送它们；入口必须能在两个键缺省时正常成单，并在重复提交时
+        # 命中幂等分支（_validate_idempotent_order 会比较 params["param"]/["return_url"]
+        # 与模型字段，两侧应统一为空字符串）。
+        mock_initialize.side_effect = lambda invoice: invoice
+
+        params = {
+            "pid": str(self.merchant.pid),
+            "type": "usdt",
+            "out_trade_no": "EPAY-SUBMIT-NO-OPTIONALS",
+            "notify_url": "https://merchant.example.com/notify",
+            "name": "VIP Package",
+            "money": "18.50",
+            "sign_type": "MD5",
+        }
+        params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
+
+        invoice = EpaySubmitService.submit(params)
+        invoice.refresh_from_db()
+        epay_order = invoice.epay_order
+        self.assertEqual(invoice.redirect_url, "")
+        self.assertEqual(epay_order.return_url, "")
+        self.assertEqual(epay_order.param, "")
+
+        replay_invoice = EpaySubmitService.submit(params)
+        self.assertEqual(replay_invoice.pk, invoice.pk)
+        self.assertEqual(Invoice.objects.count(), 1)
+        self.assertEqual(EpayOrder.objects.count(), 1)
+        self.assertEqual(mock_check.call_count, 2)
+        mock_initialize.assert_called_once_with(invoice)
+
     def test_submit_serializer_accepts_loose_money_format(self):
         # 接受：整数、一位小数、两位小数。
         for money in ("18", "18.5", "18.50"):
