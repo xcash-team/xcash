@@ -13,8 +13,6 @@ function PaymentProgress({ invoice }) {
     return null
   }
 
-  const isConfirmed = payment.status === "已确认"
-
   const progress = payment.confirm_progress
   const confirmedCount = progress?.has_confirmed_count ?? 0
   const needConfirmCount = progress?.need_confirmed_count ?? 0
@@ -29,6 +27,14 @@ function PaymentProgress({ invoice }) {
     }
     return 0
   })()
+
+  // 区块层达到目标确认数（按链高度即时判定，与后端 transfer.status 解耦）。
+  // 后端 invoice.status 切到 completed 还需 Celery worker 跑 RPC 二次校验，
+  // 存在时延，这段窗口内仅显示「最终化中」文案；只有 invoice 真正 completed
+  // 时才显示「返回商户」按钮——此时 return_url 才会带签名 query，否则跳过
+  // 去商户站点会因缺 sign 而 error。
+  const isConfirmed = progressPercentage >= 100
+  const isCompleted = invoice?.status === "completed"
 
   const truncateHash = (hash) => {
     if (!hash) return ""
@@ -53,8 +59,8 @@ function PaymentProgress({ invoice }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-lg flex items-center gap-2">
-          {isConfirmed ? <CheckCircle className="h-5 w-5" /> : <div className="h-5 w-5 rounded-full border-2 border-slate-300 border-t-slate-600 animate-spin" />}
-          <span>{isConfirmed ? "支付完成" : "支付确认中"}</span>
+          {isCompleted ? <CheckCircle className="h-5 w-5" /> : <div className="h-5 w-5 rounded-full border-2 border-slate-300 border-t-slate-600 animate-spin" />}
+          <span>{isCompleted ? "支付完成" : isConfirmed ? "最终化中" : "支付确认中"}</span>
         </CardTitle>
         <CardDescription className="flex items-center justify-between gap-3 text-sm">
           <div className="flex items-center gap-2">
@@ -105,8 +111,19 @@ function PaymentProgress({ invoice }) {
           </div>
         )}
 
-        {/* 支付完成 */}
-        {isConfirmed && (
+        {/* 区块确认完成、等待最终化 — 进度条达到 100% 但 invoice 还没 completed */}
+        {isConfirmed && !isCompleted && (
+          <div className="bg-slate-50 rounded-lg p-6 text-center space-y-4">
+            <div className="mx-auto w-12 h-12 rounded-full border-2 border-slate-300 border-t-slate-600 animate-spin" />
+            <div>
+              <h3 className="font-semibold text-slate-900 mb-1">最终化中</h3>
+              <p className="text-sm text-slate-600">已达到所需区块确认数，正在等待最终入账</p>
+            </div>
+          </div>
+        )}
+
+        {/* 支付完成 — invoice 真正 completed 才允许返回商户 */}
+        {isCompleted && (
           <div className="bg-slate-50 rounded-lg p-6 text-center space-y-4">
             <div className="mx-auto w-12 h-12 bg-slate-900 rounded-full flex items-center justify-center">
               <CheckCircle className="h-6 w-6 text-white" />
