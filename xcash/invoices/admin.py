@@ -80,7 +80,7 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
                     "worth",
                     "methods",
                     "email",
-                    "redirect_url",
+                    "return_url",
                     "created_at",
                     "expires_at",
                     "status",

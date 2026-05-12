@@ -120,7 +120,7 @@ class EpaySubmitService:
             or invoice.title != params["name"]
             or invoice.currency != order.merchant.default_currency
             or invoice.amount != params["money"]
-            or invoice.redirect_url != params["return_url"]
+            or invoice.return_url != params["return_url"]
             or invoice.protocol != InvoiceProtocol.EPAY_V1
         ):
             mismatched_fields.append("invoice")
@@ -150,7 +150,7 @@ class EpaySubmitService:
                     currency=merchant.default_currency,
                     amount=params["money"],
                     methods=Invoice.available_methods(project),
-                    redirect_url=params["return_url"],
+                    return_url=params["return_url"],
                     expires_at=timezone.now() + timedelta(minutes=15),
                     protocol=InvoiceProtocol.EPAY_V1,
                 )

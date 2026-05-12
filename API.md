@@ -228,7 +228,7 @@ const headers = {
 | `duration` | integer | 否 | 支付有效期（分钟），范围 5~30，默认 10 |
 | `methods` | object | 否 | 限定支付方式，格式 `{"币种": ["链码"]}` |
 | `email` | string | 否 | 买家邮箱 |
-| `redirect_url` | string | 否 | 支付完成后跳转地址 |
+| `return_url` | string | 否 | 支付完成后同步跳转地址 |
 
 **methods 说明：**
 
@@ -249,7 +249,7 @@ const headers = {
     "USDT": ["ethereum-mainnet", "tron-mainnet"],
     "ETH": ["ethereum-mainnet"]
   },
-  "redirect_url": "https://example.com/payment/success"
+  "return_url": "https://example.com/payment/success"
 }
 ```
 
@@ -276,7 +276,7 @@ const headers = {
   "started_at": null,
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
-  "redirect_url": "https://example.com/payment/success",
+  "return_url": "https://example.com/payment/success",
   "payment": null,
   "status": "waiting"
 }
@@ -322,7 +322,7 @@ const headers = {
   "started_at": "2024-01-01T00:00:05Z",
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
-  "redirect_url": "https://example.com/payment/success",
+  "return_url": "https://example.com/payment/success",
   "payment": null,
   "status": "waiting"
 }
@@ -348,7 +348,7 @@ const headers = {
 | `started_at` | string \| null | 支付开始时间（ISO 8601），选择支付方式后分配 |
 | `created_at` | string | 账单创建时间（ISO 8601） |
 | `expires_at` | string | 支付截止时间（ISO 8601） |
-| `redirect_url` | string \| null | 支付完成后跳转地址 |
+| `return_url` | string \| null | 支付完成后同步跳转地址 |
 | `payment` | object \| null | 匹配到的链上交易详情，未匹配时为空（见下方） |
 | `status` | string | 账单状态：`waiting` / `confirming` / `completed` / `expired` |
 
@@ -429,7 +429,7 @@ const headers = {
   "started_at": "2024-01-01T00:00:05Z",
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
-  "redirect_url": "https://example.com/payment/success",
+  "return_url": "https://example.com/payment/success",
   "payment": null,
   "status": "waiting"
 }

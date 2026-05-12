@@ -1220,7 +1220,7 @@ class InvoiceCreatePermissionCheckTests(TestCase):
                 "methods": {},
                 "duration": 10,
                 "email": "",
-                "redirect_url": "",
+                "return_url": "",
             },
             errors={},
         )

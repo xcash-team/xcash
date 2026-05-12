@@ -81,7 +81,7 @@ class InvoiceCreateSerializer(Serializer):
         max_value=MAX_INVOICE_DURATION,
     )
     methods = serializers.JSONField(required=False, default=dict)
-    redirect_url = serializers.URLField(required=False)
+    return_url = serializers.URLField(required=False)
 
     def _get_project(self):
         # 缓存到实例，避免 validate_out_no / validate_methods / validate 三处重复查询。
@@ -216,7 +216,7 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
             "started_at",
             "created_at",
             "expires_at",
-            "redirect_url",
+            "return_url",
             "payment",
             "status",
         )
@@ -265,7 +265,7 @@ class InvoiceDisplaySerializer(serializers.ModelSerializer):
             "started_at",
             "created_at",
             "expires_at",
-            "redirect_url",
+            "return_url",
             "payment",
             "status",
         )

@@ -427,7 +427,7 @@ class EpaySubmitServiceTests(TestCase):
         self.assertEqual(invoice.currency, "CNY")
         self.assertEqual(invoice.amount, Decimal("18.50"))
         self.assertEqual(invoice.protocol, InvoiceProtocol.EPAY_V1)
-        self.assertEqual(invoice.redirect_url, "https://merchant.example.com/return")
+        self.assertEqual(invoice.return_url, "https://merchant.example.com/return")
         self.assertEqual(invoice.methods, Invoice.available_methods(self.project))
         self.assertEqual(invoice.methods[self.crypto.symbol], [self.chain.code])
         self.assertEqual(epay_order.merchant, self.merchant)
@@ -597,7 +597,7 @@ class EpaySubmitServiceTests(TestCase):
         invoice = EpaySubmitService.submit(params)
         invoice.refresh_from_db()
         epay_order = invoice.epay_order
-        self.assertEqual(invoice.redirect_url, "")
+        self.assertEqual(invoice.return_url, "")
         self.assertEqual(epay_order.return_url, "")
         self.assertEqual(epay_order.param, "")
 
@@ -666,7 +666,7 @@ class EpaySubmitServiceTests(TestCase):
             currency=self.merchant.default_currency,
             amount=params["money"],
             methods=Invoice.available_methods(self.project),
-            redirect_url=params["return_url"],
+            return_url=params["return_url"],
             expires_at=timezone.now() + timedelta(minutes=10),
             protocol=InvoiceProtocol.EPAY_V1,
         )

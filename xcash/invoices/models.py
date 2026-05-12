@@ -117,7 +117,7 @@ class Invoice(models.Model):
 
     started_at = models.DateTimeField(_("支付开始时间"), auto_now_add=True)
     expires_at = models.DateTimeField(_("支付截止时间"))
-    redirect_url = models.URLField(_("支付成功后重定向地址"), blank=True)
+    return_url = models.URLField(_("支付成功后同步跳转地址"), blank=True)
     worth = models.DecimalField(
         _("价值(USD)"),
         max_digits=16,

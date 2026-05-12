@@ -31,7 +31,7 @@ class InternalInvoiceCreateSerializer(serializers.ModelSerializer):
             "amount",
             "methods",
             "email",
-            "redirect_url",
+            "return_url",
             "duration",
         ]
 
@@ -66,7 +66,7 @@ class InternalInvoiceDetailSerializer(serializers.ModelSerializer):
             "tx",
             "started_at",
             "expires_at",
-            "redirect_url",
+            "return_url",
             "created_at",
             "updated_at",
         ]
