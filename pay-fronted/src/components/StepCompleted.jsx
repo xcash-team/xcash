@@ -99,9 +99,9 @@ function StepCompleted({ invoice }) {
           )}
 
           {/* Return to merchant */}
-          {invoice?.redirect_url && (
+          {invoice?.return_url && (
             <Button
-              onClick={() => window.open(invoice.redirect_url, "_blank")}
+              onClick={() => window.open(invoice.return_url, "_blank")}
               className="w-full bg-emerald-500 hover:bg-emerald-400 text-white font-semibold shadow-[0_0_24px_rgba(16,185,129,0.25)] hover:shadow-[0_0_32px_rgba(16,185,129,0.35)] transition-all duration-200 cursor-pointer"
             >
               {t("payment.returnToMerchant") || "返回商户"}

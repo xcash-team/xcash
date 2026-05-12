@@ -116,9 +116,9 @@ function PaymentProgress({ invoice }) {
               <p className="text-sm text-slate-600">交易已成功完成并获得网络确认</p>
             </div>
 
-            {invoice.redirect_url && (
+            {invoice.return_url && (
               <Button
-                onClick={() => window.open(invoice.redirect_url, "_blank")}
+                onClick={() => window.open(invoice.return_url, "_blank")}
                 className="w-full"
               >
                 返回商户

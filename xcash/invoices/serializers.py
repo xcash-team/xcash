@@ -21,6 +21,7 @@ from currencies.service import FiatService
 from projects.service import ProjectService
 
 from .models import Invoice
+from .models import InvoiceProtocol
 from .models import InvoiceStatus
 
 
@@ -189,6 +190,10 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
     amount = StrippedDecimalField(max_digits=32, decimal_places=8)
     pay_amount = StrippedDecimalField(max_digits=32, decimal_places=8)
     pay_url = serializers.SerializerMethodField()
+    # 公开支付页用的 return_url：对 EPay V1 协议、且订单已完成时，注入带签名的
+    # 同步跳转 query，让浏览器按 EPay V1 规范跳回商户站点完成对账；其他场景
+    # 直接透传商户配置的原始 return_url（兼容 native 协议）。
+    return_url = serializers.SerializerMethodField()
     payment = TransferSerializer(source="transfer", read_only=True)
 
     def get_pay_url(self, obj: Invoice) -> str:
@@ -198,6 +203,19 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
             return pay_path
         django_request = getattr(request, "_request", request)
         return django_request.build_absolute_uri(pay_path)
+
+    def get_return_url(self, obj: Invoice) -> str:
+        if (
+            obj.protocol == InvoiceProtocol.EPAY_V1
+            and obj.status == InvoiceStatus.COMPLETED
+        ):
+            # lazy import 避免 serializers ↔ epay_service 顶层循环依赖。
+            from .epay_service import EpaySubmitService
+
+            signed = EpaySubmitService.build_return_url(obj)
+            if signed:
+                return signed
+        return obj.return_url
 
     class Meta:
         model = Invoice

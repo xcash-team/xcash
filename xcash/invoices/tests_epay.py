@@ -28,6 +28,7 @@ from invoices.models import EpayMerchant
 from invoices.models import EpayOrder
 from invoices.models import Invoice
 from invoices.models import InvoiceProtocol
+from invoices.models import InvoiceStatus
 from projects.models import Project
 from projects.models import RecipientAddress
 from projects.models import RecipientAddressUsage
@@ -912,6 +913,159 @@ class EpayNotifyTests(TestCase):
         self.assertEqual(payload["param"], "u=42")
         self.assertEqual(payload["sign_type"], "MD5")
         self.assertTrue(verify_epay_v1_sign(payload, self.merchant.signing_key))
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_build_return_url_appends_signed_query_for_completed_invoice(
+        self, mock_check, mock_initialize
+    ):
+        # 已完成的 EPay V1 订单：build_return_url 必须把 EPay 标准同步跳转
+        # 参数 + 签名拼到商户 return_url 末尾，且签名能通过 verify_epay_v1_sign。
+        from urllib.parse import parse_qs
+        from urllib.parse import urlparse
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params(param="u=42"))
+        Invoice.objects.filter(pk=invoice.pk).update(status=InvoiceStatus.COMPLETED)
+        invoice.refresh_from_db()
+
+        return_url = EpaySubmitService.build_return_url(invoice)
+
+        parsed = urlparse(return_url)
+        self.assertEqual(parsed.scheme, "https")
+        self.assertEqual(parsed.netloc, "merchant.example.com")
+        self.assertEqual(parsed.path, "/return")
+        query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        self.assertEqual(query["pid"], str(self.merchant.pid))
+        self.assertEqual(query["trade_no"], invoice.sys_no)
+        self.assertEqual(query["out_trade_no"], "EPAY-SUBMIT-1001")
+        self.assertEqual(query["money"], "18.50")
+        self.assertEqual(query["trade_status"], "TRADE_SUCCESS")
+        self.assertEqual(query["sign_type"], "MD5")
+        self.assertEqual(query["param"], "u=42")
+        self.assertTrue(verify_epay_v1_sign(query, self.merchant.signing_key))
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_build_return_url_preserves_existing_query_on_return_url(
+        self, mock_check, mock_initialize
+    ):
+        # 商户 return_url 自带 query（如 ?source=xcash）时，原 query 必须保留，
+        # EPay 字段追加在后面而不能覆盖。
+        from urllib.parse import parse_qs
+        from urllib.parse import urlparse
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(
+            self._signed_params(return_url="https://merchant.example.com/return?source=xcash")
+        )
+        Invoice.objects.filter(pk=invoice.pk).update(status=InvoiceStatus.COMPLETED)
+        invoice.refresh_from_db()
+
+        return_url = EpaySubmitService.build_return_url(invoice)
+        parsed = urlparse(return_url)
+        query = parse_qs(parsed.query)
+        self.assertEqual(query["source"], ["xcash"])
+        self.assertIn("sign", query)
+        self.assertEqual(query["trade_status"], ["TRADE_SUCCESS"])
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_build_return_url_returns_empty_when_not_completed(
+        self, mock_check, mock_initialize
+    ):
+        # waiting / confirming 阶段不应把同步跳转 URL 暴露给前端：用户还没付完
+        # 不能伪造 TRADE_SUCCESS 跳转回商户。
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params())
+        invoice.refresh_from_db()
+
+        self.assertEqual(invoice.status, InvoiceStatus.WAITING)
+        self.assertEqual(EpaySubmitService.build_return_url(invoice), "")
+
+        Invoice.objects.filter(pk=invoice.pk).update(status=InvoiceStatus.CONFIRMING)
+        invoice.refresh_from_db()
+        self.assertEqual(EpaySubmitService.build_return_url(invoice), "")
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_build_return_url_returns_empty_when_return_url_not_configured(
+        self, mock_check, mock_initialize
+    ):
+        # 商户没传 return_url（EPay V1 允许）时不应拼出无效 URL。
+        mock_initialize.side_effect = lambda invoice: invoice
+        params = {
+            "pid": str(self.merchant.pid),
+            "type": "usdt",
+            "out_trade_no": "EPAY-RETURN-NO-URL",
+            "notify_url": "https://merchant.example.com/notify",
+            "name": "VIP Package",
+            "money": "18.50",
+            "sign_type": "MD5",
+        }
+        params["sign"] = build_epay_v1_sign(params, self.merchant.signing_key)
+        invoice = EpaySubmitService.submit(params)
+        Invoice.objects.filter(pk=invoice.pk).update(status=InvoiceStatus.COMPLETED)
+        invoice.refresh_from_db()
+
+        self.assertEqual(EpaySubmitService.build_return_url(invoice), "")
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_public_serializer_returns_signed_return_url_when_completed(
+        self, mock_check, mock_initialize
+    ):
+        # InvoicePublicSerializer 是 SPA 拉取的对外接口；完成态下必须把签名 query
+        # 输出在 return_url 上，否则前端「返回商户」按钮跳过去会 error。
+        from urllib.parse import parse_qs
+        from urllib.parse import urlparse
+
+        from invoices.serializers import InvoicePublicSerializer
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params(param="u=42"))
+        Invoice.objects.filter(pk=invoice.pk).update(status=InvoiceStatus.COMPLETED)
+        invoice.refresh_from_db()
+
+        data = InvoicePublicSerializer(invoice).data
+        parsed = urlparse(data["return_url"])
+        self.assertEqual(parsed.path, "/return")
+        query = parse_qs(parsed.query)
+        self.assertEqual(query["trade_status"], ["TRADE_SUCCESS"])
+        self.assertEqual(query["trade_no"], [invoice.sys_no])
+        self.assertIn("sign", query)
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_public_serializer_returns_raw_return_url_when_not_completed(
+        self, mock_check, mock_initialize
+    ):
+        # 未完成态不能让前端拿到签名 URL：用户能点这个按钮就等于无支付完成跳转回商户。
+        from invoices.serializers import InvoicePublicSerializer
+
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params())
+        invoice.refresh_from_db()
+
+        data = InvoicePublicSerializer(invoice).data
+        self.assertEqual(data["return_url"], "https://merchant.example.com/return")
+
+    def test_build_return_url_returns_empty_for_native_protocol(self):
+        # native 协议没有 epay_order，build_return_url 必须早退而不报错。
+        native_invoice = Invoice.objects.create(
+            project=self.project,
+            out_no="NATIVE-RETURN-1",
+            title="Native",
+            currency="CNY",
+            amount=Decimal("10.00"),
+            methods={},
+            protocol=InvoiceProtocol.NATIVE,
+            status=InvoiceStatus.COMPLETED,
+            return_url="https://merchant.example.com/return",
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        self.assertEqual(EpaySubmitService.build_return_url(native_invoice), "")
 
     @patch("webhooks.service.WebhookService.enqueue_delivery")
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")

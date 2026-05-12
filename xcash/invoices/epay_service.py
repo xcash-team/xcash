@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl
+from urllib.parse import urlencode
+from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 from django.db import IntegrityError
 from django.db import transaction
@@ -19,6 +23,7 @@ from .models import EpayMerchant
 from .models import EpayOrder
 from .models import Invoice
 from .models import InvoiceProtocol
+from .models import InvoiceStatus
 from .service import InvoiceService
 
 if TYPE_CHECKING:
@@ -226,6 +231,34 @@ class EpaySubmitService:
             payload["param"] = epay_order.param
         payload["sign"] = build_epay_v1_sign(payload, epay_order.merchant.signing_key)
         return payload
+
+    @classmethod
+    def build_return_url(cls, invoice: Invoice) -> str:
+        """构造 EPay V1 同步跳转 URL（含签名）。
+
+        当 invoice 是已完成的 EPay V1 订单且商户配置了 return_url 时，按协议
+        把 trade_no/out_trade_no/money/trade_status/sign 等字段以 query 形式
+        拼到商户跳转地址末尾；否则返回空串，让上层决定 fallback。
+        同步、异步通知字段集完全一致，因此直接复用 build_notify_payload，
+        保证签名/字段在两条链路上始终对齐，不会因维护漂移导致商户校验不通过。
+        """
+        if invoice.protocol != InvoiceProtocol.EPAY_V1:
+            return ""
+        if invoice.status != InvoiceStatus.COMPLETED:
+            return ""
+        return_url = invoice.epay_order.return_url
+        if not return_url:
+            return ""
+
+        payload = cls.build_notify_payload(invoice)
+        parsed = urlparse(return_url)
+        # 商户配置的 return_url 本身可能已带 query（例如
+        # https://m.example.com/return?source=xcash），需要保留原有键值，
+        # 再追加 EPay 字段。重名时（极少见）以协议字段为准，但用 list 合并
+        # 而非 dict 覆盖，以保留商户原始 query 的语义。
+        merged_query = parse_qsl(parsed.query, keep_blank_values=True)
+        merged_query.extend(payload.items())
+        return urlunparse(parsed._replace(query=urlencode(merged_query)))
 
     @classmethod
     def enqueue_paid_notify(cls, invoice: Invoice) -> "WebhookEvent":
