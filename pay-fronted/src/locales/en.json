@@ -11,6 +11,8 @@
   },
   "invoice": {
     "title": "Invoice Details",
+    "stepLabel": "Invoice",
+    "completedLabel": "Completed",
     "orderNumber": "Order Number",
     "systemNumber": "System Number",
     "amountDue": "Amount Due",
@@ -27,6 +29,8 @@
     }
   },
   "payment": {
+    "stepLabel": "Method",
+    "sendLabel": "Send",
     "selectMethod": "Select Payment Method",
     "selectMethodDesc": "Please select the token and network you want to use",
     "confirmAndSelectMethod": "Confirm & Select Payment Method →",

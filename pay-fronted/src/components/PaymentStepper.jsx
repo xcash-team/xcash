@@ -7,6 +7,7 @@ import StepCompleted from "@/components/StepCompleted"
 import PaymentMethodSelector from "@/components/PaymentMethodSelector"
 import PaymentAddress from "@/components/PaymentAddress"
 import WaitingPayment from "@/components/WaitingPayment"
+import { useI18n } from "@/hooks/useI18n"
 
 function PaymentStepper({
   invoice,
@@ -23,6 +24,7 @@ function PaymentStepper({
   isDark,
   toggleTheme,
 }) {
+  const { t } = useI18n()
   const hasPaymentMethod = Boolean(
     invoice.crypto && invoice.chain && invoice.pay_address && invoice.pay_amount
   )
@@ -170,7 +172,7 @@ function PaymentStepper({
                       <div className="absolute inset-0 rounded-full border-2 border-orange-500/15 animate-ping" />
                       <div className="w-10 h-10 animate-spin rounded-full border-2 border-orange-500/20 border-t-orange-500" />
                     </div>
-                    <p className="text-sm text-muted-foreground">正在获取支付信息…</p>
+                    <p className="text-sm text-muted-foreground">{t("payment.gettingPaymentInfo")}</p>
                   </div>
                 ) : (
                   <>

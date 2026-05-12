@@ -1,20 +1,14 @@
 // src/components/StepIndicator.jsx
 import { useI18n } from "@/hooks/useI18n"
 
-const STEP_CONFIG = {
-  4: {
-    keys: ["invoice.stepLabel", "payment.stepLabel", "payment.sendLabel", "invoice.completedLabel"],
-    fallbacks: ["账单", "支付方式", "发送", "完成"],
-  },
-  3: {
-    keys: ["invoice.stepLabel", "payment.sendLabel", "invoice.completedLabel"],
-    fallbacks: ["账单", "发送", "完成"],
-  },
+const STEP_KEYS = {
+  4: ["invoice.stepLabel", "payment.stepLabel", "payment.sendLabel", "invoice.completedLabel"],
+  3: ["invoice.stepLabel", "payment.sendLabel", "invoice.completedLabel"],
 }
 
 function StepIndicator({ activeStep, naturalStep, onStepClick, stepCount = 4 }) {
   const { t } = useI18n()
-  const { keys, fallbacks } = STEP_CONFIG[stepCount] ?? STEP_CONFIG[4]
+  const keys = STEP_KEYS[stepCount] ?? STEP_KEYS[4]
   const nodes = Array.from({ length: stepCount }, (_, i) => i + 1)
 
   const getNodeStyle = (n) => {
@@ -72,7 +66,7 @@ function StepIndicator({ activeStep, naturalStep, onStepClick, stepCount = 4 }) 
       <div className="flex justify-between mt-1.5 px-0.5">
         {nodes.map((n, i) => (
           <div key={n} className={`text-[9px] text-center whitespace-nowrap ${getLabelStyle(n)}`}>
-            {t(keys[i]) !== keys[i] ? t(keys[i]) : fallbacks[i]}
+            {t(keys[i])}
           </div>
         ))}
       </div>

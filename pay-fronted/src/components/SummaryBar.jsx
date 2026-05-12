@@ -3,7 +3,8 @@ import LogoMark from "@/components/LogoMark"
 import { useI18n } from "@/hooks/useI18n"
 
 function SummaryBar({ invoice, isDark, toggleTheme }) {
-  const { t } = useI18n()
+  const { t, locale, setLocale } = useI18n()
+  const toggleLocale = () => setLocale(locale === "zh" ? "en" : "zh")
 
   const getStatusStyle = (status) => {
     switch (status) {
@@ -72,6 +73,16 @@ function SummaryBar({ invoice, isDark, toggleTheme }) {
             {t(`invoice.status.${displayStatus}`) || displayStatus}
           </span>
         </div>
+
+        {/* Locale toggle */}
+        <button
+          onClick={toggleLocale}
+          className="flex-shrink-0 h-8 px-2.5 rounded-full flex items-center justify-center text-xs font-semibold tabular-nums bg-white/[0.06] dark:bg-white/[0.06] hover:bg-white/[0.12] dark:hover:bg-white/[0.12] border border-black/[0.08] dark:border-white/[0.1] text-slate-600 dark:text-slate-300 transition-colors"
+          aria-label="Switch language"
+          title={locale === "zh" ? "Switch to English" : "切换到中文"}
+        >
+          {locale === "zh" ? "EN" : "中"}
+        </button>
 
         {/* Theme toggle */}
         <button

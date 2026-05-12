@@ -11,6 +11,8 @@
   },
   "invoice": {
     "title": "账单详情",
+    "stepLabel": "账单",
+    "completedLabel": "完成",
     "orderNumber": "订单号",
     "systemNumber": "系统单号",
     "amountDue": "应付金额",
@@ -27,6 +29,8 @@
     }
   },
   "payment": {
+    "stepLabel": "支付方式",
+    "sendLabel": "发送",
     "selectMethod": "选择支付方式",
     "selectMethodDesc": "请选择您要使用的代币和网络",
     "confirmAndSelectMethod": "确认并选择支付方式 →",

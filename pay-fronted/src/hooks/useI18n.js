@@ -10,55 +10,81 @@ const translations = {
   "zh-HK": zh,
 }
 
-/**
- * 从浏览器获取语言偏好
- * @returns {string} 语言代码 ('en' 或 'zh')
- */
-function getBrowserLanguage() {
-  // 获取浏览器语言
-  const browserLang = navigator.language || navigator.userLanguage || "en"
+const SUPPORTED = ["en", "zh"]
+const STORAGE_KEY = "xcash-locale"
+const CHANGE_EVENT = "xcash-locale-change"
 
-  // 简化语言代码（例如 'zh-CN' -> 'zh', 'en-US' -> 'en'）
-  const langCode = browserLang.split("-")[0]
-
-  // 如果是中文相关语言，返回 'zh'，否则默认返回 'en'
-  return langCode === "zh" ? "zh" : "en"
+function normalize(lang) {
+  if (!lang) return "en"
+  const code = lang.split("-")[0]
+  return code === "zh" ? "zh" : "en"
 }
 
-/**
- * i18n Hook
- * 根据浏览器语言自动选择语言，默认英文
- */
+function detectInitialLocale() {
+  if (typeof window === "undefined") return "en"
+  // 用户手动选择过的优先；否则回退到浏览器语言。
+  try {
+    const stored = window.localStorage?.getItem(STORAGE_KEY)
+    if (stored && SUPPORTED.includes(stored)) return stored
+  } catch {
+    // localStorage 不可用（隐私模式等），忽略即可
+  }
+  const browserLang = navigator.language || navigator.userLanguage || "en"
+  return normalize(browserLang)
+}
+
+// 全局单一来源：避免多处 useI18n 各自持有独立 state，切换不同步。
+let currentLocale = detectInitialLocale()
+const listeners = new Set()
+
+function setGlobalLocale(next) {
+  const normalized = SUPPORTED.includes(next) ? next : normalize(next)
+  if (normalized === currentLocale) return
+  currentLocale = normalized
+  try {
+    window.localStorage?.setItem(STORAGE_KEY, normalized)
+  } catch {
+    // 写入失败不影响内存中的切换
+  }
+  listeners.forEach((fn) => fn(normalized))
+  window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: normalized }))
+}
+
 export function useI18n() {
-  const [locale, setLocale] = useState(() => getBrowserLanguage())
+  const [locale, setLocaleState] = useState(currentLocale)
 
   useEffect(() => {
-    // 监听语言变化（如果需要支持动态切换）
-    const handleLanguageChange = () => {
-      setLocale(getBrowserLanguage())
-    }
+    const handler = (next) => setLocaleState(next)
+    listeners.add(handler)
+    // locale 在挂载到订阅之间可能已被改动，做一次对齐
+    if (locale !== currentLocale) setLocaleState(currentLocale)
 
-    window.addEventListener("languagechange", handleLanguageChange)
-    return () => window.removeEventListener("languagechange", handleLanguageChange)
+    const onBrowserChange = () => {
+      // 仅当用户没手动选过语言时，才跟随浏览器语言变化
+      try {
+        if (window.localStorage?.getItem(STORAGE_KEY)) return
+      } catch {
+        // 无 localStorage 时也按跟随处理
+      }
+      setGlobalLocale(navigator.language || "en")
+    }
+    window.addEventListener("languagechange", onBrowserChange)
+    return () => {
+      listeners.delete(handler)
+      window.removeEventListener("languagechange", onBrowserChange)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  /**
-   * 获取翻译文本
-   * @param {string} key - 翻译键，支持嵌套路径如 'invoice.title'
-   * @param {object} params - 可选的参数对象，用于替换占位符
-   * @returns {string} 翻译后的文本
-   */
   const t = (key, params = {}) => {
     const keys = key.split(".")
     let translation = translations[locale] || translations.en
 
-    // 遍历键路径
     for (const k of keys) {
       translation = translation?.[k]
       if (!translation) break
     }
 
-    // 如果找不到翻译，尝试使用英文
     if (!translation) {
       translation = translations.en
       for (const k of keys) {
@@ -67,12 +93,10 @@ export function useI18n() {
       }
     }
 
-    // 如果还是找不到，返回键本身
     if (!translation) {
       return key
     }
 
-    // 替换参数占位符 {{param}}
     if (typeof translation === "string" && Object.keys(params).length > 0) {
       return translation.replace(/\{\{(\w+)\}\}/g, (match, param) => {
         return params[param] !== undefined ? params[param] : match
@@ -84,7 +108,7 @@ export function useI18n() {
 
   return {
     locale,
-    setLocale,
+    setLocale: setGlobalLocale,
     t,
   }
 }
