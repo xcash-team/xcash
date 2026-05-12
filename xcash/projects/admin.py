@@ -8,6 +8,7 @@ from django.forms.formsets import all_valid
 from django.utils.html import format_html
 from django.utils.html import format_html_join
 from django.utils.translation import gettext_lazy as _
+from unfold.admin import StackedInline
 from unfold.admin import TabularInline
 from unfold.decorators import display
 from unfold.widgets import UnfoldAdminTextInputWidget
@@ -21,6 +22,7 @@ from chains.models import AddressUsage
 from chains.models import Chain
 from chains.models import ChainType
 from common.admin import ModelAdmin
+from invoices.models import EpayMerchant
 from projects.models import Project
 from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
@@ -203,6 +205,28 @@ class CollectionAddressInline(_RecipientAddressInline):
     verbose_name_plural = _("归集地址")
 
 
+class EpayMerchantInline(StackedInline):
+    # EpayMerchant 与 Project 是 OneToOne，限制 max_num=1 避免在表单上误导用户可以新增多条。
+    model = EpayMerchant
+    extra = 0
+    max_num = 1
+    can_delete = False
+    verbose_name = _("EPay 配置")
+    verbose_name_plural = _("EPay 配置")
+    fields = (
+        "pid",
+        "secret_key",
+        "default_currency",
+        "active",
+    )
+
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        # secret_key 是 EPay 协议签名密钥，等同 hmac_key 的敏感级别，复用项目页同款密码型 widget。
+        if db_field.name == "secret_key":
+            kwargs["widget"] = ProjectHmacKeyWidget()
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
+
+
 @admin.register(Project)
 class ProjectAdmin(ModelAdmin):
     change_form_outer_after_template = "admin/includes/project_change_otp_modal.html"
@@ -218,6 +242,7 @@ class ProjectAdmin(ModelAdmin):
     inlines = (
         PaymentAddressInline,
         CollectionAddressInline,
+        EpayMerchantInline,
         ProjectTelegramAlertConfigInline,
     )
     list_display = (
