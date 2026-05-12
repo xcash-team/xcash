@@ -18,7 +18,7 @@ def _epay_submit_rate(_group, _request):
     return getattr(settings, "EPAY_SUBMIT_RATE_LIMIT", "60/m")
 
 
-# /submit.php 是公开匿名入口，攻击者用有效 pid + 错误 sign 反复打就会持续触发
+# /epay/submit.php 是公开匿名入口，攻击者用有效 pid + 错误 sign 反复打就会持续触发
 # EpayMerchant.objects.get + serializer 校验 + 签名计算，对 DB 形成查询型 DoS。
 # 这里按 IP 维度做 60/min 软限流，超限直接 429（block=True），不阻断正常商户。
 @method_decorator(csrf_exempt, name="dispatch")

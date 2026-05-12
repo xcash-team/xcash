@@ -11,8 +11,7 @@ from invoices.views import payment_view
 
 urlpatterns = [
     path("v1/", include("config.api_v1")),
-    path("submit.php", EpaySubmitView.as_view(), name="epay-submit"),
-    path("epay/submit.php", EpaySubmitView.as_view(), name="epay-submit-prefixed"),
+    path("epay/submit.php", EpaySubmitView.as_view(), name="epay-submit"),
     # 支付前端 SPA：返回 index.html，由 React 根据 sys_no 渲染支付页
     path("pay/<str:sys_no>", payment_view, name="payment-invoice"),
     path("i18n/", include("django.conf.urls.i18n")),

@@ -772,7 +772,7 @@ class EpaySubmitRouteTests(TestCase):
     ):
         mock_initialize.side_effect = lambda invoice: invoice
 
-        response = self.client.post("/submit.php", data=self._signed_params())
+        response = self.client.post("/epay/submit.php", data=self._signed_params())
 
         invoice = Invoice.objects.get(out_no="EPAY-SUBMIT-1001")
         self.assertEqual(response.status_code, 302)
@@ -792,7 +792,7 @@ class EpaySubmitRouteTests(TestCase):
         mock_initialize.side_effect = lambda invoice: invoice
 
         response = self.client.get(
-            "/submit.php",
+            "/epay/submit.php",
             data=self._signed_params(out_trade_no="EPAY-SUBMIT-GET-1001"),
         )
 
@@ -814,7 +814,7 @@ class EpaySubmitRouteTests(TestCase):
         params = self._signed_params()
         params["sign"] = "bad-sign"
 
-        response = self.client.post("/submit.php", data=params)
+        response = self.client.post("/epay/submit.php", data=params)
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response["Content-Type"], "text/plain; charset=utf-8")
@@ -838,8 +838,8 @@ class EpaySubmitRouteTests(TestCase):
         invalid_sign_params["sign"] = "bad-sign"
 
         responses = [
-            self.client.post("/submit.php", data=invalid_pid_params),
-            self.client.post("/submit.php", data=invalid_sign_params),
+            self.client.post("/epay/submit.php", data=invalid_pid_params),
+            self.client.post("/epay/submit.php", data=invalid_sign_params),
         ]
 
         for response in responses:
@@ -867,7 +867,7 @@ class EpaySubmitRouteTests(TestCase):
         params = self._signed_params()
         params["sign"] = "bad-sign"
 
-        response = self.client.post("/submit.php", data=params)
+        response = self.client.post("/epay/submit.php", data=params)
 
         self.assertEqual(response.status_code, 400)
         self.assertTrue(mock_logger.warning.called)
@@ -891,7 +891,7 @@ class EpaySubmitRouteTests(TestCase):
         csrf_client = Client(enforce_csrf_checks=True)
 
         response = csrf_client.post(
-            "/submit.php",
+            "/epay/submit.php",
             data=self._signed_params(out_trade_no="EPAY-CSRF-1001"),
         )
 
@@ -916,14 +916,14 @@ class EpaySubmitRouteTests(TestCase):
 
         # 前两个请求：合法签名，应当被放行。
         first = self.client.post(
-            "/submit.php",
+            "/epay/submit.php",
             data=self._signed_params(out_trade_no="EPAY-RATELIMIT-1"),
             HTTP_X_FORWARDED_FOR=attacker_ip,
         )
         self.assertEqual(first.status_code, 302)
 
         second = self.client.post(
-            "/submit.php",
+            "/epay/submit.php",
             data=self._signed_params(out_trade_no="EPAY-RATELIMIT-2"),
             HTTP_X_FORWARDED_FOR=attacker_ip,
         )
@@ -932,7 +932,7 @@ class EpaySubmitRouteTests(TestCase):
         # 第三个请求：超过阈值，必须 429，且未触发到下游建单逻辑。
         before_initialize_calls = mock_initialize.call_count
         third = self.client.post(
-            "/submit.php",
+            "/epay/submit.php",
             data=self._signed_params(out_trade_no="EPAY-RATELIMIT-3"),
             HTTP_X_FORWARDED_FOR=attacker_ip,
         )
