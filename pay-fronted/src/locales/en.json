@@ -20,6 +20,7 @@
     "status": {
       "waiting": "Waiting",
       "confirming": "Confirming",
+      "finalizing": "Finalizing",
       "completed": "Completed",
       "expired": "Expired",
       "unknown": "Unknown"
@@ -39,6 +40,7 @@
     "paymentInfo": "Payment Information",
     "paymentCompleted": "Payment Completed",
     "paymentConfirming": "Payment Confirming",
+    "paymentFinalizing": "Finalizing",
     "paymentAmount": "Payment Amount",
     "network": "Network",
     "paymentAddress": "Payment Address",
@@ -56,7 +58,8 @@
     "blocks": "blocks",
     "needs": "needs",
     "transactionConfirmed": "Transaction confirmed",
-    "waitingConfirmation": "Please wait for blockchain confirmation"
+    "waitingConfirmation": "Please wait for blockchain confirmation",
+    "awaitingFinalization": "Required confirmations received, awaiting final settlement"
   },
   "waiting": {
     "title": "Waiting for Payment",

@@ -20,6 +20,7 @@
     "status": {
       "waiting": "待支付",
       "confirming": "确认中",
+      "finalizing": "最终化中",
       "completed": "已完成",
       "expired": "已超时",
       "unknown": "未知状态"
@@ -39,6 +40,7 @@
     "paymentInfo": "支付信息",
     "paymentCompleted": "支付已完成",
     "paymentConfirming": "支付确认中",
+    "paymentFinalizing": "最终化中",
     "paymentAmount": "支付金额",
     "network": "网络",
     "paymentAddress": "支付地址",
@@ -56,7 +58,8 @@
     "blocks": "个区块",
     "needs": "需要",
     "transactionConfirmed": "交易已确认完成",
-    "waitingConfirmation": "请等待区块链确认"
+    "waitingConfirmation": "请等待区块链确认",
+    "awaitingFinalization": "已达到所需区块确认数，正在等待最终入账"
   },
   "waiting": {
     "title": "等待支付",

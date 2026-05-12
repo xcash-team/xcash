@@ -18,6 +18,10 @@ function PaymentAddress({ invoice, onReset }) {
   const progress = confirmingProgress.progress || 0
   const hasConfirmedCount = confirmingProgress.has_confirmed_count || 0
   const needConfirmedCount = confirmingProgress.need_confirmed_count || 0
+  // 区块层已达到目标确认数（按链高度即时判定，与后端 transfer.status 解耦）。
+  // 后端 invoice.status 切到 completed 还要 worker 跑 RPC 二次校验，存在时延，
+  // 这段窗口内把标题/描述切到「最终化中」，让用户知道在等什么，避免误以为卡住。
+  const isFinalizing = isConfirming && progress >= 100
 
   useEffect(() => {
     if (!invoice?.pay_address) {
@@ -76,15 +80,22 @@ function PaymentAddress({ invoice, onReset }) {
             <CardTitle className="text-white text-lg">
               {isCompleted
                 ? t("payment.paymentCompleted")
-                : isConfirming
-                  ? t("payment.paymentConfirming")
-                  : t("payment.paymentInfo")}
+                : isFinalizing
+                  ? t("payment.paymentFinalizing")
+                  : isConfirming
+                    ? t("payment.paymentConfirming")
+                    : t("payment.paymentInfo")}
             </CardTitle>
             <CardDescription className="text-sm mt-1">
               {isCompleted ? (
                 <span className="text-emerald-400 font-medium flex items-center gap-1.5">
                   <CheckCircle2 className="h-3.5 w-3.5" />
                   {t("confirmation.transactionConfirmed")}
+                </span>
+              ) : isFinalizing ? (
+                <span className="text-emerald-400 font-medium flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5" />
+                  {t("confirmation.awaitingFinalization")}
                 </span>
               ) : isConfirming ? (
                 <span className="text-amber-400 font-medium flex items-center gap-1.5">

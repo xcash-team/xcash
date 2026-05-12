@@ -11,6 +11,8 @@ function SummaryBar({ invoice, isDark, toggleTheme }) {
         return { badge: "bg-blue-500/10 text-blue-300 border border-blue-500/20", dot: "bg-blue-400 animate-pulse" }
       case "confirming":
         return { badge: "bg-amber-500/10 text-amber-300 border border-amber-500/20", dot: "bg-amber-400 animate-pulse" }
+      case "finalizing":
+        return { badge: "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20", dot: "bg-emerald-400 animate-pulse" }
       case "completed":
         return { badge: "bg-emerald-500/10 text-emerald-300 border border-emerald-500/20", dot: "bg-emerald-400" }
       case "expired":
@@ -21,7 +23,16 @@ function SummaryBar({ invoice, isDark, toggleTheme }) {
   }
 
   const hasPayMethod = Boolean(invoice?.crypto && invoice?.pay_amount)
-  const statusStyle = getStatusStyle(invoice?.status)
+  // 后端 invoice.status 真正切到 completed 还要等 worker 的 RPC 二次校验，
+  // 区块层达标到 invoice 完成之间是空窗期；前端把这段显示为 finalizing
+  // 而不是继续闪烁的 confirming，避免用户看到 100% 进度 + amber 徽章产生
+  // 「卡住了」的错觉。
+  const progress = invoice?.payment?.confirm_progress?.progress ?? 0
+  const displayStatus =
+    invoice?.status === "confirming" && progress >= 100
+      ? "finalizing"
+      : invoice?.status
+  const statusStyle = getStatusStyle(displayStatus)
 
   return (
     <div className="bg-orange-500/[0.06] border-b border-orange-500/[0.12] px-5 py-3">
@@ -58,7 +69,7 @@ function SummaryBar({ invoice, isDark, toggleTheme }) {
         <div className="flex-shrink-0">
           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${statusStyle.badge}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${statusStyle.dot}`} />
-            {t(`invoice.status.${invoice?.status}`) || invoice?.status}
+            {t(`invoice.status.${displayStatus}`) || displayStatus}
           </span>
         </div>
 
