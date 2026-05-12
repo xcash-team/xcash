@@ -82,6 +82,7 @@ testpaths = ["xcash"]
 python_files = [
     "tests.py",
     "test_*.py",
+    "tests_*.py",
 ]
 filterwarnings = [
     "ignore:websockets\\.legacy is deprecated;.*:DeprecationWarning",
