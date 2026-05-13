@@ -227,11 +227,15 @@ class InvoiceService:
             and invoice.protocol == InvoiceProtocol.NATIVE
             and confirm_mode == ConfirmMode.FULL
         ):
+            # 嵌套 atomic 建立 savepoint：即便 create_event 触发 DatabaseError
+            # 把当前连接标记为 needs_rollback，回滚也只发生在 savepoint 内，
+            # 外层 invoice 匹配事务仍能成功提交。
             try:
-                WebhookService.create_event(
-                    project=invoice.project,
-                    payload=InvoiceService.build_webhook_payload(invoice),
-                )
+                with transaction.atomic():
+                    WebhookService.create_event(
+                        project=invoice.project,
+                        payload=InvoiceService.build_webhook_payload(invoice),
+                    )
             except Exception:
                 logger.exception("发送账单预通知失败", invoice_id=invoice.pk)
 

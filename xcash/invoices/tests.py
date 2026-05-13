@@ -6,9 +6,11 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 from django.core.cache import cache
+from django.db import DatabaseError
 from django.db import IntegrityError
 from django.db import close_old_connections
 from django.db import connections
+from django.db import transaction as db_transaction
 from django.test import TestCase
 from django.test import TransactionTestCase
 from django.test import override_settings
@@ -445,6 +447,39 @@ class InvoicePaySlotTests(TestCase):
         invoice.refresh_from_db()
         self.assertEqual(invoice.status, InvoiceStatus.CONFIRMING)
         self.assertEqual(invoice.transfer_id, transfer.pk)
+
+    def test_pre_notify_db_error_does_not_block_invoice_match(self):
+        # 关键回归：模拟 webhook 创建过程中触发 DatabaseError 并标记当前连接 needs_rollback；
+        # try_match_invoice 内的嵌套 savepoint 必须把回滚范围限制在 savepoint 内，
+        # 让外层 invoice 匹配事务仍能正常提交（invoice/paySlot/transfer 状态全部保留）。
+        def _simulate_db_error(*args, **kwargs):
+            # set_rollback 重现 Django 在真实 DB 错误时对连接打的回滚标记。
+            db_transaction.set_rollback(True)
+            raise DatabaseError("simulated db error")
+
+        self.project.pre_notify = True
+        self.project.save(update_fields=["pre_notify"])
+        invoice = self.create_invoice(out_no="slot-prenotify-dberror")
+        invoice.select_method(self.crypto, self.chain_a)
+        first_slot = invoice.pay_slots.get(version=1)
+        transfer = self.create_transfer(
+            chain=self.chain_a,
+            pay_amount=first_slot.pay_amount,
+            pay_address=first_slot.pay_address,
+        )
+        with patch(
+            "invoices.service.WebhookService.create_event",
+            side_effect=_simulate_db_error,
+        ):
+            matched = InvoiceService.try_match_invoice(transfer)
+        self.assertTrue(matched)
+        invoice.refresh_from_db()
+        first_slot.refresh_from_db()
+        transfer.refresh_from_db()
+        self.assertEqual(invoice.status, InvoiceStatus.CONFIRMING)
+        self.assertEqual(invoice.transfer_id, transfer.pk)
+        self.assertEqual(first_slot.status, InvoicePaySlotStatus.MATCHED)
+        self.assertEqual(transfer.type, TransferType.Invoice)
 
 
 class InvoicePaySlotConcurrencyTests(TransactionTestCase):
