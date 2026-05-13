@@ -5,6 +5,8 @@ from decimal import Decimal
 
 import structlog
 from django.db import transaction
+from django.db.models import F
+from django.db.models.functions import Greatest
 from django.utils import timezone
 
 from bitcoin.models import BitcoinScanCursor
@@ -47,7 +49,10 @@ class BitcoinReceiptScanner:
         try:
             latest_height = client.get_block_count()
             # 后台链列表与扫描游标都依赖最新块高，BTC 扫描顺手把链状态同步上来。
-            Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_height)
+            # 用 Greatest 保证单调向前，避免并发 scanner 因 RPC 抖动把 latest_block_number 写回旧值。
+            Chain.objects.filter(pk=chain.pk).update(
+                latest_block_number=Greatest(F("latest_block_number"), latest_height)
+            )
 
             if not watched_addresses:
                 cls._mark_cursor_idle(cursor=cursor, latest_height=latest_height)
@@ -155,7 +160,10 @@ class BitcoinReceiptScanner:
     @staticmethod
     def _mark_cursor_idle(*, cursor: BitcoinScanCursor, latest_height: int) -> None:
         BitcoinScanCursor.objects.filter(pk=cursor.pk).update(
-            last_safe_block=max(0, latest_height - cursor.chain.confirm_block_count),
+            last_safe_block=Greatest(
+                F("last_safe_block"),
+                max(0, latest_height - cursor.chain.confirm_block_count),
+            ),
             last_error="",
             last_error_at=None,
             updated_at=timezone.now(),
@@ -169,8 +177,11 @@ class BitcoinReceiptScanner:
         scanned_to_block: int,
     ) -> None:
         BitcoinScanCursor.objects.filter(pk=cursor.pk).update(
-            last_scanned_block=max(cursor.last_scanned_block, scanned_to_block),
-            last_safe_block=max(0, latest_height - cursor.chain.confirm_block_count),
+            last_scanned_block=Greatest(F("last_scanned_block"), scanned_to_block),
+            last_safe_block=Greatest(
+                F("last_safe_block"),
+                max(0, latest_height - cursor.chain.confirm_block_count),
+            ),
             last_error="",
             last_error_at=None,
             updated_at=timezone.now(),

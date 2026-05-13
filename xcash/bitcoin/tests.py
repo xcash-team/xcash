@@ -409,6 +409,76 @@ class BitcoinScannerTests(TestCase):
         self.assertEqual(cursor.last_scanned_block, 12)
         self.assertEqual(cursor.last_safe_block, 10)
 
+    def test_advance_cursor_never_rewinds_database_value(self):
+        # 慢扫描结束时持有的是入口处的内存 cursor 快照；若期间另一进程已把游标推得更远，
+        # 用 Python 端 max(snapshot, scanned_to_block) 会把 DB 已推进的值写回旧位，
+        # 触发整段重扫与 webhook 重发。Greatest(F(...)) 由 DB 评估保证单调向前。
+        cursor = BitcoinScanCursor.objects.create(
+            chain=self.chain,
+            last_scanned_block=100,
+            last_safe_block=99,
+            enabled=True,
+        )
+        stale_cursor = BitcoinScanCursor.objects.get(pk=cursor.pk)
+        BitcoinScanCursor.objects.filter(pk=cursor.pk).update(
+            last_scanned_block=150,
+            last_safe_block=149,
+        )
+
+        BitcoinReceiptScanner._advance_cursor(
+            cursor=stale_cursor,
+            latest_height=120,
+            scanned_to_block=120,
+        )
+
+        cursor.refresh_from_db()
+        self.assertEqual(cursor.last_scanned_block, 150)
+        self.assertEqual(cursor.last_safe_block, 149)
+
+    def test_mark_cursor_idle_never_rewinds_last_safe_block(self):
+        # Idle 路径同样不能用更小的 latest_height - confirm_block_count 覆盖已推进的 last_safe_block。
+        cursor = BitcoinScanCursor.objects.create(
+            chain=self.chain,
+            last_scanned_block=200,
+            last_safe_block=199,
+            enabled=True,
+        )
+        BitcoinScanCursor.objects.filter(pk=cursor.pk).update(last_safe_block=199)
+
+        BitcoinReceiptScanner._mark_cursor_idle(
+            cursor=cursor,
+            latest_height=150,
+        )
+
+        cursor.refresh_from_db()
+        self.assertEqual(cursor.last_safe_block, 199)
+
+    @patch("bitcoin.scanner.receipt.BitcoinReceiptScanner._resolve_sender_address")
+    @patch("bitcoin.scanner.receipt.BitcoinRpcClient.get_block")
+    @patch("bitcoin.scanner.receipt.BitcoinRpcClient.get_block_hash")
+    @patch("bitcoin.scanner.receipt.BitcoinRpcClient.get_block_count")
+    @patch("bitcoin.scanner.receipt.load_watch_set")
+    def test_scan_never_rewinds_chain_latest_block_number(
+        self,
+        load_watch_set_mock,
+        get_block_count_mock,
+        get_block_hash_mock,
+        get_block_mock,
+        resolve_sender_address_mock,
+    ):
+        # 并发 scanner 拿到不同的 RPC 快照时，Chain.latest_block_number 必须单调向前。
+        Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=200)
+        load_watch_set_mock.return_value = frozenset()
+        get_block_count_mock.return_value = 150
+
+        BitcoinReceiptScanner.scan_recent_receipts(self.chain)
+
+        self.chain.refresh_from_db()
+        self.assertEqual(self.chain.latest_block_number, 200)
+        get_block_hash_mock.assert_not_called()
+        get_block_mock.assert_not_called()
+        resolve_sender_address_mock.assert_not_called()
+
     def test_should_track_output_filters_self_sends(self):
         # 砍掉充提后，只需过滤自发自收；sender 为空串时自动放行。
         self.assertFalse(
