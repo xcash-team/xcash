@@ -200,6 +200,7 @@ class DepositService:
         except DepositAddress.DoesNotExist:
             return False
 
+        # Deposit 不参与 ConfirmMode 判断，始终使用模型默认值 FULL，走完整区块确认流程。
         transfer.type = TransferType.Deposit
         transfer.save(update_fields=["type"])
 

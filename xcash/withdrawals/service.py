@@ -578,6 +578,7 @@ class WithdrawalService:
         transfer: "OnchainTransfer",
         broadcast_task: "BroadcastTask",
     ):
+        # Withdrawal 不参与 ConfirmMode 判断，始终使用模型默认值 FULL，走完整区块确认流程。
         try:
             # 对 Withdrawal 加行锁，防止重复推送导致并发匹配同一笔提币
             withdrawal = Withdrawal.objects.select_for_update().get(

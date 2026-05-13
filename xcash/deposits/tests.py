@@ -1086,6 +1086,187 @@ class DepositTransferRematchTests(TestCase):
         self.assertEqual(payload["data"]["uid"], customer.uid)
         self.assertTrue(payload["data"]["confirmed"])
 
+    @patch("deposits.service.WebhookService.create_event")
+    def test_pre_notify_enabled_emits_confirming_webhook(self, create_event_mock):
+        # 开启 pre_notify 时，try_create_deposit 应发送 confirmed=False 的预通知。
+        project = Project.objects.create(
+            name="DemoPreNotify",
+            wallet=Wallet.objects.create(),
+            pre_notify=True,
+        )
+        customer = Customer.objects.create(project=project, uid="customer-prenotify")
+        chain = Chain.objects.create(
+            name="EthereumPreNotify",
+            code="eth-prenotify",
+            type=ChainType.EVM,
+            native_coin=Crypto.objects.create(
+                name="Ethereum PreNotify",
+                symbol="ETHPN",
+                coingecko_id="ethereum",
+            ),
+            chain_id=101,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000012",
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain.type,
+            address=addr,
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "5" * 64,
+            event_id="erc20:5",
+            crypto=Crypto.objects.create(
+                name="Tether PreNotify",
+                symbol="USDT-PN",
+                coingecko_id="tether",
+            ),
+            from_address="0x0000000000000000000000000000000000000002",
+            to_address=addr.address,
+            value="1",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        created = DepositService.try_create_deposit(transfer)
+        self.assertTrue(created)
+        create_event_mock.assert_called_once()
+        payload = create_event_mock.call_args.kwargs["payload"]
+        self.assertEqual(payload["type"], "deposit")
+        self.assertEqual(payload["data"]["sys_no"], transfer.deposit.sys_no)
+        self.assertFalse(payload["data"]["confirmed"])
+
+    @patch("deposits.service.WebhookService.create_event")
+    def test_pre_notify_disabled_does_not_emit_webhook(self, create_event_mock):
+        # 关闭 pre_notify 时，try_create_deposit 不应发送任何 webhook。
+        project = Project.objects.create(
+            name="DemoNoPreNotify",
+            wallet=Wallet.objects.create(),
+            pre_notify=False,
+        )
+        customer = Customer.objects.create(project=project, uid="customer-noprenotify")
+        chain = Chain.objects.create(
+            name="EthereumNoPreNotify",
+            code="eth-noprenotify",
+            type=ChainType.EVM,
+            native_coin=Crypto.objects.create(
+                name="Ethereum NoPreNotify",
+                symbol="ETHNPN",
+                coingecko_id="ethereum",
+            ),
+            chain_id=101,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000013",
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain.type,
+            address=addr,
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "6" * 64,
+            event_id="erc20:6",
+            crypto=Crypto.objects.create(
+                name="Tether NoPreNotify",
+                symbol="USDT-NPN",
+                coingecko_id="tether",
+            ),
+            from_address="0x0000000000000000000000000000000000000002",
+            to_address=addr.address,
+            value="1",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        created = DepositService.try_create_deposit(transfer)
+        self.assertTrue(created)
+        create_event_mock.assert_not_called()
+
+    @patch(
+        "deposits.service.WebhookService.create_event",
+        side_effect=Exception("boom"),
+    )
+    def test_pre_notify_failure_does_not_block_deposit_creation(self, create_event_mock):
+        # 预通知发送异常时，deposit 核心业务状态不应被回滚。
+        project = Project.objects.create(
+            name="DemoPreNotifyFail",
+            wallet=Wallet.objects.create(),
+            pre_notify=True,
+        )
+        customer = Customer.objects.create(project=project, uid="customer-prenotify-fail")
+        chain = Chain.objects.create(
+            name="EthereumPreNotifyFail",
+            code="eth-prenotify-fail",
+            type=ChainType.EVM,
+            native_coin=Crypto.objects.create(
+                name="Ethereum PreNotify Fail",
+                symbol="ETHPNF",
+                coingecko_id="ethereum",
+            ),
+            chain_id=101,
+            rpc="http://localhost:8545",
+            active=True,
+        )
+        addr = Address.objects.create(
+            wallet=project.wallet,
+            chain_type=ChainType.EVM,
+            usage=AddressUsage.Deposit,
+            bip44_account=0,
+            address_index=0,
+            address="0x0000000000000000000000000000000000000014",
+        )
+        DepositAddress.objects.create(
+            customer=customer,
+            chain_type=chain.type,
+            address=addr,
+        )
+        transfer = OnchainTransfer.objects.create(
+            chain=chain,
+            block=1,
+            hash="0x" + "7" * 64,
+            event_id="erc20:7",
+            crypto=Crypto.objects.create(
+                name="Tether PreNotify Fail",
+                symbol="USDT-PNF",
+                coingecko_id="tether",
+            ),
+            from_address="0x0000000000000000000000000000000000000002",
+            to_address=addr.address,
+            value="1",
+            amount=Decimal("1"),
+            timestamp=1,
+            datetime=timezone.now(),
+            status=TransferStatus.CONFIRMED,
+            type=TransferType.Deposit,
+        )
+        created = DepositService.try_create_deposit(transfer)
+        self.assertTrue(created)
+        self.assertEqual(transfer.deposit.status, DepositStatus.CONFIRMING)
+
 
 class CollectScheduleLifecycleTests(TestCase):
     def _make_collect_fixture(

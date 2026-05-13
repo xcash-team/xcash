@@ -220,15 +220,20 @@ class InvoiceService:
         )
         invoice.refresh_from_db()
 
+        # EPAY_V1 为托管模式，交易即时确认，不存在链上等待区块确认的阶段，
+        # 预通知对其无意义；其完成通知由 EpaySubmitService 独立处理。
         if (
             invoice.project.pre_notify
             and invoice.protocol == InvoiceProtocol.NATIVE
             and confirm_mode == ConfirmMode.FULL
         ):
-            WebhookService.create_event(
-                project=invoice.project,
-                payload=InvoiceService.build_webhook_payload(invoice),
-            )
+            try:
+                WebhookService.create_event(
+                    project=invoice.project,
+                    payload=InvoiceService.build_webhook_payload(invoice),
+                )
+            except Exception:
+                logger.exception("发送账单预通知失败", invoice_id=invoice.pk)
 
         return True
 

@@ -1037,6 +1037,7 @@ class OnchainTransfer(models.Model):
         default=ConfirmMode.FULL,
         max_length=8,
         verbose_name=_("确认模式"),
+        help_text=_("当前仅 Invoice 业务根据 fast_confirm_threshold 动态设置 QUICK/FULL；Deposit 与 Withdrawal 始终使用默认 FULL，走完整区块确认流程。"),
     )
     timestamp = models.PositiveIntegerField(verbose_name=_("时间戳"), db_index=True)
     datetime = models.DateTimeField(verbose_name=_("日期"))

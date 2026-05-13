@@ -389,6 +389,63 @@ class InvoicePaySlotTests(TestCase):
             InvoicePaySlotDiscardReason.EXPIRED,
         )
 
+    @patch("invoices.service.WebhookService.create_event")
+    def test_pre_notify_enabled_emits_confirming_webhook(self, create_event_mock):
+        # 开启 pre_notify 时，try_match_invoice 应发送 confirmed=False 的预通知。
+        self.project.pre_notify = True
+        self.project.save(update_fields=["pre_notify"])
+        invoice = self.create_invoice(out_no="slot-prenotify")
+        invoice.select_method(self.crypto, self.chain_a)
+        first_slot = invoice.pay_slots.get(version=1)
+        transfer = self.create_transfer(
+            chain=self.chain_a,
+            pay_amount=first_slot.pay_amount,
+            pay_address=first_slot.pay_address,
+        )
+        matched = InvoiceService.try_match_invoice(transfer)
+        self.assertTrue(matched)
+        create_event_mock.assert_called_once()
+        payload = create_event_mock.call_args.kwargs["payload"]
+        self.assertEqual(payload["type"], "invoice")
+        self.assertFalse(payload["data"]["confirmed"])
+
+    @patch("invoices.service.WebhookService.create_event")
+    def test_pre_notify_disabled_does_not_emit_webhook(self, create_event_mock):
+        # 关闭 pre_notify 时，try_match_invoice 不应发送任何 webhook。
+        invoice = self.create_invoice(out_no="slot-noprenotify")
+        invoice.select_method(self.crypto, self.chain_a)
+        first_slot = invoice.pay_slots.get(version=1)
+        transfer = self.create_transfer(
+            chain=self.chain_a,
+            pay_amount=first_slot.pay_amount,
+            pay_address=first_slot.pay_address,
+        )
+        matched = InvoiceService.try_match_invoice(transfer)
+        self.assertTrue(matched)
+        create_event_mock.assert_not_called()
+
+    @patch(
+        "invoices.service.WebhookService.create_event",
+        side_effect=Exception("boom"),
+    )
+    def test_pre_notify_failure_does_not_block_invoice_match(self, create_event_mock):
+        # 预通知发送异常时，invoice 匹配与状态推进不应被回滚。
+        self.project.pre_notify = True
+        self.project.save(update_fields=["pre_notify"])
+        invoice = self.create_invoice(out_no="slot-prenotify-fail")
+        invoice.select_method(self.crypto, self.chain_a)
+        first_slot = invoice.pay_slots.get(version=1)
+        transfer = self.create_transfer(
+            chain=self.chain_a,
+            pay_amount=first_slot.pay_amount,
+            pay_address=first_slot.pay_address,
+        )
+        matched = InvoiceService.try_match_invoice(transfer)
+        self.assertTrue(matched)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, InvoiceStatus.CONFIRMING)
+        self.assertEqual(invoice.transfer_id, transfer.pk)
+
 
 class InvoicePaySlotConcurrencyTests(TransactionTestCase):
     def setUp(self):
