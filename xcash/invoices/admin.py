@@ -3,16 +3,16 @@ from __future__ import annotations
 from django.contrib import admin
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
+from unfold.admin import StackedInline
 from unfold.decorators import display
 
-from common.admin import ModelAdmin
 from common.admin import ReadOnlyModelAdmin
 from common.utils.math import format_decimal_stripped
 
-from .models import EpayMerchant
 from .models import EpayOrder
 from .models import Invoice
 from .models import InvoicePaySlot
+from .models import InvoiceProtocol
 
 
 class InvoicePaySlotInline(admin.TabularInline):
@@ -40,9 +40,37 @@ class InvoicePaySlotInline(admin.TabularInline):
         return False
 
 
+class EpayOrderInline(StackedInline):
+    # EpayOrder 与 Invoice 是 OneToOne，限制 max_num=1 让表单语义对齐数据约束。
+    model = EpayOrder
+    extra = 0
+    max_num = 1
+    can_delete = False
+    verbose_name = _("EPay 订单")
+    verbose_name_plural = _("EPay 订单")
+    fields = (
+        "trade_no",
+        "out_trade_no",
+        "merchant",
+        "pid",
+        "type",
+        "money",
+        "sign_type",
+        "notify_url",
+        "return_url",
+        "param",
+        "notify_event",
+        "created_at",
+    )
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Invoice)
 class InvoiceAdmin(ReadOnlyModelAdmin):
-    inlines = (InvoicePaySlotInline,)
+    inlines = (InvoicePaySlotInline, EpayOrderInline)
 
     list_display = (
         "project",
@@ -53,6 +81,7 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         "display_crypto",
         "pay_amount_display",
         "expires_at",
+        "display_protocol",
         "display_status",
     )
     search_fields = (
@@ -105,6 +134,17 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         ),
     )
 
+    def get_inline_instances(self, request, obj=None):
+        # 非 EPay 协议账单没有 EpayOrder 数据，隐藏空 inline 避免界面噪音。
+        inline_instances = super().get_inline_instances(request, obj)
+        if obj is None or obj.protocol != InvoiceProtocol.EPAY_V1:
+            inline_instances = [
+                inline
+                for inline in inline_instances
+                if not isinstance(inline, EpayOrderInline)
+            ]
+        return inline_instances
+
     @display(
         description=_("状态"),  # noqa
         label={  # noqa
@@ -120,6 +160,17 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
     )
     def display_status(self, instance: Invoice):
         return instance.get_status_display()
+
+    @display(
+        description=_("协议"),  # noqa
+        label={  # noqa
+            "Xcash 原生": "info",
+            "EPay V1": "primary",
+            "Xcash native": "info",
+        },
+    )
+    def display_protocol(self, instance: Invoice):
+        return instance.get_protocol_display()
 
     @display(
         description=_("金额"),  # noqa
@@ -149,30 +200,3 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         return obj.chain.name if obj.chain else "-"
 
 
-@admin.register(EpayMerchant)
-class EpayMerchantAdmin(ModelAdmin):
-    list_display = ("pid", "project", "active", "created_at")
-    search_fields = ("=pid", "project__name", "project__appid")
-    list_filter = ("active",)
-
-
-@admin.register(EpayOrder)
-class EpayOrderAdmin(ReadOnlyModelAdmin):
-    list_display = (
-        "trade_no",
-        "out_trade_no",
-        "merchant",
-        "money",
-        "type",
-        "created_at",
-        "display_notified_at",
-    )
-    search_fields = ("trade_no", "out_trade_no", "invoice__sys_no", "pid")
-    list_filter = ("type", "sign_type")
-    raw_id_fields = ("invoice", "merchant", "notify_event")
-
-    @admin.display(description=_("通知成功时间"))
-    def display_notified_at(self, obj):
-        if obj.notify_event_id:
-            return obj.notify_event.delivered_at
-        return None
