@@ -125,6 +125,7 @@ class EpaySubmitService:
             or invoice.title != params["name"]
             or invoice.currency != params["currency"]
             or invoice.amount != params["money"]
+            or invoice.notify_url != params["notify_url"]
             or invoice.return_url != params["return_url"]
             or invoice.protocol != InvoiceProtocol.EPAY_V1
         ):
@@ -159,6 +160,7 @@ class EpaySubmitService:
                     currency=params["currency"],
                     amount=params["money"],
                     methods=methods,
+                    notify_url=params["notify_url"],
                     return_url=params["return_url"],
                     expires_at=timezone.now() + timedelta(minutes=15),
                     protocol=InvoiceProtocol.EPAY_V1,
@@ -223,11 +225,11 @@ class EpaySubmitService:
         epay_order = invoice.epay_order
         payload: dict[str, str] = {
             "pid": epay_order.pid,
-            "trade_no": epay_order.trade_no,
-            "out_trade_no": epay_order.out_trade_no,
+            "trade_no": invoice.sys_no,
+            "out_trade_no": invoice.out_no,
             "type": epay_order.type,
-            "name": epay_order.name,
-            "money": format_epay_money(epay_order.money),
+            "name": invoice.title,
+            "money": format_epay_money(invoice.amount),
             "trade_status": EPAY_V1_TRADE_SUCCESS,
             "sign_type": epay_order.sign_type,
         }
@@ -250,7 +252,7 @@ class EpaySubmitService:
             return ""
         if invoice.status != InvoiceStatus.COMPLETED:
             return ""
-        return_url = invoice.epay_order.return_url
+        return_url = invoice.return_url
         if not return_url:
             return ""
 
@@ -274,7 +276,7 @@ class EpaySubmitService:
         event = WebhookService.create_event(
             project=invoice.project,
             payload=payload,
-            delivery_url=epay_order.notify_url,
+            delivery_url=invoice.notify_url,
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body=EPAY_V1_SUCCESS_TEXT,
         )

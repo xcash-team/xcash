@@ -82,6 +82,7 @@ class InvoiceCreateSerializer(Serializer):
         max_value=MAX_INVOICE_DURATION,
     )
     methods = serializers.JSONField(required=False, default=dict)
+    notify_url = serializers.URLField(required=False)
     return_url = serializers.URLField(required=False)
 
     def _get_project(self):
@@ -283,6 +284,7 @@ class InvoiceDisplaySerializer(serializers.ModelSerializer):
             "started_at",
             "created_at",
             "expires_at",
+            "notify_url",
             "return_url",
             "payment",
             "status",

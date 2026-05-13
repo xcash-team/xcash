@@ -427,6 +427,7 @@ class EpaySubmitServiceTests(TestCase):
         self.assertEqual(invoice.currency, "CNY")
         self.assertEqual(invoice.amount, Decimal("18.50"))
         self.assertEqual(invoice.protocol, InvoiceProtocol.EPAY_V1)
+        self.assertEqual(invoice.notify_url, "https://merchant.example.com/notify")
         self.assertEqual(invoice.return_url, "https://merchant.example.com/return")
         self.assertEqual(invoice.methods, Invoice.available_methods(self.project))
         self.assertEqual(invoice.methods[self.crypto.symbol], [self.chain.code])
@@ -744,6 +745,7 @@ class EpaySubmitServiceTests(TestCase):
             currency=params["currency"],
             amount=params["money"],
             methods=Invoice.available_methods(self.project),
+            notify_url=params["notify_url"],
             return_url=params["return_url"],
             expires_at=timezone.now() + timedelta(minutes=10),
             protocol=InvoiceProtocol.EPAY_V1,
@@ -993,6 +995,42 @@ class EpayNotifyTests(TestCase):
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
+    def test_build_notify_payload_uses_invoice_facts_and_epay_protocol_context(
+        self, mock_check, mock_initialize
+    ):
+        # EpayOrder 只保留协议回显上下文；订单号、标题、金额等账单事实必须从 Invoice 取。
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(self._signed_params(param="u=42"))
+        Invoice.objects.filter(pk=invoice.pk).update(
+            out_no="INVOICE-FACT-1001",
+            title="Invoice Fact Title",
+            amount=Decimal("20.00"),
+        )
+        EpayOrder.objects.filter(pk=invoice.epay_order.pk).update(
+            trade_no="STALE-TRADE-NO",
+            out_trade_no="STALE-OUT-NO",
+            name="Stale EPay Title",
+            money=Decimal("99.99"),
+            type="usdt",
+            param="u=42",
+            sign_type="MD5",
+        )
+        invoice.refresh_from_db()
+
+        payload = EpaySubmitService.build_notify_payload(invoice)
+
+        self.assertEqual(payload["pid"], str(self.merchant.pid))
+        self.assertEqual(payload["trade_no"], invoice.sys_no)
+        self.assertEqual(payload["out_trade_no"], "INVOICE-FACT-1001")
+        self.assertEqual(payload["type"], "usdt")
+        self.assertEqual(payload["name"], "Invoice Fact Title")
+        self.assertEqual(payload["money"], "20.00")
+        self.assertEqual(payload["param"], "u=42")
+        self.assertEqual(payload["sign_type"], "MD5")
+        self.assertTrue(verify_epay_v1_sign(payload, self.merchant.signing_key))
+
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
     def test_build_return_url_appends_signed_query_for_completed_invoice(
         self, mock_check, mock_initialize
     ):
@@ -1165,6 +1203,27 @@ class EpayNotifyTests(TestCase):
         enqueue_mock.assert_called_once_with(event)
         invoice.epay_order.refresh_from_db()
         self.assertEqual(invoice.epay_order.notify_event_id, event.pk)
+
+    @patch("webhooks.service.WebhookService.enqueue_delivery")
+    @patch("invoices.epay_service.InvoiceService.initialize_invoice")
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_enqueue_paid_notify_uses_invoice_notify_url(
+        self, mock_check, mock_initialize, enqueue_mock
+    ):
+        # notify_url 是账单级投递目标事实；EpayOrder 中的原始 notify_url 不再参与投递决策。
+        mock_initialize.side_effect = lambda invoice: invoice
+        invoice = EpaySubmitService.submit(
+            self._signed_params(notify_url="https://merchant.example.com/invoice-notify")
+        )
+        EpayOrder.objects.filter(pk=invoice.epay_order.pk).update(
+            notify_url="https://merchant.example.com/stale-notify"
+        )
+        invoice.refresh_from_db()
+
+        event = EpaySubmitService.enqueue_paid_notify(invoice)
+
+        self.assertEqual(event.delivery_url, "https://merchant.example.com/invoice-notify")
+        enqueue_mock.assert_called_once_with(event)
 
     @patch("invoices.service.send_internal_callback")
     @patch("invoices.epay_service.EpaySubmitService.enqueue_paid_notify")

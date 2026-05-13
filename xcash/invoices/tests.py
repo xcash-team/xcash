@@ -35,6 +35,7 @@ from invoices.models import Invoice
 from invoices.models import InvoicePaySlot
 from invoices.models import InvoicePaySlotDiscardReason
 from invoices.models import InvoicePaySlotStatus
+from invoices.models import InvoiceProtocol
 from invoices.models import InvoiceStatus
 from invoices.service import InvoiceService
 from invoices.tasks import check_expired
@@ -397,6 +398,10 @@ class InvoicePaySlotTests(TestCase):
         self.project.pre_notify = True
         self.project.save(update_fields=["pre_notify"])
         invoice = self.create_invoice(out_no="slot-prenotify")
+        Invoice.objects.filter(pk=invoice.pk).update(
+            notify_url="https://merchant.example.com/invoice-prenotify"
+        )
+        invoice.refresh_from_db()
         invoice.select_method(self.crypto, self.chain_a)
         first_slot = invoice.pay_slots.get(version=1)
         transfer = self.create_transfer(
@@ -410,6 +415,10 @@ class InvoicePaySlotTests(TestCase):
         payload = create_event_mock.call_args.kwargs["payload"]
         self.assertEqual(payload["type"], "invoice")
         self.assertFalse(payload["data"]["confirmed"])
+        self.assertEqual(
+            create_event_mock.call_args.kwargs["delivery_url"],
+            "https://merchant.example.com/invoice-prenotify",
+        )
 
     @patch("invoices.service.WebhookService.create_event")
     def test_pre_notify_disabled_does_not_emit_webhook(self, create_event_mock):
@@ -961,6 +970,40 @@ class InvoiceConfirmDropStatusTests(TestCase):
             invoice = self._make_invoice(bad_status)
             with self.assertRaises(InvoiceStatusError):
                 InvoiceService.drop_invoice(invoice)
+
+    @patch("invoices.service.send_internal_callback")
+    @patch("invoices.service.WebhookService.create_event")
+    def test_confirm_native_invoice_uses_invoice_notify_url(
+        self, create_event_mock, _callback_mock
+    ):
+        # 原生 Invoice 若配置了账单级 notify_url，最终通知应投递到该地址；
+        # 为空时 WebhookEvent.delivery_url 维持默认空串，由投递层 fallback 到 Project.webhook。
+        crypto = Crypto.objects.create(
+            name="Status USDT",
+            symbol="STATUS-USDT",
+            prices={"USD": "1"},
+            coingecko_id="status-usdt",
+        )
+        invoice = Invoice.objects.create(
+            project=self.project,
+            out_no="status-native-notify",
+            title="Status native notify",
+            currency="USD",
+            amount=Decimal("10"),
+            methods={},
+            status=InvoiceStatus.CONFIRMING,
+            protocol=InvoiceProtocol.NATIVE,
+            crypto=crypto,
+            notify_url="https://merchant.example.com/invoice-notify",
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+        InvoiceService.confirm_invoice(invoice)
+
+        self.assertEqual(
+            create_event_mock.call_args.kwargs["delivery_url"],
+            "https://merchant.example.com/invoice-notify",
+        )
 
 
 class InvoiceWebhookPayloadTests(TestCase):

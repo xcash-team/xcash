@@ -104,6 +104,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
                 amount=validated_data["amount"],
                 methods=validated_data["methods"],
                 email=validated_data.get("email", ""),
+                notify_url=validated_data.get("notify_url", ""),
                 return_url=validated_data.get("return_url", ""),
                 expires_at=timezone.now()
                 + timedelta(minutes=validated_data["duration"]),

@@ -235,6 +235,7 @@ class InvoiceService:
                     WebhookService.create_event(
                         project=invoice.project,
                         payload=InvoiceService.build_webhook_payload(invoice),
+                        delivery_url=invoice.notify_url,
                     )
             except Exception:
                 logger.exception("发送账单预通知失败", invoice_id=invoice.pk)
@@ -272,6 +273,7 @@ class InvoiceService:
             WebhookService.create_event(
                 project=invoice.project,
                 payload=cls.build_webhook_payload(invoice),
+                delivery_url=invoice.notify_url,
             )
         # 设计决策：开源版本不计算内部手续费或月成交量统计，
         # 账单状态机在 COMPLETED 即为终局，无需后续财务核算步骤。

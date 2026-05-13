@@ -196,6 +196,7 @@ docker compose up -d --build
 ## API 对接
 
 部署完成后，参考 [API 对接文档](API.md) 接入支付、充币、提币和 Webhook 回调。
+创建账单时可传入账单级 `notify_url` 覆盖项目默认 Webhook；兼容易支付 V1 的 `submit.php` 入口也会将 `notify_url` 翻译为账单自身的通知地址。
 
 ## 技术栈
 
