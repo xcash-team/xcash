@@ -73,8 +73,8 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
     inlines = (InvoicePaySlotInline, EpayOrderInline)
 
     list_display = (
-        "project",
         "sys_no",
+        "project",
         "out_no",
         "currency_amount_display",
         "display_pay_url",
@@ -198,5 +198,3 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
     @display(description=_("链"))  # noqa
     def display_chain(self, obj: Invoice):
         return obj.chain.name if obj.chain else "-"
-
-
