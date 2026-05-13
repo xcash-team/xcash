@@ -111,20 +111,6 @@ SIDEBAR_UNFOLD = {
                         "icon": "receipt_long",
                         "link": reverse_lazy("admin:invoices_invoice_changelist"),
                     },
-                    {
-                        "title": _("EPay 商户"),
-                        "icon": "store",
-                        "link": reverse_lazy(
-                            "admin:invoices_epaymerchant_changelist"
-                        ),
-                    },
-                    {
-                        "title": _("EPay 订单"),
-                        "icon": "request_quote",
-                        "link": reverse_lazy(
-                            "admin:invoices_epayorder_changelist"
-                        ),
-                    },
                 ],
             },
             {
