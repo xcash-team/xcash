@@ -229,7 +229,7 @@ const headers = {
 | `amount` | string | 是 | 金额，范围 0.00000001 ~ 1000000 |
 | `duration` | integer | 否 | 支付有效期（分钟），范围 5~30，默认 10 |
 | `methods` | object | 否 | 限定支付方式，格式 `{"币种": ["链码"]}` |
-| `email` | string | 否 | 买家邮箱 |
+| `notify_url` | string | 否 | 账单级异步通知地址，覆盖项目 Webhook URL，仅作用于本账单；为空时回退到项目配置 |
 | `return_url` | string | 否 | 支付完成后同步跳转地址 |
 
 **methods 说明：**
@@ -251,6 +251,7 @@ const headers = {
     "USDT": ["ethereum-mainnet", "tron-mainnet"],
     "ETH": ["ethereum-mainnet"]
   },
+  "notify_url": "https://example.com/payment/notify",
   "return_url": "https://example.com/payment/success"
 }
 ```
@@ -278,6 +279,7 @@ const headers = {
   "started_at": null,
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
+  "notify_url": "https://example.com/payment/notify",
   "return_url": "https://example.com/payment/success",
   "payment": null,
   "status": "waiting"
@@ -431,6 +433,7 @@ const headers = {
   "started_at": "2024-01-01T00:00:05Z",
   "created_at": "2024-01-01T00:00:00Z",
   "expires_at": "2024-01-01T00:15:00Z",
+  "notify_url": "https://example.com/payment/notify",
   "return_url": "https://example.com/payment/success",
   "payment": null,
   "status": "waiting"
@@ -548,6 +551,13 @@ GET /v1/deposit/address?uid=user123&chain=ethereum-mainnet&crypto=USDT
 - `invoice`：API 创建的账单进入确认中 / 已完成
 - `deposit`：充币进入确认中 / 已完成
 - `withdrawal`：提币进入链上确认中 / 已完成
+
+### 投递地址优先级
+
+- 账单类事件（包括原生协议账单与 EPay V1 账单）：若账单本身配置了 `notify_url`（创建账单 API 传入或 EPay `submit.php` 传入），优先投递到该地址；为空时回退到项目配置的 Webhook URL。
+- 充币、提币事件：始终投递到项目配置的 Webhook URL。
+
+无论使用账单级地址还是项目级地址，都受同一套签名、重试、禁用策略约束。
 
 ### 回调请求头
 

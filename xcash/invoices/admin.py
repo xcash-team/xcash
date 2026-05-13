@@ -108,7 +108,6 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
                     "amount",
                     "worth",
                     "methods",
-                    "email",
                     "notify_url",
                     "return_url",
                     "created_at",

@@ -1354,7 +1354,6 @@ class InvoiceCreatePermissionCheckTests(TestCase):
                 "amount": Decimal("10"),
                 "methods": {},
                 "duration": 10,
-                "email": "",
                 "return_url": "",
             },
             errors={},

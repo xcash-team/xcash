@@ -13,6 +13,7 @@
 - 执行方式默认用 Subagent-Driven。
 - commit 信息用中文写，同时在尾部标注本次代码开发使用的模型信息
 - 尽量在 main 分支进行开发
+- 项目兼容易支付 V1接口，文档地址：https://pay.v8jisu.cn/doc_old.html
 - `xcash-saas` 是 xcash 加密货币支付网关的 SaaS 商业化层；xcash 是区块链引擎。
 - **xcash 仓库**：`/Users/void/PycharmProjects/xcash`（本项目，Django 5.2）
 - **xcash-saas 仓库**：`/Users/void/PycharmProjects/xcash-saas`（Django 5.2 + DRF）

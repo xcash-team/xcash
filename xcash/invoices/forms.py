@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 from django import forms
 from django.utils.translation import gettext_lazy as _
 from unfold.widgets import UnfoldAdminDecimalFieldWidget
-from unfold.widgets import UnfoldAdminEmailInputWidget
 from unfold.widgets import UnfoldAdminSelectWidget
 from unfold.widgets import UnfoldAdminTextInputWidget
 
@@ -30,7 +29,7 @@ if TYPE_CHECKING:
 
 class ManualInvoiceAdminForm(forms.ModelForm):
     REQUIRED_FIELDS: tuple[str, ...] = ("project", "title", "currency", "amount")
-    OPTIONAL_FIELDS: tuple[str, ...] = ("out_no", "duration", "email")
+    OPTIONAL_FIELDS: tuple[str, ...] = ("out_no", "duration")
     FIELDSETS = (
         (
             _("必填"),
@@ -66,13 +65,12 @@ class ManualInvoiceAdminForm(forms.ModelForm):
 
     class Meta:
         model = Invoice
-        fields = ("project", "title", "out_no", "currency", "amount", "email")
+        fields = ("project", "title", "out_no", "currency", "amount")
         widgets = {
             "project": UnfoldAdminSelectWidget(attrs={"class": "w-full"}),
             "title": UnfoldAdminTextInputWidget(),
             "out_no": UnfoldAdminTextInputWidget(),
             "amount": UnfoldAdminDecimalFieldWidget(),
-            "email": UnfoldAdminEmailInputWidget(),
         }
 
     def __init__(self, *args, **kwargs):

@@ -81,12 +81,6 @@ class Invoice(models.Model):
         default=dict,
         verbose_name=_("支持的支付方式"),
     )
-    email = models.EmailField(
-        _("邮箱"),
-        blank=True,
-        default="",
-        help_text=_("如果设置邮箱，在Invoice创建后会自动发送支付链接到此邮箱地址。"),
-    )
 
     crypto = models.ForeignKey(
         "currencies.Crypto",
@@ -120,7 +114,7 @@ class Invoice(models.Model):
     started_at = models.DateTimeField(_("支付开始时间"), auto_now_add=True)
     expires_at = models.DateTimeField(_("支付截止时间"))
     notify_url = models.URLField(_("异步通知地址"), blank=True, default="")
-    return_url = models.URLField(_("支付成功后同步跳转地址"), blank=True)
+    return_url = models.URLField(_("支付成功后同步跳转地址"), blank=True, default="")
     worth = models.DecimalField(
         _("价值(USD)"),
         max_digits=16,

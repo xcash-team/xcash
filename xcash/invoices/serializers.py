@@ -5,7 +5,6 @@ from django.urls import reverse
 from django_otp.plugins.otp_email.conf import settings
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
-from rest_framework.fields import EmailField
 from rest_framework.serializers import Serializer
 
 from chains.serializers import TransferSerializer
@@ -73,8 +72,6 @@ class InvoiceCreateSerializer(Serializer):
             "1000000"
         ),  # 单笔上限 100 万，防止天文数字金额干扰汇率换算和差额分配
     )
-    email = EmailField(required=False)
-
     duration = serializers.IntegerField(
         required=False,
         default=10,
