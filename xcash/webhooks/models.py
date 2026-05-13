@@ -47,6 +47,12 @@ class WebhookEvent(models.Model):
     schedule_locked_until = models.DateTimeField(
         verbose_name=_("下次投递"), null=True, blank=True
     )
+    delivery_locked_until = models.DateTimeField(
+        verbose_name=_("投递锁定至"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     last_error = models.TextField(
         verbose_name=_("投递报错信息"), blank=True, default=""
     )

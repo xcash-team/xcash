@@ -6,7 +6,6 @@ import httpx
 import structlog
 from django.conf import settings
 
-
 logger = structlog.get_logger()
 
 # HTTP 失败时的退避时长（秒），数组长度即"最多重试次数"。
@@ -119,12 +118,20 @@ class TronHttpClient:
             request_label="failed to fetch latest solid block",
         )
         payload = response.json()
-        return int(
-            ((payload.get("block_header") or {}).get("raw_data") or {}).get(
-                "number",
-                0,
+        try:
+            block_number = int(
+                ((payload.get("block_header") or {}).get("raw_data") or {}).get(
+                    "number",
+                    0,
+                )
             )
-        )
+        except (TypeError, ValueError) as exc:
+            raise TronClientError(
+                f"invalid latest solid block from {self.chain.code}"
+            ) from exc
+        if block_number <= 0:
+            raise TronClientError(f"invalid latest solid block from {self.chain.code}")
+        return block_number
 
     def get_transaction_info_by_id(self, tx_hash: str) -> dict:
         response = self._request_with_retry(

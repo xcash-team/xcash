@@ -61,6 +61,26 @@ class TronHttpClientTests(SimpleTestCase):
             "https://api.trongrid.io/walletsolidity/getnowblock",
         )
 
+    @patch("tron.client.httpx.get")
+    def test_get_latest_solid_block_number_rejects_missing_or_zero_number(self, get_mock):
+        for payload in (
+            {},
+            {"block_header": {"raw_data": {"number": 0}}},
+        ):
+            with self.subTest(payload=payload):
+                response = Mock()
+                response.raise_for_status.return_value = None
+                response.json.return_value = payload
+                get_mock.return_value = response
+                chain = SimpleNamespace(
+                    rpc="https://api.trongrid.io",
+                    code="tron-mainnet",
+                    tron_api_key="tron-key",
+                )
+
+                with self.assertRaisesMessage(TronClientError, "invalid latest solid block"):
+                    TronHttpClient(chain=chain).get_latest_solid_block_number()
+
     @patch("tron.client.httpx.post")
     def test_get_transaction_info_by_id_posts_tx_hash(self, post_mock):
         post_mock.return_value.json.return_value = {"id": "a" * 64}
@@ -248,16 +268,37 @@ class TronFilterAddressesCacheTests(TestCase):
         self.assertEqual(load_tron_filter_addresses(), frozenset())
 
         invoice_addr = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
-        RecipientAddress.objects.create(
-            name="tron-invoice-2",
+        with self.captureOnCommitCallbacks(execute=True):
+            RecipientAddress.objects.create(
+                name="tron-invoice-2",
+                project=self.project,
+                chain_type=ChainType.TRON,
+                address=invoice_addr,
+                usage=RecipientAddressUsage.INVOICE,
+            )
+
+        # post_save 信号挂 on_commit 重建缓存：事务提交后下一次 load 必须能看到新地址。
+        self.assertIn(invoice_addr, load_tron_filter_addresses())
+
+    def test_signal_invalidates_cache_when_tron_address_moves_to_other_chain_type(self):
+        from tron.watchers import load_tron_filter_addresses
+
+        invoice_addr = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
+        recipient = RecipientAddress.objects.create(
+            name="tron-invoice-3",
             project=self.project,
             chain_type=ChainType.TRON,
             address=invoice_addr,
             usage=RecipientAddressUsage.INVOICE,
         )
-
-        # post_save 信号挂 on_commit 重建缓存：事务提交后下一次 load 必须能看到新地址。
         self.assertIn(invoice_addr, load_tron_filter_addresses())
+
+        recipient.chain_type = ChainType.EVM
+        recipient.address = "0x1111111111111111111111111111111111111111"
+        with self.captureOnCommitCallbacks(execute=True):
+            recipient.save(update_fields=["chain_type", "address"])
+
+        self.assertNotIn(invoice_addr, load_tron_filter_addresses())
 
 
 class TronWatchCursorTests(TestCase):
@@ -1152,6 +1193,47 @@ class TronUsdtPaymentScannerTests(TestCase):
             contract_address=self.usdt_mapping.address,
         )
         self.assertEqual(cursor.last_scanned_block, expected_end_block)
+
+    def test_tron_cursor_advance_never_rewinds_database_value(self):
+        from tron.scanner import TronUsdtPaymentScanner
+
+        cursor = self._get_or_create_contract_cursor(last_scanned_block=100)
+        stale_cursor = TronWatchCursor.objects.get(pk=cursor.pk)
+        TronWatchCursor.objects.filter(pk=cursor.pk).update(
+            last_scanned_block=150,
+            last_safe_block=150,
+        )
+
+        TronUsdtPaymentScanner._advance_cursor(
+            cursor=stale_cursor,
+            latest_block=120,
+            scanned_block=120,
+        )
+
+        cursor.refresh_from_db()
+        self.assertEqual(cursor.last_scanned_block, 150)
+        self.assertEqual(cursor.last_safe_block, 150)
+
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("tron.scanner.TronHttpClient")
+    def test_scan_chain_never_rewinds_chain_latest_block_number(
+        self,
+        client_cls,
+        _enqueue_processing_mock,
+    ):
+        from tron.scanner import TronUsdtPaymentScanner
+
+        Chain.objects.filter(pk=self.chain.pk).update(latest_block_number=200)
+        self.chain.refresh_from_db()
+        self._get_or_create_contract_cursor(last_scanned_block=100)
+        client = client_cls.return_value
+        client.get_latest_solid_block_number.return_value = 120
+        client.list_confirmed_contract_events.return_value = {"data": [], "meta": {}}
+
+        TronUsdtPaymentScanner.scan_chain(chain=self.chain)
+
+        self.chain.refresh_from_db()
+        self.assertEqual(self.chain.latest_block_number, 200)
 
     @patch("chains.tasks.confirm_transfer.delay")
     @patch("chains.service.TransferService.enqueue_processing")

@@ -24,8 +24,8 @@ from chains.models import ChainType
 from common.admin import ModelAdmin
 from invoices.models import EpayMerchant
 from projects.models import Project
-from projects.models import RecipientAddressUsage
 from projects.models import RecipientAddress
+from projects.models import RecipientAddressUsage
 from users.forms import OTPVerifyForm
 from users.models import AdminAccessLog
 from users.otp import AdminOTPRequiredError
@@ -216,7 +216,6 @@ class EpayMerchantInline(StackedInline):
     fields = (
         "pid",
         "secret_key",
-        "default_currency",
         "active",
     )
 

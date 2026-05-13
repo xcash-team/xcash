@@ -6,7 +6,14 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import F
+from django.db.models.functions import Greatest
 from django.utils import timezone
+from tron.client import TronClientError
+from tron.client import TronHttpClient
+from tron.codec import TronAddressCodec
+from tron.models import TronWatchCursor
+from tron.watchers import load_tron_filter_addresses
 
 from chains.models import Chain
 from chains.models import ChainType
@@ -15,11 +22,6 @@ from chains.models import TransferStatus
 from chains.service import ObservedTransferPayload
 from chains.service import TransferService
 from currencies.models import ChainToken
-from tron.client import TronClientError
-from tron.client import TronHttpClient
-from tron.codec import TronAddressCodec
-from tron.models import TronWatchCursor
-from tron.watchers import load_tron_filter_addresses
 
 # 单轮扫描最多向前推进的块数；walletsolidity 返回的是 BFT 不可逆块，故无需 replay。
 # Tron 3 秒一块、beat tick 30 秒 ≈ 每轮净新增 ~10 块，32 块留够冗余且能消化短暂积压；
@@ -76,7 +78,9 @@ class TronUsdtPaymentScanner:
         last_successfully_scanned: int | None = None
         try:
             latest_block = client.get_latest_solid_block_number()
-            Chain.objects.filter(pk=chain.pk).update(latest_block_number=latest_block)
+            Chain.objects.filter(pk=chain.pk).update(
+                latest_block_number=Greatest(F("latest_block_number"), latest_block)
+            )
 
             if cursor.enabled:
                 cursor = cls._bootstrap_cursor_if_needed(
@@ -357,8 +361,8 @@ class TronUsdtPaymentScanner:
     ) -> None:
         target_block = min(scanned_block, latest_block)
         TronWatchCursor.objects.filter(pk=cursor.pk).update(
-            last_scanned_block=max(cursor.last_scanned_block, target_block),
-            last_safe_block=max(cursor.last_safe_block, target_block),
+            last_scanned_block=Greatest(F("last_scanned_block"), target_block),
+            last_safe_block=Greatest(F("last_safe_block"), target_block),
             last_error="",
             last_error_at=None,
             updated_at=timezone.now(),

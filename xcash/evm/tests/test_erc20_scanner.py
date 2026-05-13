@@ -931,6 +931,99 @@ class EvmErc20ScannerTests(TestCase):
             OnchainTransfer.objects.filter(hash=tx_hash, event_id="native:tx").exists()
         )
 
+    @patch("chains.service.TransferService._mark_broadcast_task_pending_confirm")
+    @patch("chains.service.TransferService.enqueue_processing")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_full_block")
+    @patch("evm.scanner.native.EvmScannerRpcClient.get_latest_block_number")
+    def test_native_scan_falls_back_when_block_receipts_misses_matched_tx(
+        self,
+        get_latest_block_number_mock,
+        get_full_block_mock,
+        get_receipt_status_mock,
+        get_block_receipts_status_mock,
+        _enqueue_processing_mock,
+        _mark_pending_confirm_mock,
+    ):
+        # 部分 RPC provider 的 eth_getBlockReceipts 可能返回缺项/缺 status；
+        # 对已命中的 tx 必须单笔 fallback，否则会漏扫成功转账并推进游标。
+        tx_hash_hex = "ac"
+        tx_hash = "0x" + tx_hash_hex * 32
+        get_latest_block_number_mock.return_value = 20
+        get_full_block_mock.side_effect = lambda *, block_number: (
+            self._build_native_block(
+                txs=[
+                    self._build_native_tx(
+                        from_address=Web3.to_checksum_address(
+                            "0x00000000000000000000000000000000000000cc"
+                        ),
+                        to_address=self.addr.address,
+                        value=10**18,
+                        tx_hash_hex=tx_hash_hex,
+                    )
+                ]
+            )
+            if block_number == 20
+            else self._build_native_block(txs=[])
+        )
+        get_block_receipts_status_mock.return_value = {}
+        get_receipt_status_mock.return_value = 1
+
+        result = EvmNativeDirectScanner.scan_chain(chain=self.chain, batch_size=4)
+
+        self.assertEqual(result.created_transfers, 1)
+        get_receipt_status_mock.assert_called_once_with(tx_hash=tx_hash)
+        self.assertTrue(
+            OnchainTransfer.objects.filter(hash=tx_hash, event_id="native:tx").exists()
+        )
+
+    def test_erc20_cursor_advance_never_rewinds_database_value(self):
+        cursor = EvmScanCursor.objects.create(
+            chain=self.chain,
+            scanner_type=EvmScanCursorType.ERC20_TRANSFER,
+            last_scanned_block=100,
+            last_safe_block=100,
+        )
+        stale_cursor = EvmScanCursor.objects.get(pk=cursor.pk)
+        EvmScanCursor.objects.filter(pk=cursor.pk).update(
+            last_scanned_block=150,
+            last_safe_block=150,
+        )
+
+        EvmErc20TransferScanner._advance_cursor(
+            cursor=stale_cursor,
+            latest_block=120,
+            scanned_to_block=120,
+        )
+
+        cursor.refresh_from_db()
+        self.assertEqual(cursor.last_scanned_block, 150)
+        self.assertEqual(cursor.last_safe_block, 150)
+
+    def test_native_cursor_advance_never_rewinds_database_value(self):
+        cursor = EvmScanCursor.objects.create(
+            chain=self.chain,
+            scanner_type=EvmScanCursorType.NATIVE_DIRECT,
+            last_scanned_block=100,
+            last_safe_block=100,
+        )
+        stale_cursor = EvmScanCursor.objects.get(pk=cursor.pk)
+        EvmScanCursor.objects.filter(pk=cursor.pk).update(
+            last_scanned_block=150,
+            last_safe_block=150,
+        )
+
+        EvmNativeDirectScanner._advance_cursor(
+            cursor=stale_cursor,
+            latest_block=120,
+            scanned_to_block=120,
+        )
+
+        cursor.refresh_from_db()
+        self.assertEqual(cursor.last_scanned_block, 150)
+        self.assertEqual(cursor.last_safe_block, 150)
+
     @patch("chains.service.TransferService.create_observed_transfer")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_block_receipts_status")
     @patch("evm.scanner.native.EvmScannerRpcClient.get_transaction_receipt_status")

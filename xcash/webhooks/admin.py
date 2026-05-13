@@ -47,6 +47,7 @@ class WebhookEventAdmin(ReadOnlyModelAdmin):
         "status",
         "display_attempt_count",
         "schedule_locked_until",
+        "delivery_locked_until",
         "display_attention",
         "created_at",
     )
@@ -59,6 +60,7 @@ class WebhookEventAdmin(ReadOnlyModelAdmin):
         "delivered_at",
         "last_error",
         "schedule_locked_until",
+        "delivery_locked_until",
         "created_at",
     )
 
@@ -83,6 +85,7 @@ class WebhookEventAdmin(ReadOnlyModelAdmin):
                 "fields": (
                     "last_error",
                     "schedule_locked_until",
+                    "delivery_locked_until",
                 )
             },
         ),
@@ -125,8 +128,12 @@ class WebhookEventAdmin(ReadOnlyModelAdmin):
         Project.objects.filter(pk__in=project_pks).update(
             webhook_open=True, failed_count=0
         )
-        # 清除 schedule_locked_until，避免事件在退避窗口内仍被跳过
-        queryset.update(status=WebhookEvent.Status.PENDING, schedule_locked_until=None)
+        # 清除调度/投递锁，避免事件在退避窗口或旧 worker claim 内仍被跳过
+        queryset.update(
+            status=WebhookEvent.Status.PENDING,
+            schedule_locked_until=None,
+            delivery_locked_until=None,
+        )
         self.message_user(request, _("已进入待投递队列"))
 
 

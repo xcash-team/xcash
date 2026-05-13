@@ -626,12 +626,12 @@ class EpaySubmitServiceTests(TestCase):
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     @patch("invoices.epay_service.check_saas_permission")
-    def test_submit_accepts_missing_optional_param_and_return_url(
+    def test_submit_accepts_missing_optional_type_param_and_return_url(
         self,
         mock_check,
         mock_initialize,
     ):
-        # EPay V1 协议中 param 与 return_url 都是可选字段，typecho/wordpress/discuz 等
+        # EPay V1 协议中 type / param / return_url 都是可选字段，typecho/wordpress/discuz 等
         # 真实商户插件常常完全不发送它们；入口必须能在两个键缺省时正常成单，并在重复提交时
         # 命中幂等分支（_validate_idempotent_order 会比较 params["param"]/["return_url"]
         # 与模型字段，两侧应统一为空字符串）。
@@ -639,7 +639,6 @@ class EpaySubmitServiceTests(TestCase):
 
         params = {
             "pid": str(self.merchant.pid),
-            "type": "usdt",
             "out_trade_no": "EPAY-SUBMIT-NO-OPTIONALS",
             "notify_url": "https://merchant.example.com/notify",
             "name": "VIP Package",
@@ -653,6 +652,7 @@ class EpaySubmitServiceTests(TestCase):
         invoice.refresh_from_db()
         epay_order = invoice.epay_order
         self.assertEqual(invoice.return_url, "")
+        self.assertEqual(epay_order.type, "")
         self.assertEqual(epay_order.return_url, "")
         self.assertEqual(epay_order.param, "")
 
@@ -674,9 +674,15 @@ class EpaySubmitServiceTests(TestCase):
         # 拒绝：
         # - 非字符串、空串、纯字母、缺整数部分、3+ 位小数、负数；
         # - 0 / 0.0 / 0.00（< 0.01 拦下）；
-        # - 整数部分超过 26 位（27/30 边界，必须在 fullmatch / len>26 阶段
-        #   就被 ValidationError 拦下，而不能让 Decimal.quantize 因
-        #   prec=28 抛 InvalidOperation 冒到 view 层）。
+        # - 整数部分超过 24 位（Invoice.amount 是 max_digits=32/decimal_places=8，
+        #   只能容纳 24 位整数；必须在 serializer 阶段拦下，避免 DB 写入 500）。
+        valid_large = self._signed_params(
+            money=("9" * 24) + ".99",
+            out_trade_no="EPAY-SUBMIT-MONEY-24",
+        )
+        serializer = EpaySubmitSerializer(data=valid_large)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
         invalid_cases = (
             Decimal("18.50"),
             "",
@@ -687,7 +693,7 @@ class EpaySubmitServiceTests(TestCase):
             "0",
             "0.0",
             "0.00",
-            "9" * 27,
+            "9" * 25,
             "9" * 30,
             "9" * 30 + ".99",
         )
@@ -697,6 +703,22 @@ class EpaySubmitServiceTests(TestCase):
                 serializer = EpaySubmitSerializer(data=params)
                 self.assertFalse(serializer.is_valid())
                 self.assertIn("money", serializer.errors)
+
+    @patch("invoices.epay_service.check_saas_permission")
+    def test_submit_rejects_when_project_has_no_payment_methods(self, mock_check):
+        # EPay 建单若项目没有任何可用收款方式，必须拒绝而不是创建不可支付账单并占用商户单号。
+        RecipientAddress.objects.filter(project=self.project).delete()
+
+        params = self._signed_params(out_trade_no="EPAY-NO-METHODS-1001")
+
+        with self.assertRaises(EpaySubmitError):
+            EpaySubmitService.submit(params)
+
+        self.assertFalse(Invoice.objects.filter(out_no="EPAY-NO-METHODS-1001").exists())
+        mock_check.assert_called_once_with(
+            appid=self.project.appid,
+            action="invoice",
+        )
 
     @patch("invoices.epay_service.InvoiceService.initialize_invoice")
     def test_create_invoice_and_order_reuses_existing_order_after_integrity_error(

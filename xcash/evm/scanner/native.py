@@ -264,6 +264,10 @@ class EvmNativeDirectScanner:
                 # OnchainTransfer 只表示成功链上资产移动；status=0 的失败交易不得落库。
                 if receipt_status_map is not None:
                     receipt_status = receipt_status_map.get(parsed["tx_hash"])
+                    if receipt_status is None:
+                        receipt_status = rpc_client.get_transaction_receipt_status(
+                            tx_hash=parsed["tx_hash"]
+                        )
                 else:
                     receipt_status = rpc_client.get_transaction_receipt_status(
                         tx_hash=parsed["tx_hash"]
@@ -365,8 +369,11 @@ class EvmNativeDirectScanner:
         scanned_to_block: int,
     ) -> None:
         EvmScanCursor.objects.filter(pk=cursor.pk).update(
-            last_scanned_block=max(cursor.last_scanned_block, scanned_to_block),
-            last_safe_block=max(0, latest_block - cursor.chain.confirm_block_count),
+            last_scanned_block=Greatest(F("last_scanned_block"), scanned_to_block),
+            last_safe_block=Greatest(
+                F("last_safe_block"),
+                max(0, latest_block - cursor.chain.confirm_block_count),
+            ),
             last_error="",
             last_error_at=None,
             updated_at=timezone.now(),

@@ -145,6 +145,10 @@ class EpaySubmitService:
         raw_request: dict[str, str],
     ) -> Invoice:
         project = merchant.project
+        methods = Invoice.available_methods(project)
+        if not methods:
+            raise EpaySubmitError("no available payment methods")
+
         try:
             # 内层 atomic 建立保存点，避免唯一约束冲突后污染外层幂等事务。
             with transaction.atomic():
@@ -154,7 +158,7 @@ class EpaySubmitService:
                     title=params["name"],
                     currency=params["currency"],
                     amount=params["money"],
-                    methods=Invoice.available_methods(project),
+                    methods=methods,
                     return_url=params["return_url"],
                     expires_at=timezone.now() + timedelta(minutes=15),
                     protocol=InvoiceProtocol.EPAY_V1,

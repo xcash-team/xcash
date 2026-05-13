@@ -1,6 +1,9 @@
+import ipaddress
 import json
+import socket
 import time
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import environ
 import httpx
@@ -23,6 +26,7 @@ from webhooks.models import DeliveryAttempt
 from webhooks.models import WebhookEvent
 
 EVENT_ATTEMPT_TIMEOUT = 10
+DELIVERY_CLAIM_TIMEOUT = EVENT_ATTEMPT_TIMEOUT + 5
 # 商户回执通常只有 "ok"/"success" 等几字节。设置 64KB 上限既能兼容偶发的 HTML
 # 错误页等场景，又能挡掉恶意商户回包放大 celery worker 内存。
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -34,9 +38,62 @@ _egress_proxy_url: str | None = environ.Env().str("XCASH_EGRESS_PROXY", default=
 _egress_proxy_key: str = environ.Env().str("XCASH_EGRESS_PROXY_KEY", default="")
 
 
+def _is_safe_delivery_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+
+    hostname = parsed.hostname.strip().lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return False
+
+    try:
+        addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        try:
+            addresses = [
+                ipaddress.ip_address(item[4][0])
+                for item in socket.getaddrinfo(
+                    hostname,
+                    parsed.port or 443,
+                    type=socket.SOCK_STREAM,
+                )
+            ]
+        except OSError:
+            return False
+
+    return bool(addresses) and all(ip.is_global for ip in addresses)
+
+
 def next_backoff(try_number: int) -> int:
     # Webhook 重试节奏允许通过平台参数中心调节，但仍保持指数退避，避免失败时瞬时洪泛商户端。
     return min(2 ** (try_number + 1), get_webhook_delivery_max_backoff_seconds())
+
+
+def _claim_event_for_delivery(event_pk) -> bool:
+    now = timezone.now()
+    claimed = (
+        WebhookEvent.objects.filter(
+            pk=event_pk,
+            status=WebhookEvent.Status.PENDING,
+        )
+        .filter(
+            Q(schedule_locked_until__isnull=True)
+            | Q(schedule_locked_until__lte=now)
+        )
+        .filter(
+            Q(delivery_locked_until__isnull=True)
+            | Q(delivery_locked_until__lte=now)
+        )
+        .update(
+            delivery_locked_until=now + timedelta(seconds=DELIVERY_CLAIM_TIMEOUT),
+        )
+    )
+    return claimed == 1
 
 
 def _build_delivery_headers(project, event, body_str: str, timestamp: str) -> dict:
@@ -117,6 +174,10 @@ def schedule_events(batch_size=128):
             Q(schedule_locked_until__isnull=True)
             | Q(schedule_locked_until__lte=timezone.now())
         )
+        .filter(
+            Q(delivery_locked_until__isnull=True)
+            | Q(delivery_locked_until__lte=timezone.now())
+        )
         .order_by("created_at")[:batch_size]
     )
 
@@ -132,11 +193,10 @@ def schedule_events(batch_size=128):
 )
 @singleton_task(timeout=EVENT_ATTEMPT_TIMEOUT + 2, use_params=True)
 def deliver_event(event_pk):
-    event = WebhookEvent.objects.select_related("project").get(pk=event_pk)
-
-    # 幂等保护：非 PENDING 状态的事件跳过，防止并发或手动触发重复处理
-    if not event.is_pending:
+    if not _claim_event_for_delivery(event_pk):
         return
+
+    event = WebhookEvent.objects.select_related("project").get(pk=event_pk)
 
     project = event.project
     target_url = event.delivery_url or project.webhook
@@ -149,7 +209,17 @@ def deliver_event(event_pk):
             else "Webhook URL not configured."
         )
         WebhookEvent.objects.filter(pk=event_pk).update(
-            status=WebhookEvent.Status.FAILED, last_error=reason
+            status=WebhookEvent.Status.FAILED,
+            last_error=reason,
+            delivery_locked_until=None,
+        )
+        return
+
+    if not _is_safe_delivery_url(target_url):
+        WebhookEvent.objects.filter(pk=event_pk).update(
+            status=WebhookEvent.Status.FAILED,
+            last_error="Unsafe webhook URL.",
+            delivery_locked_until=None,
         )
         return
 
@@ -214,6 +284,7 @@ def deliver_event(event_pk):
                 status=WebhookEvent.Status.SUCCEEDED,
                 last_error="",
                 delivered_at=timezone.now(),
+                delivery_locked_until=None,
             )
             # 使用 select_for_update 与失败路径保持一致，防止并发投递时成功路径的无锁重置覆盖失败路径的计数累加
             locked_project = (
@@ -252,10 +323,12 @@ def deliver_event(event_pk):
                 schedule_locked_until=timezone.now()
                 + timedelta(seconds=next_backoff(try_number)),
                 last_error=error_msg,
+                delivery_locked_until=None,
             )
         else:
             WebhookEvent.objects.filter(pk=event_pk).update(
                 status=WebhookEvent.Status.FAILED,
                 last_error=error_msg,
                 schedule_locked_until=None,
+                delivery_locked_until=None,
             )

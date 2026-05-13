@@ -14,13 +14,14 @@ from webhooks.models import WebhookEvent
 from webhooks.service import WebhookService
 from webhooks.tasks import deliver_event
 from webhooks.tasks import next_backoff
+from webhooks.tasks import schedule_events
 
 
 def _make_project(**kwargs):
     defaults = {
         "name": f"Demo-{Project.objects.count()}",
         "wallet": Wallet.objects.create(),
-        "webhook": "https://merchant.example.com/hook",
+        "webhook": "https://93.184.216.34/hook",
         "webhook_open": True,
     }
     defaults.update(kwargs)
@@ -82,6 +83,7 @@ class DeliverEventTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
         self.assertIsNotNone(event.delivered_at)
+        self.assertIsNone(event.delivery_locked_until)
         self.assertEqual(event.last_error, "")
 
     @patch("webhooks.tasks._execute_http_delivery")
@@ -121,6 +123,7 @@ class DeliverEventTests(TestCase):
         self.assertEqual(event.status, WebhookEvent.Status.PENDING)
         self.assertIsNotNone(event.schedule_locked_until)
         self.assertGreater(event.schedule_locked_until, timezone.now())
+        self.assertIsNone(event.delivery_locked_until)
 
     # ── 失败路径：4xx 不可重试 ──
 
@@ -133,6 +136,7 @@ class DeliverEventTests(TestCase):
 
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertIsNone(event.delivery_locked_until)
 
     # ── 失败路径：3xx 不可重试（修复后行为）──
 
@@ -159,6 +163,7 @@ class DeliverEventTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.PENDING)
         self.assertIsNotNone(event.schedule_locked_until)
+        self.assertIsNone(event.delivery_locked_until)
 
     # ── 熔断机制 ──
 
@@ -189,6 +194,42 @@ class DeliverEventTests(TestCase):
 
         mock_http.assert_not_called()
 
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_skip_event_before_retry_schedule_is_due(self, mock_http):
+        # 队列中可能残留旧任务；即使任务被直接执行，也不能绕过 DB 中的下次投递时间。
+        event = self._create_event(
+            schedule_locked_until=timezone.now() + timezone.timedelta(minutes=5),
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_skip_event_when_delivery_claim_is_still_active(self, mock_http):
+        # 第一条 worker 已经抢占事件但尚未完成时，第二条 worker 不应重复通知商户。
+        event = self._create_event(
+            delivery_locked_until=timezone.now() + timezone.timedelta(seconds=30),
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.PENDING)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks.deliver_event.delay")
+    def test_schedule_events_skips_event_with_active_delivery_claim(self, delay_mock):
+        self._create_event(
+            delivery_locked_until=timezone.now() + timezone.timedelta(seconds=30),
+        )
+
+        schedule_events()
+
+        delay_mock.assert_not_called()
+
     # ── webhook 未配置 ──
 
     @patch("webhooks.tasks._execute_http_delivery")
@@ -201,6 +242,38 @@ class DeliverEventTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.FAILED)
         self.assertIn("not configured", event.last_error)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_private_delivery_url_is_rejected_before_http_delivery(self, mock_http):
+        project = _make_project(webhook="https://127.0.0.1:8080/internal")
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertIn("Unsafe webhook URL", event.last_error)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks.socket.getaddrinfo")
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_private_dns_delivery_url_is_rejected_before_http_delivery(
+        self,
+        mock_http,
+        getaddrinfo_mock,
+    ):
+        getaddrinfo_mock.return_value = [
+            (None, None, None, None, ("10.0.0.5", 443)),
+        ]
+        project = _make_project(webhook="https://merchant.internal.example/hook")
+        event = self._create_event(project=project)
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertIn("Unsafe webhook URL", event.last_error)
         mock_http.assert_not_called()
 
     # ── webhook_open=False ──
@@ -249,11 +322,11 @@ class WebhookDeliveryPolicyTests(TestCase):
     @patch("webhooks.tasks._execute_http_delivery")
     def test_get_query_delivery_uses_event_delivery_url_and_success_text(self, mock_http):
         mock_http.return_value = (True, 200, {}, "success", "", 30)
-        project = _make_project(webhook="https://native.example.com/hook")
+        project = _make_project(webhook="https://93.184.216.35/hook")
         event = WebhookEvent.objects.create(
             project=project,
             payload={"pid": "1001", "trade_status": "TRADE_SUCCESS"},
-            delivery_url="https://merchant.example.com/notify",
+            delivery_url="https://93.184.216.34/notify",
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body="success",
         )
@@ -263,7 +336,7 @@ class WebhookDeliveryPolicyTests(TestCase):
         event.refresh_from_db()
         self.assertEqual(event.status, WebhookEvent.Status.SUCCEEDED)
         call_kwargs = mock_http.call_args.kwargs
-        self.assertEqual(call_kwargs["request_url"], "https://merchant.example.com/notify")
+        self.assertEqual(call_kwargs["request_url"], "https://93.184.216.34/notify")
         self.assertEqual(call_kwargs["method"], "GET")
         self.assertEqual(call_kwargs["params"], {"pid": "1001", "trade_status": "TRADE_SUCCESS"})
         self.assertEqual(call_kwargs["expected_response_body"], "success")
@@ -272,7 +345,7 @@ class WebhookDeliveryPolicyTests(TestCase):
         self.assertNotIn("CF-Worker-Key", call_kwargs["headers"])
 
     @patch("webhooks.tasks._egress_proxy_key", "proxy-key-secret")
-    @patch("webhooks.tasks._egress_proxy_url", "https://proxy.example.com/forward")
+    @patch("webhooks.tasks._egress_proxy_url", "https://93.184.216.36/forward")
     @patch("webhooks.tasks._execute_http_delivery")
     def test_get_query_uses_egress_proxy_when_configured(self, mock_http):
         """配置了出口代理后，GET 类型 webhook 必须走代理转发，避免暴露真实 IP / SSRF。"""
@@ -292,7 +365,7 @@ class WebhookDeliveryPolicyTests(TestCase):
         event = WebhookEvent.objects.create(
             project=project,
             payload={"pid": "1001", "trade_status": "TRADE_SUCCESS"},
-            delivery_url="https://merchant.example.com/notify",
+            delivery_url="https://93.184.216.34/notify",
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body="success",
         )
@@ -300,10 +373,10 @@ class WebhookDeliveryPolicyTests(TestCase):
         deliver_event(event.pk)
 
         # 请求 URL 改为代理地址，原商户 URL 通过 header 传递给代理
-        self.assertEqual(captured["request_url"], "https://proxy.example.com/forward")
+        self.assertEqual(captured["request_url"], "https://93.184.216.36/forward")
         self.assertEqual(
             captured["headers"]["CF-Worker-Destination"],
-            "https://merchant.example.com/notify",
+            "https://93.184.216.34/notify",
         )
         self.assertEqual(captured["headers"]["CF-Worker-Key"], "proxy-key-secret")
         # GET 方法和 query payload 不变，签名校验交给商户端的 EPay MD5
@@ -319,7 +392,7 @@ class WebhookDeliveryPolicyTests(TestCase):
         event = WebhookEvent.objects.create(
             project=project,
             payload={"pid": "1001"},
-            delivery_url="https://merchant.example.com/notify",
+            delivery_url="https://93.184.216.34/notify",
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body="success",
         )
@@ -327,12 +400,32 @@ class WebhookDeliveryPolicyTests(TestCase):
         deliver_event(event.pk)
 
         call_kwargs = mock_http.call_args.kwargs
-        self.assertEqual(call_kwargs["request_url"], "https://merchant.example.com/notify")
+        self.assertEqual(call_kwargs["request_url"], "https://93.184.216.34/notify")
         self.assertNotIn("CF-Worker-Destination", call_kwargs["headers"])
         self.assertNotIn("CF-Worker-Key", call_kwargs["headers"])
 
     @patch("webhooks.tasks._egress_proxy_key", "proxy-key-secret")
-    @patch("webhooks.tasks._egress_proxy_url", "https://proxy.example.com/forward")
+    @patch("webhooks.tasks._egress_proxy_url", "https://93.184.216.36/forward")
+    @patch("webhooks.tasks._execute_http_delivery")
+    def test_proxy_mode_rejects_private_destination_url(self, mock_http):
+        project = _make_project()
+        event = WebhookEvent.objects.create(
+            project=project,
+            payload={"pid": "1001"},
+            delivery_url="https://169.254.169.254/latest/meta-data",
+            delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
+            expected_response_body="success",
+        )
+
+        deliver_event(event.pk)
+
+        event.refresh_from_db()
+        self.assertEqual(event.status, WebhookEvent.Status.FAILED)
+        self.assertIn("Unsafe webhook URL", event.last_error)
+        mock_http.assert_not_called()
+
+    @patch("webhooks.tasks._egress_proxy_key", "proxy-key-secret")
+    @patch("webhooks.tasks._egress_proxy_url", "https://93.184.216.36/forward")
     @patch("webhooks.tasks._execute_http_delivery")
     def test_get_query_attempt_log_strips_proxy_credentials(self, mock_http):
         """代理鉴权 header 不能写入 DeliveryAttempt 日志，避免密钥泄漏。"""
@@ -341,7 +434,7 @@ class WebhookDeliveryPolicyTests(TestCase):
         event = WebhookEvent.objects.create(
             project=project,
             payload={"pid": "1001"},
-            delivery_url="https://merchant.example.com/notify",
+            delivery_url="https://93.184.216.34/notify",
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body="success",
         )
@@ -377,7 +470,7 @@ class WebhookDeliveryPolicyTests(TestCase):
         event = WebhookEvent.objects.create(
             project=project,
             payload={"pid": "1001"},
-            delivery_url="https://merchant.example.com/notify",
+            delivery_url="https://93.184.216.34/notify",
             delivery_method=WebhookEvent.DeliveryMethod.GET_QUERY,
             expected_response_body="success",
         )

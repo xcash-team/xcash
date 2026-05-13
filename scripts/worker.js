@@ -19,6 +19,49 @@ function timingSafeEqual(a, b) {
     return diff === 0;
 }
 
+function isUnsafeIPv4(hostname) {
+    const parts = hostname.split('.');
+    if (parts.length !== 4) return false;
+    const nums = parts.map((part) => Number(part));
+    if (nums.some((n, i) => !Number.isInteger(n) || n < 0 || n > 255 || String(n) !== parts[i])) {
+        return false;
+    }
+    const [a, b] = nums;
+    return (
+        a === 10 ||
+        a === 127 ||
+        a === 0 ||
+        a >= 224 ||
+        (a === 100 && b >= 64 && b <= 127) ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 0) ||
+        (a === 192 && b === 168) ||
+        (a === 198 && (b === 18 || b === 19 || b === 51)) ||
+        (a === 203 && b === 0)
+    );
+}
+
+function isSafeDestination(destination) {
+    let url;
+    try {
+        url = new URL(destination);
+    } catch (_error) {
+        return false;
+    }
+
+    if (url.protocol !== 'https:') return false;
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+    if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost')) {
+        return false;
+    }
+    if (isUnsafeIPv4(hostname)) return false;
+    if (hostname.includes(':')) {
+        return false;
+    }
+    return true;
+}
+
 export default {
     async fetch(request, env) {
         // 验证 Key
@@ -36,6 +79,9 @@ export default {
         const destination = request.headers.get('CF-Worker-Destination');
         if (!destination) {
             return new Response('CF-Worker-Destination header is required', {status: 400});
+        }
+        if (!isSafeDestination(destination)) {
+            return new Response('Unsafe destination', {status: 400});
         }
 
         // 从空 Headers 出发显式构造，只带白名单内的头
@@ -64,7 +110,7 @@ export default {
                 init.body = await request.arrayBuffer();
             }
 
-            const response = await fetch(new Request(forwardUrl, init));
+            const response = await fetch(new Request(forwardUrl, {...init, redirect: 'manual'}));
 
             return new Response(response.body, {
                 status: response.status,
@@ -73,7 +119,7 @@ export default {
             });
 
         } catch (error) {
-            return new Response('Error forwarding request: ' + error.message, {status: 500});
+            return new Response('Error forwarding request', {status: 500});
         }
     }
 };

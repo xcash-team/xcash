@@ -24,4 +24,8 @@ def clear_failed_count(sender, instance: Project, **kwargs):
 
             WebhookEvent.objects.filter(
                 project=instance, status=WebhookEvent.Status.FAILED
-            ).update(status=WebhookEvent.Status.PENDING, schedule_locked_until=None)
+            ).update(
+                status=WebhookEvent.Status.PENDING,
+                schedule_locked_until=None,
+                delivery_locked_until=None,
+            )
