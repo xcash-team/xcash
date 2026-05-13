@@ -95,7 +95,7 @@ graph LR
 - 操作系统：Linux（推荐 Ubuntu 22.04+ / Debian 12+）
 - 安装 Docker 和 Docker Compose
 
-`PERFORMANCE` 不设置时默认使用 `low`。部署规模较小时建议先从 `low` 启动，只开启实际需要的链与功能；业务量、链扫描压力或并发请求增加后再切换到 `medium` 或 `high`。
+`PERFORMANCE` 为可设置到 .env 中的性能参数，不设置时默认使用 `low`。部署规模较小时建议先从 `low` 启动，只开启实际需要的链与功能；业务量、链扫描压力或并发请求增加后再切换到 `medium` 或 `high`。
 
 各性能模式在不同场景下建议承载的链数量：
 
