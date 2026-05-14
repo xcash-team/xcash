@@ -216,27 +216,24 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         self.assertIsNone(deposit.risk_score)
 
     # ===== SaaS gate（spec §5） =====
-    @override_settings(INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_self_hosted_mode_marks_normally(self, score):
-        """覆盖：method-level 切回自托管，gate 直接放行。"""
-        # 此 method 的 INTERNAL_API_TOKEN 由下面 override 切换；这里先覆盖回 "" 测自托管路径
-        with override_settings(INTERNAL_API_TOKEN=""):
-            invoice = self.make_invoice(worth=Decimal("500"))
-            score.return_value = MistTrackRiskResult(
-                risk_level=RiskLevel.SEVERE,
-                risk_score=Decimal("95"),
-                detail_list=[],
-                risk_detail={},
-                risk_report_url="",
-                raw_response={},
-            )
+        """自托管模式（class-level INTERNAL_API_TOKEN=""），gate 直接放行。"""
+        invoice = self.make_invoice(worth=Decimal("500"))
+        score.return_value = MistTrackRiskResult(
+            risk_level=RiskLevel.SEVERE,
+            risk_score=Decimal("95"),
+            detail_list=[],
+            risk_detail={},
+            risk_report_url="",
+            raw_response={},
+        )
 
-            RiskMarkingService.mark_invoice(invoice.pk)
+        RiskMarkingService.mark_invoice(invoice.pk)
 
-            score.assert_called_once()
-            assessment = RiskAssessment.objects.get(invoice=invoice)
-            self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
+        score.assert_called_once()
+        assessment = RiskAssessment.objects.get(invoice=invoice)
+        self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
 
     @override_settings(INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
@@ -295,25 +292,24 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(invoice=invoice)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_deposit_self_hosted_mode_marks_normally(self, score):
-        with override_settings(INTERNAL_API_TOKEN=""):
-            deposit = self.make_deposit(worth=Decimal("500"))
-            score.return_value = MistTrackRiskResult(
-                risk_level=RiskLevel.SEVERE,
-                risk_score=Decimal("95"),
-                detail_list=[],
-                risk_detail={},
-                risk_report_url="",
-                raw_response={},
-            )
+        """自托管模式（class-level INTERNAL_API_TOKEN=""），gate 直接放行。"""
+        deposit = self.make_deposit(worth=Decimal("500"))
+        score.return_value = MistTrackRiskResult(
+            risk_level=RiskLevel.SEVERE,
+            risk_score=Decimal("95"),
+            detail_list=[],
+            risk_detail={},
+            risk_report_url="",
+            raw_response={},
+        )
 
-            RiskMarkingService.mark_deposit(deposit.pk)
+        RiskMarkingService.mark_deposit(deposit.pk)
 
-            score.assert_called_once()
-            assessment = RiskAssessment.objects.get(deposit=deposit)
-            self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
+        score.assert_called_once()
+        assessment = RiskAssessment.objects.get(deposit=deposit)
+        self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
 
     @override_settings(INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")

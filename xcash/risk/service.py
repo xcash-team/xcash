@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 import structlog
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
@@ -17,6 +18,7 @@ from risk.models import RiskTargetType
 
 from chains.models import Chain
 from chains.models import ChainType
+from common.permission_check import _read_saas_perm
 from core.runtime_settings import get_quicknode_misttrack_endpoint_url
 from core.runtime_settings import get_risk_marking_cache_seconds
 from core.runtime_settings import get_risk_marking_enabled
@@ -98,10 +100,6 @@ class RiskMarkingService:
         - SaaS 模式 + 缓存命中 → 按 enable_risk_marking 判定。
         - SaaS 模式 + 冷缓存 → fail-closed，避免在权限不明时产生 MistTrack 成本。
         """
-        from django.conf import settings
-
-        from common.permission_check import _read_saas_perm
-
         if not settings.INTERNAL_API_TOKEN:
             return True
 
