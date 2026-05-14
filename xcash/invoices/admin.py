@@ -141,7 +141,7 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
             {"fields": ("transfer",)},
         ),
         (
-            _("风险标记"),
+            _("风控"),
             {"fields": ("display_risk_level", "risk_score")},
         ),
     )

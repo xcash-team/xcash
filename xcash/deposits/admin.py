@@ -102,7 +102,7 @@ class DepositAdmin(ReadOnlyModelAdmin):
             },
         ),
         (
-            "风险标记",
+            "风控",
             {
                 "fields": (
                     "display_risk_level",

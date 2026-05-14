@@ -59,7 +59,7 @@ class PlatformSettingsAdmin(ModelAdmin):
             },
         ),
         (
-            "风险标记",
+            "风控系统",
             {
                 "fields": (
                     "risk_marking_enabled",
