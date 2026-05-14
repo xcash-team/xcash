@@ -62,6 +62,8 @@ class InternalInvoiceDetailSerializer(serializers.ModelSerializer):
             "pay_address",
             "worth",
             "status",
+            "risk_level",
+            "risk_score",
             "tx",
             "started_at",
             "expires_at",

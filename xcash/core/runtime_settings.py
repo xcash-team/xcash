@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.core.cache import cache
@@ -115,3 +116,38 @@ def get_webhook_event_timeout() -> timedelta:
     if platform_settings is not None:
         return timedelta(minutes=platform_settings.webhook_event_timeout_minutes)
     return timedelta(minutes=15)
+
+
+def get_risk_marking_enabled() -> bool:
+    platform_settings = get_platform_settings()
+    if platform_settings is not None:
+        return bool(platform_settings.risk_marking_enabled)
+    return False
+
+
+def get_risk_marking_threshold_usd() -> Decimal:
+    platform_settings = get_platform_settings()
+    if platform_settings is not None:
+        return Decimal(platform_settings.risk_marking_threshold_usd)
+    return Decimal("0")
+
+
+def get_risk_marking_cache_seconds() -> int:
+    platform_settings = get_platform_settings()
+    if platform_settings is not None:
+        return int(platform_settings.risk_marking_cache_seconds)
+    return 3600
+
+
+def get_risk_marking_force_refresh_threshold_usd() -> Decimal:
+    platform_settings = get_platform_settings()
+    if platform_settings is not None:
+        return Decimal(platform_settings.risk_marking_force_refresh_threshold_usd)
+    return Decimal("10000")
+
+
+def get_quicknode_misttrack_endpoint_url() -> str:
+    platform_settings = get_platform_settings()
+    if platform_settings is not None:
+        return platform_settings.quicknode_misttrack_endpoint_url.strip()
+    return ""

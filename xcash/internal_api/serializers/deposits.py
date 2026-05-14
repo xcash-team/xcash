@@ -23,6 +23,8 @@ class InternalDepositDetailSerializer(serializers.ModelSerializer):
             "chain",
             "worth",
             "status",
+            "risk_level",
+            "risk_score",
             "tx",
             "created_at",
             "updated_at",

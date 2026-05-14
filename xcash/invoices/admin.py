@@ -71,6 +71,11 @@ class EpayOrderInline(StackedInline):
 @admin.register(Invoice)
 class InvoiceAdmin(ReadOnlyModelAdmin):
     inlines = (InvoicePaySlotInline, EpayOrderInline)
+    readonly_fields = (
+        "display_crypto",
+        "display_chain",
+        "display_risk_level",
+    )
 
     list_display = (
         "sys_no",
@@ -83,6 +88,8 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         "expires_at",
         "display_protocol",
         "display_status",
+        "display_risk_level",
+        "risk_score",
     )
     search_fields = (
         "sys_no",
@@ -94,6 +101,7 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
         "crypto",
         "status",
         "protocol",
+        "risk_level",
     )
     fieldsets = (
         (
@@ -132,6 +140,10 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
             _("交易收据"),
             {"fields": ("transfer",)},
         ),
+        (
+            _("风险标记"),
+            {"fields": ("display_risk_level", "risk_score")},
+        ),
     )
 
     def get_inline_instances(self, request, obj=None):
@@ -160,6 +172,18 @@ class InvoiceAdmin(ReadOnlyModelAdmin):
     )
     def display_status(self, instance: Invoice):
         return instance.get_status_display()
+
+    @display(
+        description=_("风险"),  # noqa
+        label={  # noqa
+            "Low": "success",
+            "Moderate": "warning",
+            "High": "danger",
+            "Severe": "danger",
+        },
+    )
+    def display_risk_level(self, instance: Invoice):
+        return instance.risk_level or "-"
 
     @display(
         description=_("协议"),  # noqa

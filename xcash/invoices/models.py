@@ -13,6 +13,8 @@ from django.utils.translation import gettext_lazy as _
 
 logger = structlog.get_logger()
 
+from risk.models import RiskLevel
+
 from common.fields import AddressField
 from common.fields import SysNoField
 from common.permission_check import filter_saas_allowed_methods
@@ -132,6 +134,21 @@ class Invoice(models.Model):
         choices=InvoiceStatus,
         default=InvoiceStatus.WAITING,
         verbose_name=_("状态"),
+    )
+    risk_level = models.CharField(  # noqa: DJ001
+        _("风险等级"),
+        choices=RiskLevel,
+        max_length=16,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    risk_score = models.DecimalField(
+        _("风险分数"),
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
     )
     protocol = models.CharField(
         choices=InvoiceProtocol,

@@ -179,6 +179,7 @@ LOCAL_APPS = [
     "deposits",
     "withdrawals",
     "webhooks",
+    "risk",
     # EVM 链相关模型（EvmOnchainTask）
     "evm",
     # Bitcoin 链相关模型（BitcoinOnchainTask）

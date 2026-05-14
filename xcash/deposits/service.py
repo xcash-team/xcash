@@ -6,6 +6,7 @@ from decimal import Decimal
 import structlog
 from django.db import transaction as db_transaction
 from django.utils import timezone
+from risk.tasks import mark_deposit_risk
 
 from chains.adapters import AdapterFactory  # noqa: F401
 from chains.models import AddressUsage
@@ -136,6 +137,12 @@ class DepositService:
                 "crypto": deposit.transfer.crypto.symbol,
                 "amount": format_decimal_stripped(deposit.transfer.amount),
                 "confirmed": confirmed,
+                "risk_level": deposit.risk_level,
+                "risk_score": (
+                    format_decimal_stripped(deposit.risk_score)
+                    if deposit.risk_score is not None
+                    else None
+                ),
             },
         }
 
@@ -210,6 +217,7 @@ class DepositService:
             status=DepositStatus.CONFIRMING,
         )
         cls.initialize_deposit(deposit)
+        db_transaction.on_commit(lambda: mark_deposit_risk.delay(deposit.pk))
         return True
 
     @classmethod

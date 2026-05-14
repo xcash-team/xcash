@@ -235,6 +235,8 @@ class InvoicePublicSerializer(serializers.ModelSerializer):
             "return_url",
             "payment",
             "status",
+            "risk_level",
+            "risk_score",
         )
 
 
@@ -285,4 +287,6 @@ class InvoiceDisplaySerializer(serializers.ModelSerializer):
             "return_url",
             "payment",
             "status",
+            "risk_level",
+            "risk_score",
         )

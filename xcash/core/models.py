@@ -1,5 +1,7 @@
 """core app 仅保留后台看板、系统初始化入口与平台级运行参数。"""
 
+from decimal import Decimal
+
 from django.core.cache import cache
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -95,6 +97,39 @@ class PlatformSettings(models.Model):
         default=15,
         validators=[MinValueValidator(1)],
         help_text=_("待投递 Webhook 事件超过该时间仍未送达时，进入异常巡检。"),
+    )
+    risk_marking_enabled = models.BooleanField(
+        _("开启风险标记"),
+        default=False,
+        help_text=_("开启后对高于风险查询阈值的账单和充币查询外部地址风险。"),
+    )
+    risk_marking_threshold_usd = models.DecimalField(
+        _("风险查询阈值(USD)"),
+        max_digits=16,
+        decimal_places=6,
+        default=Decimal("0"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text=_("账单或充币价值大于该阈值时查询风险。"),
+    )
+    risk_marking_cache_seconds = models.PositiveIntegerField(
+        _("风险查询缓存秒数"),
+        default=3600,
+        validators=[MinValueValidator(1)],
+        help_text=_("同一地址风险查询成功后在 Django 缓存中保留的秒数。"),
+    )
+    risk_marking_force_refresh_threshold_usd = models.DecimalField(
+        _("风险查询强制刷新阈值(USD)"),
+        max_digits=16,
+        decimal_places=6,
+        default=Decimal("10000"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text=_("本次业务价值大于该阈值时跳过缓存直接查询。"),
+    )
+    quicknode_misttrack_endpoint_url = models.URLField(
+        _("QuickNode MistTrack Endpoint"),
+        blank=True,
+        default="",
+        help_text=_("QuickNode MistTrack add-on 的 JSON-RPC endpoint URL。"),
     )
     created_by = models.ForeignKey(
         "users.User",

@@ -9,23 +9,24 @@ from django.db import IntegrityError
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from risk.tasks import mark_invoice_risk
 
 from chains.models import ConfirmMode
 from chains.models import TransferType
 from chains.service import ChainService
 from chains.service import TransferService
+from common.internal_callback import send_internal_callback
 from common.utils.math import format_decimal_stripped
 from currencies.service import CryptoService
 from currencies.service import FiatService
-from common.internal_callback import send_internal_callback
 from webhooks.service import WebhookService
 
 from .exceptions import InvoiceStatusError
 from .models import Invoice
-from .models import InvoiceProtocol
 from .models import InvoicePaySlot
 from .models import InvoicePaySlotDiscardReason
 from .models import InvoicePaySlotStatus
+from .models import InvoiceProtocol
 from .models import InvoiceStatus
 
 if TYPE_CHECKING:
@@ -122,6 +123,12 @@ class InvoiceService:
                 "hash": invoice.transfer.hash if invoice.transfer_id else None,
                 "block": invoice.transfer.block if invoice.transfer_id else None,
                 "confirmed": invoice.status == InvoiceStatus.COMPLETED,
+                "risk_level": invoice.risk_level,
+                "risk_score": (
+                    format_decimal_stripped(invoice.risk_score)
+                    if invoice.risk_score is not None
+                    else None
+                ),
             },
         }
 
@@ -219,6 +226,8 @@ class InvoiceService:
             updated_at=timezone.now(),
         )
         invoice.refresh_from_db()
+
+        transaction.on_commit(lambda: mark_invoice_risk.delay(invoice.pk))
 
         # EPAY_V1 为托管模式，交易即时确认，不存在链上等待区块确认的阶段，
         # 预通知对其无意义；其完成通知由 EpaySubmitService 独立处理。

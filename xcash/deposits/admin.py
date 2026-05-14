@@ -56,6 +56,8 @@ class DepositAdmin(ReadOnlyModelAdmin):
         "display_crypto",
         "display_amount",
         "display_status",
+        "display_risk_level",
+        "risk_score",
         "display_collection_state",
         "display_attention",
         "created_at",
@@ -68,6 +70,7 @@ class DepositAdmin(ReadOnlyModelAdmin):
     )
     list_filter = (
         "status",
+        "risk_level",
         "transfer__crypto",
         "transfer__chain",
         DepositCollectionStateFilter,
@@ -78,6 +81,9 @@ class DepositAdmin(ReadOnlyModelAdmin):
         "transfer",
         "worth",
         "status",
+        "risk_level",
+        "display_risk_level",
+        "risk_score",
         "collection",
         "created_at",
         "updated_at",
@@ -92,6 +98,15 @@ class DepositAdmin(ReadOnlyModelAdmin):
                     "transfer",
                     "worth",
                     "status",
+                )
+            },
+        ),
+        (
+            "风险标记",
+            {
+                "fields": (
+                    "display_risk_level",
+                    "risk_score",
                 )
             },
         ),
@@ -119,6 +134,18 @@ class DepositAdmin(ReadOnlyModelAdmin):
     )
     def display_status(self, instance: Deposit):
         return instance.get_status_display()
+
+    @display(
+        description="风险",
+        label={
+            "Low": "success",
+            "Moderate": "warning",
+            "High": "danger",
+            "Severe": "danger",
+        },
+    )
+    def display_risk_level(self, instance: Deposit):
+        return instance.risk_level or "-"
 
     @display(description="项目")
     def display_project(self, instance: Deposit):

@@ -59,6 +59,18 @@ class PlatformSettingsAdmin(ModelAdmin):
             },
         ),
         (
+            "风险标记",
+            {
+                "fields": (
+                    "risk_marking_enabled",
+                    "risk_marking_threshold_usd",
+                    "risk_marking_cache_seconds",
+                    "risk_marking_force_refresh_threshold_usd",
+                    "quicknode_misttrack_endpoint_url",
+                )
+            },
+        ),
+        (
             "审计",
             {
                 "fields": (
@@ -74,6 +86,7 @@ class PlatformSettingsAdmin(ModelAdmin):
     list_display = (
         "id",
         "open_native_scanner",
+        "risk_marking_enabled",
         "admin_sensitive_action_otp_max_age_seconds",
         "alerts_repeat_interval_minutes",
         "updated_by",

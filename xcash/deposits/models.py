@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+from risk.models import RiskLevel
 
 from chains.models import Address
 from chains.models import AddressUsage
@@ -273,6 +274,21 @@ class Deposit(models.Model):
         choices=DepositStatus,
         verbose_name=_("状态"),
         default=DepositStatus.CONFIRMING,
+    )
+    risk_level = models.CharField(  # noqa: DJ001
+        _("风险等级"),
+        choices=RiskLevel,
+        max_length=16,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    risk_score = models.DecimalField(
+        _("风险分数"),
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
     )
     # 多笔 Deposit 可共享同一笔归集交易（DepositCollection）；
     # 一旦进入归集流程，该关系即固定为该次归集记录。
