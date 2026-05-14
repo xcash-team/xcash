@@ -156,6 +156,8 @@ class QuicknodeMistTrackClientTests(SimpleTestCase):
         # QuickNode 历史 dict → list[dict] 适配后单元素 list
         self.assertEqual(result.risk_detail, [{"sanction": 1}])
         self.assertEqual(result.risk_report_url, "https://report.example")
+        # QuickNode add-on 不返回 address_label
+        self.assertIsNone(result.address_label)
 
     @patch("risk.clients.time.sleep", return_value=None)
     @patch("risk.clients.httpx.request")
@@ -218,6 +220,7 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
         self.assertEqual(result.risk_score, Decimal("75"))
         self.assertEqual(result.detail_list, ["Interact With High-risk Tag Address"])
         self.assertEqual(result.risk_detail[0]["hop_dic"], {"1": ["huionepay"]})
+        self.assertEqual(result.address_label, "Binance")
         self.assertEqual(result.raw_response["address_label"], "Binance")
         self.assertEqual(result.risk_report_url, "https://report.example/v3")
 
@@ -293,6 +296,63 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
         )
 
         self.assertEqual(result.risk_level, RiskLevel.LOW)
+        self.assertEqual(httpx_request.call_count, 3)
+
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_429_with_retry_after_retries_then_succeeds(self, httpx_request, _sleep):
+        """429 响应体携带 retry_after 时应按该值休眠后重试。"""
+        ok = httpx.Response(
+            200,
+            json={
+                "success": True,
+                "msg": "",
+                "data": {
+                    "risk_level": "Low",
+                    "score": 10,
+                    "detail_list": [],
+                    "risk_detail": [],
+                    "risk_report_url": "",
+                },
+            },
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+        rate_limited = httpx.Response(
+            429,
+            json={"success": False, "msg": "ExceededRateLimit", "retry_after": 2},
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+        httpx_request.side_effect = [rate_limited, ok]
+
+        result = MistTrackOpenApiClient(api_key="k").address_risk_score(
+            coin="ETH", address="0xabc"
+        )
+
+        self.assertEqual(result.risk_level, RiskLevel.LOW)
+        self.assertEqual(httpx_request.call_count, 2)
+
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_429_exhausted_retries_raises_error(self, httpx_request, _sleep):
+        """429 连续重试耗尽后应抛出异常。"""
+        rate_limited = httpx.Response(
+            429,
+            json={"success": False, "msg": "ExceededRateLimit", "retry_after": 1},
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+        httpx_request.side_effect = [rate_limited, rate_limited, rate_limited]
+
+        with self.assertRaises(RuntimeError):
+            MistTrackOpenApiClient(api_key="k").address_risk_score(
+                coin="ETH", address="0xabc"
+            )
+
         self.assertEqual(httpx_request.call_count, 3)
 
     @patch("risk.clients.time.sleep", return_value=None)
@@ -734,6 +794,7 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
         deposit = self.make_deposit(worth=Decimal("500"))
         RiskMarkingService.write_cache(
             source=RiskSource.QUICKNODE_MISTTRACK,
+            chain=self.chain.code,
             address=self.transfer.from_address,
             result={
                 "risk_level": RiskLevel.MODERATE,

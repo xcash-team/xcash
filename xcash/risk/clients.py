@@ -19,6 +19,7 @@ class MistTrackRiskResult:
     risk_detail: list[dict[str, Any]]
     risk_report_url: str
     raw_response: dict[str, Any]
+    address_label: str | None = None
 
 
 _DEFAULT_TIMEOUT = 5.0
@@ -63,17 +64,24 @@ def _request_with_retry(
         else:
             status = response.status_code
             if status < 500:
-                if status >= 400:
+                if status == 429:
+                    # 429 限流与 5xx 一样按指数退避重试，不走 4xx 直接失败路径
+                    last_exc = RuntimeError(f"{error_label} HTTP {status}")
+                    if attempt == _MAX_ATTEMPTS - 1:
+                        break
+                elif status >= 400:
                     # 4xx 不重试，但要擦除响应中可能存在的敏感字符
                     body = response.text[:200]
                     msg = f"{error_label} HTTP {status}: {body}"
                     if scrub_message:
                         msg = _scrub_secrets(msg)
                     raise RuntimeError(msg)
-                return response
-            last_exc = RuntimeError(f"{error_label} HTTP {status}")
-            if attempt == _MAX_ATTEMPTS - 1:
-                break
+                else:
+                    return response
+            else:
+                last_exc = RuntimeError(f"{error_label} HTTP {status}")
+                if attempt == _MAX_ATTEMPTS - 1:
+                    break
 
         backoff = _BASE_BACKOFF * (2 ** attempt) + random.uniform(0, 0.25)  # noqa: S311
         time.sleep(backoff)
@@ -148,6 +156,7 @@ class QuicknodeMistTrackClient:
             risk_detail=_coerce_risk_detail(result.get("risk_detail")),
             risk_report_url=str(result.get("risk_report_url") or ""),
             raw_response=result,
+            address_label=None,  # QuickNode add-on 不返回该字段
         )
 
 
@@ -185,6 +194,7 @@ class MistTrackOpenApiClient:
             raise RuntimeError(f"unknown MistTrack risk level: {risk_level}")
 
         score = result.get("score")
+        label = result.get("address_label")
         return MistTrackRiskResult(
             risk_level=str(risk_level),
             risk_score=Decimal(str(score)) if score is not None else None,
@@ -196,4 +206,5 @@ class MistTrackOpenApiClient:
             risk_detail=_coerce_risk_detail(result.get("risk_detail")),
             risk_report_url=str(result.get("risk_report_url") or ""),
             raw_response=result,
+            address_label=str(label) if label is not None else None,
         )

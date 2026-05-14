@@ -172,10 +172,6 @@ class RiskMarkingService:
                     address=address,
                 )
             )
-            if cached_result is None:
-                cached_result = cache.get(
-                    cls._cache_key(source=provider["source"], address=address)
-                )
 
         if cached_result is not None:
             cls._mark_success(target, target_type, provider["source"], cached_result)
