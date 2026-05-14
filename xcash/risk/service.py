@@ -32,11 +32,17 @@ class RiskMarkingService:
     @classmethod
     def mark_invoice(cls, invoice_id: int) -> None:
         invoice = (
-            Invoice.objects.select_related("transfer", "transfer__chain")
+            Invoice.objects.select_related(
+                "transfer", "transfer__chain", "project"
+            )
             .filter(pk=invoice_id)
             .first()
         )
         if invoice is None or invoice.transfer_id is None:
+            return
+
+        if not cls._is_risk_marking_allowed(invoice):
+            cls._mark_skipped_invoice(invoice, "saas tier missing risk_marking permission")
             return
 
         if not get_risk_marking_enabled():
@@ -56,11 +62,17 @@ class RiskMarkingService:
     @classmethod
     def mark_deposit(cls, deposit_id: int) -> None:
         deposit = (
-            Deposit.objects.select_related("transfer", "transfer__chain")
+            Deposit.objects.select_related(
+                "transfer", "transfer__chain", "customer", "customer__project"
+            )
             .filter(pk=deposit_id)
             .first()
         )
         if deposit is None:
+            return
+
+        if not cls._is_risk_marking_allowed(deposit):
+            cls._mark_skipped_deposit(deposit, "saas tier missing risk_marking permission")
             return
 
         if not get_risk_marking_enabled():
@@ -76,6 +88,39 @@ class RiskMarkingService:
             target_type=RiskTargetType.DEPOSIT,
             worth=deposit.worth,
         )
+
+    @classmethod
+    def _is_risk_marking_allowed(cls, target: Invoice | Deposit) -> bool:
+        """SaaS 模式下按 tier 的 enable_risk_marking 判定；自托管模式直接放行。
+
+        语义（spec：xcash-saas docs/superpowers/specs/2026-05-14-tier-risk-marking-permission-design.md §5）：
+        - 自托管（INTERNAL_API_TOKEN 为空）→ 放行，保持独立部署旧行为。
+        - SaaS 模式 + 缓存命中 → 按 enable_risk_marking 判定。
+        - SaaS 模式 + 冷缓存 → fail-closed，避免在权限不明时产生 MistTrack 成本。
+        """
+        from django.conf import settings
+
+        from common.permission_check import _read_saas_perm
+
+        if not settings.INTERNAL_API_TOKEN:
+            return True
+
+        if isinstance(target, Invoice):
+            appid = target.project.appid
+        else:
+            appid = target.customer.project.appid
+
+        perm = _read_saas_perm(appid)
+        if perm is None:
+            logger.info(
+                "risk_marking.saas_perm_unavailable",
+                appid=appid,
+                target_type=target.__class__.__name__,
+                target_id=target.pk,
+            )
+            return False
+
+        return bool(perm.get("enable_risk_marking", False))
 
     @classmethod
     def write_cache(
