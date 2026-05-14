@@ -89,6 +89,16 @@ SIDEBAR_UNFOLD = {
                         "icon": "insert_chart",
                         "link": reverse_lazy("admin:index"),
                     },
+                    {
+                        "title": _("平台参数"),
+                        "icon": "tune",
+                        "link": reverse_lazy("admin:core_platformsettings_changelist"),
+                    },
+                    {
+                        "title": _("用户管理"),
+                        "icon": "account_circle",
+                        "link": reverse_lazy("admin:users_user_changelist"),
+                    },
                 ],
             },
             {
@@ -250,9 +260,7 @@ SIDEBAR_UNFOLD = {
                     {
                         "title": _("Tron 扫描游标"),
                         "icon": "radar",
-                        "link": reverse_lazy(
-                            "admin:tron_tronwatchcursor_changelist"
-                        ),
+                        "link": reverse_lazy("admin:tron_tronwatchcursor_changelist"),
                     },
                 ],
             },
@@ -282,22 +290,6 @@ SIDEBAR_UNFOLD = {
                         "title": _("法币"),
                         "icon": "currency_yuan",
                         "link": reverse_lazy("admin:currencies_fiat_changelist"),
-                    },
-                ],
-            },
-            {
-                "title": _("系统"),
-                "collapsible": True,
-                "items": [
-                    {
-                        "title": _("用户"),
-                        "icon": "account_circle",
-                        "link": reverse_lazy("admin:users_user_changelist"),
-                    },
-                    {
-                        "title": _("平台参数"),
-                        "icon": "tune",
-                        "link": reverse_lazy("admin:core_platformsettings_changelist"),
                     },
                 ],
             },
