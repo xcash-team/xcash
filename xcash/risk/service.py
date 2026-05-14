@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from typing import Any
 
 import structlog
@@ -9,6 +10,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
+from risk.clients import MistTrackOpenApiClient
 from risk.clients import MistTrackRiskResult
 from risk.clients import QuicknodeMistTrackClient
 from risk.models import RiskAssessment
@@ -19,6 +21,7 @@ from risk.models import RiskTargetType
 from chains.models import Chain
 from chains.models import ChainType
 from common.permission_check import _read_saas_perm
+from core.runtime_settings import get_misttrack_openapi_api_key
 from core.runtime_settings import get_quicknode_misttrack_endpoint_url
 from core.runtime_settings import get_risk_marking_cache_seconds
 from core.runtime_settings import get_risk_marking_enabled
@@ -27,7 +30,14 @@ from core.runtime_settings import get_risk_marking_threshold_usd
 from deposits.models import Deposit
 from invoices.models import Invoice
 
+if TYPE_CHECKING:
+    from currencies.models import Crypto
+
 logger = structlog.get_logger()
+
+
+class UnsupportedRiskProviderChainError(RuntimeError):
+    pass
 
 
 class RiskMarkingService:
@@ -125,58 +135,83 @@ class RiskMarkingService:
         cls,
         *,
         source: str,
+        chain: str = "",
         address: str,
         result: dict[str, Any],
         timeout: int,
     ) -> None:
-        cache.set(cls._cache_key(source=source, address=address), result, timeout)
+        cache.set(
+            cls._cache_key(source=source, chain=chain, address=address),
+            result,
+            timeout,
+        )
 
     @classmethod
     def _mark_target(cls, *, target: Invoice | Deposit, target_type: str, worth):
         transfer = target.transfer
-        source = RiskSource.QUICKNODE_MISTTRACK
-        endpoint_url = get_quicknode_misttrack_endpoint_url()
-        if not endpoint_url:
-            cls._mark_failed(target, target_type, "QuickNode MistTrack endpoint is empty")
+        provider = cls._select_provider()
+        if provider is None:
+            cls._mark_failed(target, target_type, "Risk marking provider config is empty")
             return
 
         address = transfer.from_address
         cached_result = None
         if worth <= get_risk_marking_force_refresh_threshold_usd():
-            cached_result = cache.get(cls._cache_key(source=source, address=address))
+            cached_result = cache.get(
+                cls._cache_key(
+                    source=provider["source"],
+                    chain=transfer.chain.code,
+                    address=address,
+                )
+            )
+            if cached_result is None:
+                cached_result = cache.get(
+                    cls._cache_key(source=provider["source"], address=address)
+                )
 
         if cached_result is not None:
-            cls._mark_success(target, target_type, cached_result)
+            cls._mark_success(target, target_type, provider["source"], cached_result)
             return
 
         try:
-            chain = cls._misttrack_chain(transfer.chain)
-            result = QuicknodeMistTrackClient(
-                endpoint_url=endpoint_url
-            ).address_risk_score(chain=chain, address=address)
+            result = cls._query_provider(
+                provider=provider,
+                chain=transfer.chain,
+                crypto=transfer.crypto,
+                address=address,
+            )
+        except UnsupportedRiskProviderChainError as exc:
+            cls._mark_skipped(target, target_type, str(exc), source=provider["source"])
+            return
         except Exception as exc:
             logger.warning(
-                "risk_marking.quicknode_failed",
+                "risk_marking.provider_failed",
+                source=provider["source"],
                 target_type=target_type,
                 target_id=target.pk,
                 address=address,
                 error=str(exc),
             )
-            cls._mark_failed(target, target_type, str(exc))
+            cls._mark_failed(target, target_type, str(exc), source=provider["source"])
             return
 
         payload = cls._result_to_cache_payload(result)
         cls.write_cache(
-            source=source,
+            source=provider["source"],
+            chain=transfer.chain.code,
             address=address,
             result=payload,
             timeout=get_risk_marking_cache_seconds(),
         )
-        cls._mark_success(target, target_type, payload)
+        cls._mark_success(target, target_type, provider["source"], payload)
 
     @classmethod
     def _mark_success(
-        cls, target: Invoice | Deposit, target_type: str, payload: dict[str, Any]
+        cls,
+        target: Invoice | Deposit,
+        target_type: str,
+        source: str,
+        payload: dict[str, Any],
     ) -> None:
         now = timezone.now()
         risk_score = (
@@ -185,7 +220,7 @@ class RiskMarkingService:
             else None
         )
         defaults = {
-            "source": RiskSource.QUICKNODE_MISTTRACK,
+            "source": source,
             "status": RiskAssessmentStatus.SUCCESS,
             "target_type": target_type,
             "address": target.transfer.from_address,
@@ -204,13 +239,18 @@ class RiskMarkingService:
 
     @classmethod
     def _mark_failed(
-        cls, target: Invoice | Deposit, target_type: str, error_message: str
+        cls,
+        target: Invoice | Deposit,
+        target_type: str,
+        error_message: str,
+        *,
+        source: str = RiskSource.QUICKNODE_MISTTRACK,
     ) -> None:
         cls._upsert_assessment(
             target,
             target_type,
             {
-                "source": RiskSource.QUICKNODE_MISTTRACK,
+                "source": source,
                 "status": RiskAssessmentStatus.FAILED,
                 "target_type": target_type,
                 "address": target.transfer.from_address,
@@ -237,13 +277,18 @@ class RiskMarkingService:
 
     @classmethod
     def _mark_skipped(
-        cls, target: Invoice | Deposit, target_type: str, reason: str
+        cls,
+        target: Invoice | Deposit,
+        target_type: str,
+        reason: str,
+        *,
+        source: str = RiskSource.QUICKNODE_MISTTRACK,
     ) -> None:
         cls._upsert_assessment(
             target,
             target_type,
             {
-                "source": RiskSource.QUICKNODE_MISTTRACK,
+                "source": source,
                 "status": RiskAssessmentStatus.SKIPPED,
                 "target_type": target_type,
                 "address": target.transfer.from_address if target.transfer_id else "",
@@ -285,7 +330,9 @@ class RiskMarkingService:
         RiskAssessment.objects.update_or_create(defaults=defaults, **lookup)
 
     @staticmethod
-    def _cache_key(*, source: str, address: str) -> str:
+    def _cache_key(*, source: str, address: str, chain: str = "") -> str:
+        if chain:
+            return f"risk:{source}:{chain}:{address.strip().lower()}"
         return f"risk:{source}:{address.strip().lower()}"
 
     @staticmethod
@@ -296,7 +343,37 @@ class RiskMarkingService:
         return payload
 
     @staticmethod
-    def _misttrack_chain(chain: Chain) -> str:
+    def _select_provider() -> dict[str, str] | None:
+        api_key = get_misttrack_openapi_api_key()
+        if api_key:
+            return {"source": RiskSource.MISTTRACK_OPENAPI, "api_key": api_key}
+
+        endpoint_url = get_quicknode_misttrack_endpoint_url()
+        if endpoint_url:
+            return {
+                "source": RiskSource.QUICKNODE_MISTTRACK,
+                "endpoint_url": endpoint_url,
+            }
+
+        return None
+
+    @classmethod
+    def _query_provider(
+        cls, *, provider: dict[str, str], chain: Chain, crypto: Crypto, address: str
+    ) -> MistTrackRiskResult:
+        if provider["source"] == RiskSource.MISTTRACK_OPENAPI:
+            coin = cls._misttrack_openapi_coin(chain=chain, crypto=crypto)
+            return MistTrackOpenApiClient(
+                api_key=provider["api_key"]
+            ).address_risk_score(coin=coin, address=address)
+
+        quicknode_chain = cls._quicknode_misttrack_chain(chain)
+        return QuicknodeMistTrackClient(
+            endpoint_url=provider["endpoint_url"]
+        ).address_risk_score(chain=quicknode_chain, address=address)
+
+    @staticmethod
+    def _quicknode_misttrack_chain(chain: Chain) -> str:
         if chain.type == ChainType.BITCOIN:
             return "BTC"
         if chain.type == ChainType.TRON:
@@ -305,15 +382,188 @@ class RiskMarkingService:
             mapping = {
                 1: "ETH",
                 56: "BNB",
-                137: "POLYGON",
-                324: "ZKSYNC",
-                4200: "MERLIN",
-                4689: "IOTX",
-                8453: "BASE",
                 42161: "ARBITRUM",
-                43114: "AVAX",
-                10: "OPTIMISM",
             }
             if chain.chain_id in mapping:
                 return mapping[chain.chain_id]
-        raise RuntimeError(f"unsupported MistTrack chain: {chain.code}")
+        raise UnsupportedRiskProviderChainError(
+            f"unsupported QuickNode MistTrack chain: {chain.code}"
+        )
+
+    @staticmethod
+    def _misttrack_openapi_coin(*, chain: Chain, crypto: Crypto) -> str:
+        symbol = crypto.symbol.upper()
+        if chain.type == ChainType.BITCOIN:
+            if symbol == "BTC":
+                return "BTC"
+        if chain.type == ChainType.TRON:
+            mapping = {
+                "TRX": "TRX",
+                "USDT": "USDT-TRC20",
+                "USDC": "USDC-TRC20",
+                "USDD": "USDD-TRC20",
+            }
+            if symbol in mapping:
+                return mapping[symbol]
+        if chain.type == ChainType.EVM:
+            chain_mappings = {
+                1: {
+                    "ETH": "ETH",
+                    "USDT": "USDT-ERC20",
+                    "USDC": "USDC-ERC20",
+                    "WETH": "WETH-ERC20",
+                    "BNB": "BNB-ERC20",
+                    "UNI": "UNI-ERC20",
+                    "BUSD": "BUSD-ERC20",
+                    "DAI": "DAI-ERC20",
+                    "GRT": "GRT-ERC20",
+                    "ENS": "ENS-ERC20",
+                    "UST": "UST-ERC20",
+                    "RENBTC": "renBTC-ERC20",
+                    "WBTC": "WBTC-ERC20",
+                    "TUSD": "TUSD-ERC20",
+                    "SHIB": "SHIB-ERC20",
+                    "LINK": "LINK-ERC20",
+                    "BAT": "BAT-ERC20",
+                    "CRO": "CRO-ERC20",
+                    "SUSHI": "SUSHI-ERC20",
+                    "STETH": "stETH-ERC20",
+                    "CRV": "CRV-ERC20",
+                    "CVX": "CVX-ERC20",
+                    "CVXCRV": "cvxCRV-ERC20",
+                    "3CRV": "3Crv-ERC20",
+                    "LOOKS": "LOOKS-ERC20",
+                    "IOTX": "IOTX-ERC20",
+                    "APE": "APE-ERC20",
+                    "PYUSD": "PYUSD-ERC20",
+                    "MEME": "MEME-ERC20",
+                    "WUSD": "WUSD-ERC20",
+                    "PEPE": "PEPE-ERC20",
+                    "CBBTC": "cbBTC-ERC20",
+                    "FLOKI": "FLOKI-ERC20",
+                    "LEO": "LEO-ERC20",
+                    "USDS": "USDS-ERC20",
+                    "FDUSD": "FDUSD-ERC20",
+                    "USDE": "USDe-ERC20",
+                    "USD1": "USD1-ERC20",
+                    "WLFI": "WLFI-ERC20",
+                    "SUSD": "sUSD-ERC20",
+                },
+                10: {
+                    "ETH": "ETH-Optimism",
+                    "USDT": "USDT-Optimism",
+                    "USDC": "USDC-Optimism",
+                    "USDC.E": "USDC.e-Optimism",
+                    "OP": "OP-Optimism",
+                    "DAI": "DAI-Optimism",
+                    "WBTC": "WBTC-Optimism",
+                    "WETH": "WETH-Optimism",
+                    "SNX": "SNX-Optimism",
+                    "SUSD": "sUSD-Optimism",
+                    "VELO": "VELO-Optimism",
+                    "WLD": "WLD-Optimism",
+                    "USDE": "USDe-Optimism",
+                },
+                56: {
+                    "BNB": "BNB",
+                    "BUSD": "BUSD-BEP20",
+                    "USDT": "USDT-BEP20",
+                    "WBNB": "WBNB-BEP20",
+                    "ETH": "ETH-BEP20",
+                    "BTCB": "BTCB-BEP20",
+                    "DOGE": "DOGE-BEP20",
+                    "USDC": "USDC-BEP20",
+                    "SHIB": "SHIB-BEP20",
+                    "UST": "UST-BEP20",
+                    "DAI": "DAI-BEP20",
+                    "CAKE": "Cake-BEP20",
+                    "BCH": "BCH-BEP20",
+                    "USD1": "USD1-BEP20",
+                    "TUSD": "TUSD-BEP20",
+                    "USDE": "USDe-BEP20",
+                    "FDUSD": "FDUSD-BEP20",
+                },
+                137: {
+                    "POL": "POL-Polygon",
+                    "WMATIC": "WMATIC-Polygon",
+                    "WETH": "WETH-Polygon",
+                    "USDC": "USDC-Polygon",
+                    "USDC.E": "USDC.e-Polygon",
+                    "USDT": "USDT-Polygon",
+                    "DAI": "DAI-Polygon",
+                    "WBTC": "WBTC-Polygon",
+                    "AAVE": "AAVE-Polygon",
+                    "LINK": "LINK-Polygon",
+                    "UNI": "UNI-Polygon",
+                    "UST": "UST-Polygon",
+                    "SUSHI": "SUSHI-Polygon",
+                    "WUSD": "WUSD-Polygon",
+                    "BUSD": "BUSD-Polygon",
+                },
+                324: {
+                    "ETH": "ETH-zkSync",
+                    "ZK": "ZK-zkSync",
+                    "USDT": "USDT-zkSync",
+                    "USDC": "USDC-zkSync",
+                },
+                4200: {"BTC": "BTC-Merlin"},
+                4689: {"IOTX": "IOTX"},
+                8453: {
+                    "ETH": "ETH-Base",
+                    "USDC": "USDC-Base",
+                    "USDBC": "USDbC-Base",
+                    "WETH": "WETH-Base",
+                    "DEGEN": "DEGEN-Base",
+                    "DAI": "DAI-Base",
+                    "CBETH": "cbETH-Base",
+                    "USDT": "USDT-Base",
+                    "WBTC": "WBTC-Base",
+                    "USDS": "USDS-Base",
+                    "WSTETH": "wstETH-Base",
+                    "USDE": "USDe-Base",
+                    "LINK": "LINK-Base",
+                    "CBBTC": "cbBTC-Base",
+                    "AAVE": "AAVE-Base",
+                    "LBTC": "LBTC-Base",
+                    "OM": "OM-Base",
+                    "RETH": "rETH-Base",
+                    "CRV": "CRV-Base",
+                    "SOLVBTC": "SolvBTC-Base",
+                },
+                42161: {
+                    "ETH": "ETH-Arbitrum",
+                    "USDT": "USDT-Arbitrum",
+                    "USDC": "USDC-Arbitrum",
+                    "USDC.E": "USDC.e-Arbitrum",
+                    "WETH": "WETH-Arbitrum",
+                    "DAI": "DAI-Arbitrum",
+                    "WBTC": "WBTC-Arbitrum",
+                    "LINK": "LINK-Arbitrum",
+                    "GMX": "GMX-Arbitrum",
+                    "SBFGMX": "sbfGMX-Arbitrum",
+                    "STG": "STG-Arbitrum",
+                    "MAGIC": "MAGIC-Arbitrum",
+                    "ARB": "ARB-Arbitrum",
+                    "USDS": "USDS-Arbitrum",
+                    "USDE": "USDe-Arbitrum",
+                    "FDUSD": "FDUSD-Arbitrum",
+                },
+                43114: {
+                    "AVAX": "AVAX-Avalanche",
+                    "WAVAX": "WAVAX-Avalanche",
+                    "BTC.B": "BTC.b-Avalanche",
+                    "USDT": "USDT-Avalanche",
+                    "USDT.E": "USDT.e-Avalanche",
+                    "USDC": "USDC-Avalanche",
+                    "USDC.E": "USDC.e-Avalanche",
+                    "WETH.E": "WETH.e-Avalanche",
+                    "DAI.E": "DAI.e-Avalanche",
+                    "WBTC.E": "WBTC.e-Avalanche",
+                },
+            }
+            mapping = chain_mappings.get(chain.chain_id)
+            if mapping and symbol in mapping:
+                return mapping[symbol]
+        raise RuntimeError(
+            f"unsupported MistTrack OpenAPI coin: {crypto.symbol} on {chain.code}"
+        )

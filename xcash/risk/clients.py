@@ -13,7 +13,7 @@ class MistTrackRiskResult:
     risk_level: str
     risk_score: Decimal | None
     detail_list: list[Any]
-    risk_detail: dict[str, Any]
+    risk_detail: Any
     risk_report_url: str
     raw_response: dict[str, Any]
 
@@ -64,6 +64,48 @@ class QuicknodeMistTrackClient:
                 if isinstance(result.get("risk_detail"), dict)
                 else {}
             ),
+            risk_report_url=str(result.get("risk_report_url") or ""),
+            raw_response=result,
+        )
+
+
+class MistTrackOpenApiClient:
+    endpoint_url = "https://openapi.misttrack.io/v3/risk_score"
+
+    def __init__(self, *, api_key: str):
+        self.api_key = api_key
+
+    def address_risk_score(self, *, coin: str, address: str) -> MistTrackRiskResult:
+        response = httpx.get(
+            self.endpoint_url,
+            params={"coin": coin, "address": address, "api_key": self.api_key},
+            timeout=5,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise TypeError("MistTrack OpenAPI returned non-object response")
+        if not data.get("success"):
+            raise RuntimeError(str(data.get("msg") or "MistTrack OpenAPI request failed"))
+
+        result = data.get("data")
+        if not isinstance(result, dict):
+            raise TypeError("MistTrack OpenAPI response missing data")
+
+        risk_level = result.get("risk_level")
+        if risk_level not in RiskLevel.values:
+            raise RuntimeError(f"unknown MistTrack risk level: {risk_level}")
+
+        score = result.get("score")
+        return MistTrackRiskResult(
+            risk_level=str(risk_level),
+            risk_score=Decimal(str(score)) if score is not None else None,
+            detail_list=(
+                result.get("detail_list")
+                if isinstance(result.get("detail_list"), list)
+                else []
+            ),
+            risk_detail=result.get("risk_detail") or [],
             risk_report_url=str(result.get("risk_report_url") or ""),
             raw_response=result,
         )

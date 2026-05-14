@@ -151,3 +151,10 @@ def get_quicknode_misttrack_endpoint_url() -> str:
     if platform_settings is not None:
         return platform_settings.quicknode_misttrack_endpoint_url.strip()
     return ""
+
+
+def get_misttrack_openapi_api_key() -> str:
+    platform_settings = get_platform_settings()
+    if platform_settings is not None:
+        return platform_settings.misttrack_openapi_api_key.strip()
+    return ""

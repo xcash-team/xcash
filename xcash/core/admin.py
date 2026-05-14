@@ -66,6 +66,7 @@ class PlatformSettingsAdmin(ModelAdmin):
                     "risk_marking_threshold_usd",
                     "risk_marking_cache_seconds",
                     "risk_marking_force_refresh_threshold_usd",
+                    "misttrack_openapi_api_key",
                     "quicknode_misttrack_endpoint_url",
                 )
             },

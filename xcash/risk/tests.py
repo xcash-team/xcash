@@ -11,6 +11,7 @@ from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import override_settings
 from django.utils import timezone
+from risk.clients import MistTrackOpenApiClient
 from risk.clients import MistTrackRiskResult
 from risk.clients import QuicknodeMistTrackClient
 from risk.models import RiskAssessment
@@ -166,25 +167,135 @@ class QuicknodeMistTrackClientTests(SimpleTestCase):
             ).address_risk_score(chain="ETH", address="0xabc")
 
 
+class MistTrackOpenApiClientTests(SimpleTestCase):
+    @patch("risk.clients.httpx.get")
+    def test_address_risk_score_calls_v3_endpoint_with_api_key(self, httpx_get):
+        response = httpx.Response(
+            200,
+            json={
+                "success": True,
+                "msg": "",
+                "data": {
+                    "risk_level": "High",
+                    "score": 75,
+                    "detail_list": ["Interact With High-risk Tag Address"],
+                    "risk_detail": [
+                        {
+                            "entity": "huionepay",
+                            "risk_type": "sanctioned_entity",
+                            "hop_dic": {"1": ["huionepay"]},
+                        }
+                    ],
+                    "address_label": "Binance",
+                    "risk_report_url": "https://report.example/v3",
+                },
+            },
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+        httpx_get.return_value = response
+
+        result = MistTrackOpenApiClient(api_key="secret").address_risk_score(
+            coin="ETH", address="0xabc"
+        )
+
+        httpx_get.assert_called_once_with(
+            "https://openapi.misttrack.io/v3/risk_score",
+            params={"coin": "ETH", "address": "0xabc", "api_key": "secret"},
+            timeout=5,
+        )
+        self.assertEqual(result.risk_level, RiskLevel.HIGH)
+        self.assertEqual(result.risk_score, Decimal("75"))
+        self.assertEqual(result.detail_list, ["Interact With High-risk Tag Address"])
+        self.assertEqual(result.risk_detail[0]["hop_dic"], {"1": ["huionepay"]})
+        self.assertEqual(result.raw_response["address_label"], "Binance")
+        self.assertEqual(result.risk_report_url, "https://report.example/v3")
+
+    @patch("risk.clients.httpx.get")
+    def test_api_error_raises_client_error(self, httpx_get):
+        httpx_get.return_value = httpx.Response(
+            200,
+            json={"success": False, "msg": "InvalidApiKey"},
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+
+        with self.assertRaisesMessage(RuntimeError, "InvalidApiKey"):
+            MistTrackOpenApiClient(api_key="bad").address_risk_score(
+                coin="ETH", address="0xabc"
+            )
+
+
 class RiskChainMappingTests(SimpleTestCase):
-    def test_common_evm_mainnets_map_to_misttrack_chain_codes(self):
+    def test_quicknode_maps_only_addon_supported_networks(self):
         cases = {
+            ChainType.BITCOIN: "BTC",
+            ChainType.TRON: "TRX",
             1: "ETH",
-            10: "OPTIMISM",
             56: "BNB",
-            137: "POLYGON",
-            324: "ZKSYNC",
-            4200: "MERLIN",
-            4689: "IOTX",
-            8453: "BASE",
             42161: "ARBITRUM",
-            43114: "AVAX",
         }
 
-        for chain_id, expected in cases.items():
-            with self.subTest(chain_id=chain_id):
+        for chain_key, expected in cases.items():
+            with self.subTest(chain_key=chain_key):
+                if isinstance(chain_key, int):
+                    chain = Chain(type=ChainType.EVM, chain_id=chain_key)
+                else:
+                    chain = Chain(type=chain_key)
+                self.assertEqual(
+                    RiskMarkingService._quicknode_misttrack_chain(chain), expected
+                )
+
+    def test_common_evm_mainnets_map_to_misttrack_openapi_coin_codes(self):
+        cases = {
+            (1, "ETH"): "ETH",
+            (1, "USDT"): "USDT-ERC20",
+            (10, "ETH"): "ETH-Optimism",
+            (10, "USDT"): "USDT-Optimism",
+            (10, "USDC"): "USDC-Optimism",
+            (56, "BNB"): "BNB",
+            (56, "USDT"): "USDT-BEP20",
+            (56, "BUSD"): "BUSD-BEP20",
+            (137, "POL"): "POL-Polygon",
+            (137, "USDT"): "USDT-Polygon",
+            (137, "USDC.E"): "USDC.e-Polygon",
+            (324, "ETH"): "ETH-zkSync",
+            (324, "ZK"): "ZK-zkSync",
+            (4200, "BTC"): "BTC-Merlin",
+            (4689, "IOTX"): "IOTX",
+            (8453, "ETH"): "ETH-Base",
+            (8453, "USDC"): "USDC-Base",
+            (8453, "USDT"): "USDT-Base",
+            (8453, "CBBTC"): "cbBTC-Base",
+            (42161, "ETH"): "ETH-Arbitrum",
+            (42161, "USDT"): "USDT-Arbitrum",
+            (42161, "ARB"): "ARB-Arbitrum",
+            (43114, "AVAX"): "AVAX-Avalanche",
+            (43114, "USDT"): "USDT-Avalanche",
+            (43114, "BTC.B"): "BTC.b-Avalanche",
+        }
+
+        for (chain_id, symbol), expected in cases.items():
+            with self.subTest(chain_id=chain_id, symbol=symbol):
                 chain = Chain(type=ChainType.EVM, chain_id=chain_id)
-                self.assertEqual(RiskMarkingService._misttrack_chain(chain), expected)
+                crypto = Crypto(symbol=symbol)
+                self.assertEqual(
+                    RiskMarkingService._misttrack_openapi_coin(
+                        chain=chain, crypto=crypto
+                    ),
+                    expected,
+                )
+
+    def test_tron_usdt_maps_to_trc20_coin_code(self):
+        chain = Chain(type=ChainType.TRON)
+        crypto = Crypto(symbol="USDT")
+
+        self.assertEqual(
+            RiskMarkingService._misttrack_openapi_coin(chain=chain, crypto=crypto),
+            "USDT-TRC20",
+        )
 
 
 @override_settings(IS_SAAS=False)
@@ -361,6 +472,50 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         score.assert_not_called()
         assessment = RiskAssessment.objects.get(deposit=deposit)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+
+    @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
+    @patch("risk.service.MistTrackOpenApiClient.address_risk_score")
+    def test_openapi_api_key_takes_precedence_over_quicknode_endpoint(
+        self, openapi_score, quicknode_score
+    ):
+        invoice = self.make_invoice(worth=Decimal("500"))
+        self.platform_settings.misttrack_openapi_api_key = "openapi-secret"
+        self.platform_settings.save(update_fields=["misttrack_openapi_api_key"])
+        openapi_score.return_value = MistTrackRiskResult(
+            risk_level=RiskLevel.HIGH,
+            risk_score=Decimal("75"),
+            detail_list=[],
+            risk_detail=[],
+            risk_report_url="https://report.example/v3",
+            raw_response={"risk_level": "High", "score": 75},
+        )
+
+        RiskMarkingService.mark_invoice(invoice.pk)
+
+        openapi_score.assert_called_once_with(
+            coin="ETH", address=self.transfer.from_address
+        )
+        quicknode_score.assert_not_called()
+        assessment = RiskAssessment.objects.get(invoice=invoice)
+        self.assertEqual(assessment.source, RiskSource.MISTTRACK_OPENAPI)
+        self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.risk_level, RiskLevel.HIGH)
+
+    @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
+    def test_quicknode_unsupported_chain_is_skipped_without_external_query(self, score):
+        invoice = self.make_invoice(worth=Decimal("500"))
+        self.chain.chain_id = 137
+        self.chain.code = "polygon-mainnet"
+        self.chain.save(update_fields=["chain_id", "code"])
+
+        RiskMarkingService.mark_invoice(invoice.pk)
+
+        score.assert_not_called()
+        assessment = RiskAssessment.objects.get(invoice=invoice)
+        self.assertEqual(assessment.source, RiskSource.QUICKNODE_MISTTRACK)
+        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertIn("unsupported QuickNode MistTrack chain", assessment.error_message)
 
 
 @override_settings(IS_SAAS=False)

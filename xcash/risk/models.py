@@ -7,6 +7,7 @@ from django.utils.translation import gettext_lazy as _
 
 class RiskSource(models.TextChoices):
     QUICKNODE_MISTTRACK = "quicknode_misttrack", _("QuickNode MistTrack")
+    MISTTRACK_OPENAPI = "misttrack_openapi", _("MistTrack OpenAPI")
 
 
 class RiskLevel(models.TextChoices):

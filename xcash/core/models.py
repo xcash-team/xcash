@@ -131,6 +131,13 @@ class PlatformSettings(models.Model):
         default="",
         help_text=_("QuickNode MistTrack add-on 的 JSON-RPC endpoint URL。"),
     )
+    misttrack_openapi_api_key = models.CharField(
+        _("MistTrack OpenAPI API Key"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_("MistTrack 官方 OpenAPI API Key；配置后优先使用 V3 风险评分接口。"),
+    )
     created_by = models.ForeignKey(
         "users.User",
         on_delete=models.SET_NULL,
