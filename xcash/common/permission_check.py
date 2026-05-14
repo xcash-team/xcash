@@ -1,7 +1,7 @@
 """SaaS 模式下，对锁定操作（deposit/withdrawal）和 Invoice 白名单做权限校验。
 
 设计原则（高可用优先，availability over consistency）：
-- INTERNAL_API_TOKEN 为空视为未对接 SaaS（自托管），直接放行
+- IS_SAAS=False 视为未对接 SaaS（自托管），直接放行
 - 缓存值带 `_fetched_at` 时间戳，永不过期；判定完全基于缓存
 - 命中缓存且 fetched_at 落后 > 60s：派发异步刷新任务，本次仍按旧缓存判定
 - 未命中缓存：默认放行，并派发异步刷新任务（让下次有数据可用）
@@ -62,7 +62,7 @@ def _read_saas_perm(appid: str) -> dict | None:
         None: 自托管、未对接 SaaS、或冷缓存（fail-open 场景）
         dict: 缓存中的权限数据
     """
-    if not settings.INTERNAL_API_TOKEN or not appid:
+    if not settings.IS_SAAS or not appid:
         return None
 
     perm = cache.get(_cache_key(appid))
@@ -101,7 +101,7 @@ def check_saas_permission(
         None — 不抛异常即放行
     """
     # 自托管模式：未对接 SaaS，所有功能默认开放
-    if not settings.INTERNAL_API_TOKEN:
+    if not settings.IS_SAAS:
         return
 
     # 防御：appid 缺失（header 没传 / 中间件未过滤）→ 直接 INVALID_APPID
@@ -148,7 +148,7 @@ def filter_saas_allowed_methods(
     与 check_saas_permission 保持同样的可用性策略：自托管、冷缓存、旧缓存缺字段时
     fail-open；命中缓存且包含白名单时只返回交集。
     """
-    if not settings.INTERNAL_API_TOKEN or not appid:
+    if not settings.IS_SAAS or not appid:
         return {symbol: list(chain_codes) for symbol, chain_codes in methods.items()}
 
     perm = _read_saas_perm(appid)
@@ -190,7 +190,7 @@ def _refresh_saas_permission(*, appid: str) -> None:
 
     任务失败只 log，不重试也不清缓存——下一次主调用发现 stale 会再次派发。
     """
-    if not settings.INTERNAL_API_TOKEN:
+    if not settings.IS_SAAS:
         return
 
     try:

@@ -38,6 +38,7 @@ from .base import TEMPLATES
 from .base import env
 
 INTERNAL_API_TOKEN = "test-internal-token"
+IS_SAAS = True
 
 # stress app 仅在开发/测试环境加载，生产环境不包含。
 INSTALLED_APPS += ["stress"]

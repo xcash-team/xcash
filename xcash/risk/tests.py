@@ -187,7 +187,7 @@ class RiskChainMappingTests(SimpleTestCase):
                 self.assertEqual(RiskMarkingService._misttrack_chain(chain), expected)
 
 
-@override_settings(INTERNAL_API_TOKEN="")
+@override_settings(IS_SAAS=False)
 class RiskMarkingServiceTests(RiskTestMixin, TestCase):
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_below_threshold_is_skipped_without_external_query(self, score):
@@ -218,7 +218,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
     # ===== SaaS gate（spec §5） =====
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_self_hosted_mode_marks_normally(self, score):
-        """自托管模式（class-level INTERNAL_API_TOKEN=""），gate 直接放行。"""
+        """自托管模式（class-level IS_SAAS=False），gate 直接放行。"""
         invoice = self.make_invoice(worth=Decimal("500"))
         score.return_value = MistTrackRiskResult(
             risk_level=RiskLevel.SEVERE,
@@ -235,7 +235,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(invoice=invoice)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_saas_permission_granted_marks(self, score):
         """SaaS 模式 + 缓存命中 + enable_risk_marking=True → 正常标记。"""
@@ -260,7 +260,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(invoice=invoice)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_saas_permission_denied_skips(self, score):
         """SaaS 模式 + 缓存命中 + enable_risk_marking=False → skip，不调 MistTrack。"""
@@ -279,7 +279,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         invoice.refresh_from_db()
         self.assertIsNone(invoice.risk_level)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_saas_cold_cache_fails_closed(self, score):
         """SaaS 模式 + 冷缓存 → fail-closed → skip，不调 MistTrack。"""
@@ -294,7 +294,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
 
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_deposit_self_hosted_mode_marks_normally(self, score):
-        """自托管模式（class-level INTERNAL_API_TOKEN=""），gate 直接放行。"""
+        """自托管模式（class-level IS_SAAS=False），gate 直接放行。"""
         deposit = self.make_deposit(worth=Decimal("500"))
         score.return_value = MistTrackRiskResult(
             risk_level=RiskLevel.SEVERE,
@@ -311,7 +311,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(deposit=deposit)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_deposit_saas_permission_granted_marks(self, score):
         deposit = self.make_deposit(worth=Decimal("500"))
@@ -335,7 +335,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(deposit=deposit)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SUCCESS)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_deposit_saas_permission_denied_skips(self, score):
         deposit = self.make_deposit(worth=Decimal("500"))
@@ -351,7 +351,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(deposit=deposit)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
 
-    @override_settings(INTERNAL_API_TOKEN="t")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_deposit_saas_cold_cache_fails_closed(self, score):
         deposit = self.make_deposit(worth=Decimal("500"))
@@ -363,7 +363,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
 
 
-@override_settings(INTERNAL_API_TOKEN="")
+@override_settings(IS_SAAS=False)
 class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
     @patch("risk.tasks.mark_invoice_risk.delay")
     def test_invoice_match_enqueues_risk_after_transaction_commit(self, delay):

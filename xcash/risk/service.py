@@ -96,11 +96,11 @@ class RiskMarkingService:
         """SaaS 模式下按 tier 的 enable_risk_marking 判定；自托管模式直接放行。
 
         语义（spec：xcash-saas docs/superpowers/specs/2026-05-14-tier-risk-marking-permission-design.md §5）：
-        - 自托管（INTERNAL_API_TOKEN 为空）→ 放行，保持独立部署旧行为。
+        - 自托管（IS_SAAS=False）→ 放行，保持独立部署旧行为。
         - SaaS 模式 + 缓存命中 → 按 enable_risk_marking 判定。
         - SaaS 模式 + 冷缓存 → fail-closed，避免在权限不明时产生 MistTrack 成本。
         """
-        if not settings.INTERNAL_API_TOKEN:
+        if not settings.IS_SAAS:
             return True
 
         if isinstance(target, Invoice):

@@ -35,6 +35,9 @@ REDIS_URL = env.str(
 # Internal API
 # ------------------------------------------------------------------------------
 INTERNAL_API_TOKEN = env.str("INTERNAL_API_TOKEN", default="")
+# 运行模式标志：True = SaaS 附属引擎，False = 自托管独立部署。
+# 默认按 INTERNAL_API_TOKEN 是否存在自动推导，也可通过环境变量显式覆盖。
+IS_SAAS = env.bool("IS_SAAS", default=bool(INTERNAL_API_TOKEN))
 # 只填 SaaS 的 scheme+host，/callbacks/xcash 路径由 internal_callback 自己拼
 # 同机部署约定：SaaS 的 Caddy 在 xcash_public 上暴露 xcash-saas-caddy 这个 DNS 别名，双方按此别名互通。
 # 不用容器原名 xcash_saas_caddy，下划线违反 RFC 1034/1035，Django HTTP_HOST 校验会拒。

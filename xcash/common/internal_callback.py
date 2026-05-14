@@ -31,9 +31,9 @@ def send_internal_callback(
 ) -> None:
     """
     在事务提交后异步发送内部回调给 SaaS。
-    INTERNAL_API_TOKEN 为空视为未对接 SaaS，直接跳过（没 token 也过不了 SaaS 的鉴权）。
+    IS_SAAS=False 视为未对接 SaaS，直接跳过（没 token 也过不了 SaaS 的鉴权）。
     """
-    if not settings.INTERNAL_API_TOKEN:
+    if not settings.IS_SAAS:
         return
 
     transaction.on_commit(
@@ -66,7 +66,7 @@ def _deliver_internal_callback(
     currency: str,
 ) -> None:
     """Celery task：向 SaaS 发送内部回调 POST 请求。"""
-    if not settings.INTERNAL_API_TOKEN:
+    if not settings.IS_SAAS:
         return
     url = f"{settings.SAAS_CALLBACK_URL.rstrip('/')}{_SAAS_CALLBACK_PATH}"
 

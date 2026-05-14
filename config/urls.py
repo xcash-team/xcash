@@ -30,7 +30,7 @@ urlpatterns = [
     ),
 ]
 
-if settings.INTERNAL_API_TOKEN:
+if settings.IS_SAAS:
     urlpatterns += [path("internal/v1/", include("internal_api.urls"))]
 
 if settings.DEBUG and "stress" in settings.INSTALLED_APPS:

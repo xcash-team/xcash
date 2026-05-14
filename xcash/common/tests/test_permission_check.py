@@ -17,6 +17,7 @@ from common.permission_check import filter_saas_allowed_methods
 
 
 @override_settings(
+    IS_SAAS=True,
     INTERNAL_API_TOKEN="xcash-saas-token",
     SAAS_CALLBACK_URL="http://saas",
 )
@@ -313,10 +314,10 @@ class CheckSaasPermissionTest(TestCase):
 
         check_saas_permission(appid="XC-single-flag", action="withdrawal")
 
-    @override_settings(INTERNAL_API_TOKEN="")
+    @override_settings(IS_SAAS=False)
     @patch("common.permission_check._refresh_saas_permission.delay")
     def test_self_hosted_pass_through_no_refresh(self, mock_delay):
-        """INTERNAL_API_TOKEN 为空（自托管）：直接放行，且不派发任务。"""
+        """IS_SAAS=False（自托管）：直接放行，且不派发任务。"""
 
         check_saas_permission(appid="XC-a", action="withdrawal")
         mock_delay.assert_not_called()
@@ -337,6 +338,7 @@ class CheckSaasPermissionTest(TestCase):
 
 
 @override_settings(
+    IS_SAAS=True,
     INTERNAL_API_TOKEN="xcash-saas-token",
     SAAS_CALLBACK_URL="http://saas",
 )
@@ -401,7 +403,7 @@ class RefreshSaasPermissionTaskTest(TestCase):
 
         self.assertEqual(cache.get("saas:permission:XC-4xx"), old)
 
-    @override_settings(INTERNAL_API_TOKEN="")
+    @override_settings(IS_SAAS=False)
     @patch("common.permission_check.httpx.Client")
     def test_task_skips_when_no_token(self, mock_client_cls):
         """自托管模式下任务被错误派发也不会调 SaaS。"""

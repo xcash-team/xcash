@@ -765,7 +765,7 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
 
         self.assertEqual(methods[native.symbol], [chain.code])
 
-    @override_settings(INTERNAL_API_TOKEN="xcash-saas-token")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="xcash-saas-token")
     def test_available_methods_filters_by_cached_saas_chain_crypto_whitelist(self):
         project = Project.objects.create(
             name="Invoice SaaS Allowed Methods Project",
@@ -852,7 +852,7 @@ class InvoiceAllowedMethodsCapabilityTests(TestCase):
         self.assertEqual(set(methods), {usdt.symbol})
         self.assertEqual(methods[usdt.symbol], [eth_chain.code])
 
-    @override_settings(INTERNAL_API_TOKEN="xcash-saas-token")
+    @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="xcash-saas-token")
     def test_available_methods_empty_saas_whitelists_keep_all_methods(self):
         project = Project.objects.create(
             name="Invoice SaaS Empty Whitelist Project",
