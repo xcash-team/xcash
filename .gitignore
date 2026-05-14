@@ -10,6 +10,7 @@ __pycache__/
 # Custom
 # 根目录 docker-compose.yml 作为公开自托管入口，需要纳入版本控制。
 scripts/merchant_hmac/
+business-plan/
 
 
 # AI tools
