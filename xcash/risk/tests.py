@@ -17,6 +17,7 @@ from risk.clients import QuicknodeMistTrackClient
 from risk.models import RiskAssessment
 from risk.models import RiskAssessmentStatus
 from risk.models import RiskLevel
+from risk.models import RiskSkipReason
 from risk.models import RiskSource
 from risk.service import RiskMarkingService
 
@@ -114,8 +115,9 @@ class RiskTestMixin:
 
 
 class QuicknodeMistTrackClientTests(SimpleTestCase):
-    @patch("risk.clients.httpx.post")
-    def test_address_risk_score_posts_json_rpc_payload(self, httpx_post):
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_address_risk_score_posts_json_rpc_payload(self, httpx_request, _sleep):
         response = httpx.Response(
             200,
             json={
@@ -131,13 +133,14 @@ class QuicknodeMistTrackClientTests(SimpleTestCase):
             },
             request=httpx.Request("POST", "https://quicknode.example"),
         )
-        httpx_post.return_value = response
+        httpx_request.return_value = response
 
         result = QuicknodeMistTrackClient(
             endpoint_url="https://quicknode.example"
         ).address_risk_score(chain="ETH", address="0xabc")
 
-        httpx_post.assert_called_once_with(
+        httpx_request.assert_called_once_with(
+            "POST",
             "https://quicknode.example",
             json={
                 "jsonrpc": "2.0",
@@ -145,17 +148,19 @@ class QuicknodeMistTrackClientTests(SimpleTestCase):
                 "method": "mt_addressRiskScore",
                 "params": [{"chain": "ETH", "address": "0xabc"}],
             },
-            timeout=5,
+            timeout=5.0,
         )
         self.assertEqual(result.risk_level, RiskLevel.HIGH)
         self.assertEqual(result.risk_score, Decimal("88"))
         self.assertEqual(result.detail_list, ["Sanctioned entity"])
-        self.assertEqual(result.risk_detail, {"sanction": 1})
+        # QuickNode 历史 dict → list[dict] 适配后单元素 list
+        self.assertEqual(result.risk_detail, [{"sanction": 1}])
         self.assertEqual(result.risk_report_url, "https://report.example")
 
-    @patch("risk.clients.httpx.post")
-    def test_json_rpc_error_raises_client_error(self, httpx_post):
-        httpx_post.return_value = httpx.Response(
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_json_rpc_error_raises_client_error(self, httpx_request, _sleep):
+        httpx_request.return_value = httpx.Response(
             200,
             json={"jsonrpc": "2.0", "id": 1, "error": {"message": "bad request"}},
             request=httpx.Request("POST", "https://quicknode.example"),
@@ -168,8 +173,11 @@ class QuicknodeMistTrackClientTests(SimpleTestCase):
 
 
 class MistTrackOpenApiClientTests(SimpleTestCase):
-    @patch("risk.clients.httpx.get")
-    def test_address_risk_score_calls_v3_endpoint_with_api_key(self, httpx_get):
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_address_risk_score_calls_v3_endpoint_with_api_key(
+        self, httpx_request, _sleep
+    ):
         response = httpx.Response(
             200,
             json={
@@ -194,16 +202,17 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
                 "GET", "https://openapi.misttrack.io/v3/risk_score"
             ),
         )
-        httpx_get.return_value = response
+        httpx_request.return_value = response
 
         result = MistTrackOpenApiClient(api_key="secret").address_risk_score(
             coin="ETH", address="0xabc"
         )
 
-        httpx_get.assert_called_once_with(
+        httpx_request.assert_called_once_with(
+            "GET",
             "https://openapi.misttrack.io/v3/risk_score",
             params={"coin": "ETH", "address": "0xabc", "api_key": "secret"},
-            timeout=5,
+            timeout=5.0,
         )
         self.assertEqual(result.risk_level, RiskLevel.HIGH)
         self.assertEqual(result.risk_score, Decimal("75"))
@@ -212,9 +221,10 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
         self.assertEqual(result.raw_response["address_label"], "Binance")
         self.assertEqual(result.risk_report_url, "https://report.example/v3")
 
-    @patch("risk.clients.httpx.get")
-    def test_api_error_raises_client_error(self, httpx_get):
-        httpx_get.return_value = httpx.Response(
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_api_error_raises_client_error(self, httpx_request, _sleep):
+        httpx_request.return_value = httpx.Response(
             200,
             json={"success": False, "msg": "InvalidApiKey"},
             request=httpx.Request(
@@ -226,6 +236,82 @@ class MistTrackOpenApiClientTests(SimpleTestCase):
             MistTrackOpenApiClient(api_key="bad").address_risk_score(
                 coin="ETH", address="0xabc"
             )
+
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_4xx_response_does_not_leak_api_key(self, httpx_request, _sleep):
+        """HTTP 4xx 抛出的异常消息不得包含明文 api_key（防日志泄露）。"""
+        httpx_request.return_value = httpx.Response(
+            401,
+            text="api_key=super-secret-leaked is invalid",
+            request=httpx.Request(
+                "GET",
+                "https://openapi.misttrack.io/v3/risk_score?api_key=super-secret-leaked",
+            ),
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            MistTrackOpenApiClient(api_key="super-secret-leaked").address_risk_score(
+                coin="ETH", address="0xabc"
+            )
+
+        self.assertNotIn("super-secret-leaked", str(ctx.exception))
+        # 4xx 不重试
+        self.assertEqual(httpx_request.call_count, 1)
+
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_5xx_retries_then_succeeds(self, httpx_request, _sleep):
+        ok = httpx.Response(
+            200,
+            json={
+                "success": True,
+                "msg": "",
+                "data": {
+                    "risk_level": "Low",
+                    "score": 10,
+                    "detail_list": [],
+                    "risk_detail": [],
+                    "risk_report_url": "",
+                },
+            },
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+        fail = httpx.Response(
+            502,
+            text="Bad Gateway",
+            request=httpx.Request(
+                "GET", "https://openapi.misttrack.io/v3/risk_score"
+            ),
+        )
+        httpx_request.side_effect = [fail, fail, ok]
+
+        result = MistTrackOpenApiClient(api_key="k").address_risk_score(
+            coin="ETH", address="0xabc"
+        )
+
+        self.assertEqual(result.risk_level, RiskLevel.LOW)
+        self.assertEqual(httpx_request.call_count, 3)
+
+    @patch("risk.clients.time.sleep", return_value=None)
+    @patch("risk.clients.httpx.request")
+    def test_network_error_message_does_not_leak_api_key(
+        self, httpx_request, _sleep
+    ):
+        """网络异常重试耗尽后抛出的消息不得包含 api_key。"""
+        httpx_request.side_effect = httpx.ConnectError(
+            "connection refused for https://openapi.misttrack.io/v3/risk_score?api_key=leak-me"
+        )
+
+        with self.assertRaises(RuntimeError) as ctx:
+            MistTrackOpenApiClient(api_key="leak-me").address_risk_score(
+                coin="ETH", address="0xabc"
+            )
+
+        self.assertNotIn("leak-me", str(ctx.exception))
+        self.assertEqual(httpx_request.call_count, 3)
 
 
 class RiskChainMappingTests(SimpleTestCase):
@@ -301,30 +387,39 @@ class RiskChainMappingTests(SimpleTestCase):
 @override_settings(IS_SAAS=False)
 class RiskMarkingServiceTests(RiskTestMixin, TestCase):
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
-    def test_invoice_below_threshold_is_skipped_without_external_query(self, score):
+    def test_invoice_below_threshold_does_not_create_assessment(self, score):
         invoice = self.make_invoice(worth=Decimal("99.99"))
 
         RiskMarkingService.mark_invoice(invoice.pk)
 
         score.assert_not_called()
-        assessment = RiskAssessment.objects.get(invoice=invoice)
-        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertFalse(RiskAssessment.objects.filter(invoice=invoice).exists())
         invoice.refresh_from_db()
         self.assertIsNone(invoice.risk_level)
         self.assertIsNone(invoice.risk_score)
 
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
-    def test_deposit_below_threshold_is_skipped_without_external_query(self, score):
+    def test_deposit_below_threshold_does_not_create_assessment(self, score):
         deposit = self.make_deposit(worth=Decimal("99.99"))
 
         RiskMarkingService.mark_deposit(deposit.pk)
 
         score.assert_not_called()
-        assessment = RiskAssessment.objects.get(deposit=deposit)
-        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertFalse(RiskAssessment.objects.filter(deposit=deposit).exists())
         deposit.refresh_from_db()
         self.assertIsNone(deposit.risk_level)
         self.assertIsNone(deposit.risk_score)
+
+    @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
+    def test_marking_disabled_does_not_create_assessment(self, score):
+        self.platform_settings.risk_marking_enabled = False
+        self.platform_settings.save(update_fields=["risk_marking_enabled"])
+        invoice = self.make_invoice(worth=Decimal("500"))
+
+        RiskMarkingService.mark_invoice(invoice.pk)
+
+        score.assert_not_called()
+        self.assertFalse(RiskAssessment.objects.filter(invoice=invoice).exists())
 
     # ===== SaaS gate（spec §5） =====
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
@@ -335,7 +430,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
             risk_level=RiskLevel.SEVERE,
             risk_score=Decimal("95"),
             detail_list=[],
-            risk_detail={},
+            risk_detail=[],
             risk_report_url="",
             raw_response={},
         )
@@ -360,7 +455,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
             risk_level=RiskLevel.SEVERE,
             risk_score=Decimal("95"),
             detail_list=[],
-            risk_detail={},
+            risk_detail=[],
             risk_report_url="",
             raw_response={},
         )
@@ -373,8 +468,8 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
 
     @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
-    def test_invoice_saas_permission_denied_skips(self, score):
-        """SaaS 模式 + 缓存命中 + enable_risk_marking=False → skip，不调 MistTrack。"""
+    def test_invoice_saas_permission_denied_does_not_create_assessment(self, score):
+        """SaaS 模式 + 缓存命中 + enable_risk_marking=False → 直接 return，不写记录。"""
         invoice = self.make_invoice(worth=Decimal("500"))
         cache.set(
             f"saas:permission:{invoice.project.appid}",
@@ -385,23 +480,21 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         RiskMarkingService.mark_invoice(invoice.pk)
 
         score.assert_not_called()
-        assessment = RiskAssessment.objects.get(invoice=invoice)
-        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertFalse(RiskAssessment.objects.filter(invoice=invoice).exists())
         invoice.refresh_from_db()
         self.assertIsNone(invoice.risk_level)
 
     @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_invoice_saas_cold_cache_fails_closed(self, score):
-        """SaaS 模式 + 冷缓存 → fail-closed → skip，不调 MistTrack。"""
+        """SaaS 模式 + 冷缓存 → fail-closed → 直接 return，不调 MistTrack 也不写记录。"""
         invoice = self.make_invoice(worth=Decimal("500"))
         # 不预写缓存，cache.clear() 已在 setUp 跑过
 
         RiskMarkingService.mark_invoice(invoice.pk)
 
         score.assert_not_called()
-        assessment = RiskAssessment.objects.get(invoice=invoice)
-        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertFalse(RiskAssessment.objects.filter(invoice=invoice).exists())
 
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     def test_deposit_self_hosted_mode_marks_normally(self, score):
@@ -411,7 +504,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
             risk_level=RiskLevel.SEVERE,
             risk_score=Decimal("95"),
             detail_list=[],
-            risk_detail={},
+            risk_detail=[],
             risk_report_url="",
             raw_response={},
         )
@@ -435,7 +528,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
             risk_level=RiskLevel.SEVERE,
             risk_score=Decimal("95"),
             detail_list=[],
-            risk_detail={},
+            risk_detail=[],
             risk_report_url="",
             raw_response={},
         )
@@ -448,7 +541,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
 
     @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
-    def test_deposit_saas_permission_denied_skips(self, score):
+    def test_deposit_saas_permission_denied_does_not_create_assessment(self, score):
         deposit = self.make_deposit(worth=Decimal("500"))
         cache.set(
             f"saas:permission:{deposit.customer.project.appid}",
@@ -459,8 +552,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         RiskMarkingService.mark_deposit(deposit.pk)
 
         score.assert_not_called()
-        assessment = RiskAssessment.objects.get(deposit=deposit)
-        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertFalse(RiskAssessment.objects.filter(deposit=deposit).exists())
 
     @override_settings(IS_SAAS=True, INTERNAL_API_TOKEN="t")
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
@@ -470,8 +562,7 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         RiskMarkingService.mark_deposit(deposit.pk)
 
         score.assert_not_called()
-        assessment = RiskAssessment.objects.get(deposit=deposit)
-        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertFalse(RiskAssessment.objects.filter(deposit=deposit).exists())
 
     @patch("risk.service.QuicknodeMistTrackClient.address_risk_score")
     @patch("risk.service.MistTrackOpenApiClient.address_risk_score")
@@ -515,7 +606,46 @@ class RiskMarkingServiceTests(RiskTestMixin, TestCase):
         assessment = RiskAssessment.objects.get(invoice=invoice)
         self.assertEqual(assessment.source, RiskSource.QUICKNODE_MISTTRACK)
         self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertEqual(assessment.skip_reason, RiskSkipReason.UNSUPPORTED_CHAIN)
         self.assertIn("unsupported QuickNode MistTrack chain", assessment.error_message)
+
+    @patch("risk.service.MistTrackOpenApiClient.address_risk_score")
+    def test_openapi_unsupported_chain_is_skipped_without_external_query(self, score):
+        """OpenAPI 路径未覆盖的链/币种与 QuickNode 一致走 SKIPPED 而非 FAILED。"""
+        invoice = self.make_invoice(worth=Decimal("500"))
+        self.platform_settings.misttrack_openapi_api_key = "openapi-secret"
+        self.platform_settings.save(update_fields=["misttrack_openapi_api_key"])
+        # 切到 OpenAPI 也未映射的某条 EVM 链
+        self.chain.chain_id = 999999
+        self.chain.code = "exotic-chain"
+        self.chain.save(update_fields=["chain_id", "code"])
+
+        RiskMarkingService.mark_invoice(invoice.pk)
+
+        score.assert_not_called()
+        assessment = RiskAssessment.objects.get(invoice=invoice)
+        self.assertEqual(assessment.source, RiskSource.MISTTRACK_OPENAPI)
+        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertEqual(assessment.skip_reason, RiskSkipReason.UNSUPPORTED_CHAIN)
+
+    def test_provider_not_configured_records_skip_reason(self):
+        invoice = self.make_invoice(worth=Decimal("500"))
+        self.platform_settings.quicknode_misttrack_endpoint_url = ""
+        self.platform_settings.misttrack_openapi_api_key = ""
+        self.platform_settings.save(
+            update_fields=[
+                "quicknode_misttrack_endpoint_url",
+                "misttrack_openapi_api_key",
+            ]
+        )
+
+        RiskMarkingService.mark_invoice(invoice.pk)
+
+        assessment = RiskAssessment.objects.get(invoice=invoice)
+        self.assertEqual(assessment.status, RiskAssessmentStatus.SKIPPED)
+        self.assertEqual(
+            assessment.skip_reason, RiskSkipReason.PROVIDER_NOT_CONFIGURED
+        )
 
 
 @override_settings(IS_SAAS=False)
@@ -582,7 +712,7 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
             risk_level=RiskLevel.SEVERE,
             risk_score=Decimal("95"),
             detail_list=["Mixer"],
-            risk_detail={"mixer": 1},
+            risk_detail=[{"mixer": 1}],
             risk_report_url="https://report.example/1",
             raw_response={"risk_level": "Severe", "score": 95},
         )
@@ -609,7 +739,7 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
                 "risk_level": RiskLevel.MODERATE,
                 "risk_score": "61",
                 "detail_list": ["Phishing"],
-                "risk_detail": {"phishing": 1},
+                "risk_detail": [{"phishing": 1}],
                 "risk_report_url": "https://report.example/cached",
                 "raw_response": {"risk_level": "Moderate", "score": 61},
             },
@@ -634,7 +764,7 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
             risk_level=RiskLevel.LOW,
             risk_score=Decimal("10"),
             detail_list=[],
-            risk_detail={},
+            risk_detail=[],
             risk_report_url="",
             raw_response={"risk_level": "Low", "score": 10},
         )
@@ -645,7 +775,7 @@ class RiskBusinessDispatchTests(RiskTestMixin, TestCase):
                 "risk_level": RiskLevel.SEVERE,
                 "risk_score": "99",
                 "detail_list": [],
-                "risk_detail": {},
+                "risk_detail": [],
                 "risk_report_url": "",
                 "raw_response": {},
             },

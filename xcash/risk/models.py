@@ -29,6 +29,17 @@ class RiskTargetType(models.TextChoices):
     DEPOSIT = "deposit", _("充币")
 
 
+class RiskSkipReason(models.TextChoices):
+    """
+    仅记录"风控被触发但客观上无法完成"的跳过原因。
+    主动跳过的场景（阈值以下 / 总开关关闭 / SaaS tier 未授权）直接 return，
+    不创建 RiskAssessment，避免大量噪音记录。
+    """
+
+    UNSUPPORTED_CHAIN = "unsupported_chain", _("链或币种暂不支持")
+    PROVIDER_NOT_CONFIGURED = "provider_not_configured", _("未配置 provider")
+
+
 class RiskAssessment(models.Model):
     source = models.CharField(
         _("数据来源"),
@@ -84,9 +95,17 @@ class RiskAssessment(models.Model):
         blank=True,
     )
     detail_list = models.JSONField(_("风险原因列表"), default=list, blank=True)
-    risk_detail = models.JSONField(_("风险详情"), default=dict, blank=True)
+    risk_detail = models.JSONField(_("风险详情"), default=list, blank=True)
     risk_report_url = models.URLField(_("风险报告链接"), blank=True, default="")
     raw_response = models.JSONField(_("原始响应摘要"), default=dict, blank=True)
+    skip_reason = models.CharField(
+        _("跳过原因"),
+        choices=RiskSkipReason,
+        max_length=32,
+        blank=True,
+        default="",
+        db_index=True,
+    )
     error_message = models.TextField(_("错误摘要"), blank=True, default="")
     checked_at = models.DateTimeField(_("查询完成时间"), null=True, blank=True)
     created_at = models.DateTimeField(_("创建时间"), auto_now_add=True)

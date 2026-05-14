@@ -13,8 +13,12 @@ from django.utils import timezone
 from risk.clients import MistTrackOpenApiClient
 from risk.clients import MistTrackRiskResult
 from risk.clients import QuicknodeMistTrackClient
+from risk.misttrack_coin_map import OPENAPI_EVM_COIN
+from risk.misttrack_coin_map import OPENAPI_TRON_COIN
+from risk.misttrack_coin_map import QUICKNODE_EVM_CHAIN
 from risk.models import RiskAssessment
 from risk.models import RiskAssessmentStatus
+from risk.models import RiskSkipReason
 from risk.models import RiskSource
 from risk.models import RiskTargetType
 
@@ -37,7 +41,7 @@ logger = structlog.get_logger()
 
 
 class UnsupportedRiskProviderChainError(RuntimeError):
-    pass
+    """provider 当前未覆盖该 chain/coin 的映射，应视为 SKIPPED 而非 FAILED。"""
 
 
 class RiskMarkingService:
@@ -45,7 +49,7 @@ class RiskMarkingService:
     def mark_invoice(cls, invoice_id: int) -> None:
         invoice = (
             Invoice.objects.select_related(
-                "transfer", "transfer__chain", "project"
+                "transfer", "transfer__chain", "transfer__crypto", "project"
             )
             .filter(pk=invoice_id)
             .first()
@@ -53,16 +57,15 @@ class RiskMarkingService:
         if invoice is None or invoice.transfer_id is None:
             return
 
+        # 以下三种"业务上根本不该走风控"的场景直接返回，不写 RiskAssessment：
+        # - SaaS tier 未开权限：每个商户每笔都写记录会污染审计数据，权限本身在 saas tier 可查。
+        # - 风控总开关关闭：会让所有 invoice/deposit 各写一条 SKIPPED，纯垃圾数据。
+        # - 价值低于阈值：小额支付占绝大多数，要查"哪些单没风控"看 invoice.risk_level IS NULL 即可。
         if not cls._is_risk_marking_allowed(invoice):
-            cls._mark_skipped_invoice(invoice, "saas tier missing risk_marking permission")
             return
-
         if not get_risk_marking_enabled():
-            cls._mark_skipped_invoice(invoice, "risk marking disabled")
             return
-
         if invoice.worth <= get_risk_marking_threshold_usd():
-            cls._mark_skipped_invoice(invoice, "invoice below risk threshold")
             return
 
         cls._mark_target(
@@ -75,7 +78,11 @@ class RiskMarkingService:
     def mark_deposit(cls, deposit_id: int) -> None:
         deposit = (
             Deposit.objects.select_related(
-                "transfer", "transfer__chain", "customer", "customer__project"
+                "transfer",
+                "transfer__chain",
+                "transfer__crypto",
+                "customer",
+                "customer__project",
             )
             .filter(pk=deposit_id)
             .first()
@@ -83,16 +90,12 @@ class RiskMarkingService:
         if deposit is None:
             return
 
+        # 同 mark_invoice，"业务上不该走风控"的场景直接 return，不写 RiskAssessment。
         if not cls._is_risk_marking_allowed(deposit):
-            cls._mark_skipped_deposit(deposit, "saas tier missing risk_marking permission")
             return
-
         if not get_risk_marking_enabled():
-            cls._mark_skipped_deposit(deposit, "risk marking disabled")
             return
-
         if deposit.worth <= get_risk_marking_threshold_usd():
-            cls._mark_skipped_deposit(deposit, "deposit below risk threshold")
             return
 
         cls._mark_target(
@@ -151,7 +154,12 @@ class RiskMarkingService:
         transfer = target.transfer
         provider = cls._select_provider()
         if provider is None:
-            cls._mark_failed(target, target_type, "Risk marking provider config is empty")
+            cls._mark_skipped(
+                target,
+                target_type,
+                "Risk marking provider config is empty",
+                skip_reason=RiskSkipReason.PROVIDER_NOT_CONFIGURED,
+            )
             return
 
         address = transfer.from_address
@@ -181,7 +189,13 @@ class RiskMarkingService:
                 address=address,
             )
         except UnsupportedRiskProviderChainError as exc:
-            cls._mark_skipped(target, target_type, str(exc), source=provider["source"])
+            cls._mark_skipped(
+                target,
+                target_type,
+                str(exc),
+                source=provider["source"],
+                skip_reason=RiskSkipReason.UNSUPPORTED_CHAIN,
+            )
             return
         except Exception as exc:
             logger.warning(
@@ -228,9 +242,10 @@ class RiskMarkingService:
             "risk_level": payload.get("risk_level"),
             "risk_score": risk_score,
             "detail_list": payload.get("detail_list") or [],
-            "risk_detail": payload.get("risk_detail") or {},
+            "risk_detail": payload.get("risk_detail") or [],
             "risk_report_url": payload.get("risk_report_url") or "",
             "raw_response": payload.get("raw_response") or {},
+            "skip_reason": "",
             "error_message": "",
             "checked_at": now,
         }
@@ -258,22 +273,15 @@ class RiskMarkingService:
                 "risk_level": None,
                 "risk_score": None,
                 "detail_list": [],
-                "risk_detail": {},
+                "risk_detail": [],
                 "risk_report_url": "",
                 "raw_response": {},
+                "skip_reason": "",
                 "error_message": error_message[:1000],
                 "checked_at": timezone.now(),
             },
         )
         cls._sync_snapshot(target, None, None)
-
-    @classmethod
-    def _mark_skipped_invoice(cls, invoice: Invoice, reason: str) -> None:
-        cls._mark_skipped(invoice, RiskTargetType.INVOICE, reason)
-
-    @classmethod
-    def _mark_skipped_deposit(cls, deposit: Deposit, reason: str) -> None:
-        cls._mark_skipped(deposit, RiskTargetType.DEPOSIT, reason)
 
     @classmethod
     def _mark_skipped(
@@ -282,6 +290,7 @@ class RiskMarkingService:
         target_type: str,
         reason: str,
         *,
+        skip_reason: str,
         source: str = RiskSource.QUICKNODE_MISTTRACK,
     ) -> None:
         cls._upsert_assessment(
@@ -296,9 +305,10 @@ class RiskMarkingService:
                 "risk_level": None,
                 "risk_score": None,
                 "detail_list": [],
-                "risk_detail": {},
+                "risk_detail": [],
                 "risk_report_url": "",
                 "raw_response": {},
+                "skip_reason": skip_reason,
                 "error_message": reason,
                 "checked_at": timezone.now(),
             },
@@ -378,14 +388,8 @@ class RiskMarkingService:
             return "BTC"
         if chain.type == ChainType.TRON:
             return "TRX"
-        if chain.type == ChainType.EVM:
-            mapping = {
-                1: "ETH",
-                56: "BNB",
-                42161: "ARBITRUM",
-            }
-            if chain.chain_id in mapping:
-                return mapping[chain.chain_id]
+        if chain.type == ChainType.EVM and chain.chain_id in QUICKNODE_EVM_CHAIN:
+            return QUICKNODE_EVM_CHAIN[chain.chain_id]
         raise UnsupportedRiskProviderChainError(
             f"unsupported QuickNode MistTrack chain: {chain.code}"
         )
@@ -393,177 +397,14 @@ class RiskMarkingService:
     @staticmethod
     def _misttrack_openapi_coin(*, chain: Chain, crypto: Crypto) -> str:
         symbol = crypto.symbol.upper()
-        if chain.type == ChainType.BITCOIN:
-            if symbol == "BTC":
-                return "BTC"
-        if chain.type == ChainType.TRON:
-            mapping = {
-                "TRX": "TRX",
-                "USDT": "USDT-TRC20",
-                "USDC": "USDC-TRC20",
-                "USDD": "USDD-TRC20",
-            }
-            if symbol in mapping:
-                return mapping[symbol]
+        if chain.type == ChainType.BITCOIN and symbol == "BTC":
+            return "BTC"
+        if chain.type == ChainType.TRON and symbol in OPENAPI_TRON_COIN:
+            return OPENAPI_TRON_COIN[symbol]
         if chain.type == ChainType.EVM:
-            chain_mappings = {
-                1: {
-                    "ETH": "ETH",
-                    "USDT": "USDT-ERC20",
-                    "USDC": "USDC-ERC20",
-                    "WETH": "WETH-ERC20",
-                    "BNB": "BNB-ERC20",
-                    "UNI": "UNI-ERC20",
-                    "BUSD": "BUSD-ERC20",
-                    "DAI": "DAI-ERC20",
-                    "GRT": "GRT-ERC20",
-                    "ENS": "ENS-ERC20",
-                    "UST": "UST-ERC20",
-                    "RENBTC": "renBTC-ERC20",
-                    "WBTC": "WBTC-ERC20",
-                    "TUSD": "TUSD-ERC20",
-                    "SHIB": "SHIB-ERC20",
-                    "LINK": "LINK-ERC20",
-                    "BAT": "BAT-ERC20",
-                    "CRO": "CRO-ERC20",
-                    "SUSHI": "SUSHI-ERC20",
-                    "STETH": "stETH-ERC20",
-                    "CRV": "CRV-ERC20",
-                    "CVX": "CVX-ERC20",
-                    "CVXCRV": "cvxCRV-ERC20",
-                    "3CRV": "3Crv-ERC20",
-                    "LOOKS": "LOOKS-ERC20",
-                    "IOTX": "IOTX-ERC20",
-                    "APE": "APE-ERC20",
-                    "PYUSD": "PYUSD-ERC20",
-                    "MEME": "MEME-ERC20",
-                    "WUSD": "WUSD-ERC20",
-                    "PEPE": "PEPE-ERC20",
-                    "CBBTC": "cbBTC-ERC20",
-                    "FLOKI": "FLOKI-ERC20",
-                    "LEO": "LEO-ERC20",
-                    "USDS": "USDS-ERC20",
-                    "FDUSD": "FDUSD-ERC20",
-                    "USDE": "USDe-ERC20",
-                    "USD1": "USD1-ERC20",
-                    "WLFI": "WLFI-ERC20",
-                    "SUSD": "sUSD-ERC20",
-                },
-                10: {
-                    "ETH": "ETH-Optimism",
-                    "USDT": "USDT-Optimism",
-                    "USDC": "USDC-Optimism",
-                    "USDC.E": "USDC.e-Optimism",
-                    "OP": "OP-Optimism",
-                    "DAI": "DAI-Optimism",
-                    "WBTC": "WBTC-Optimism",
-                    "WETH": "WETH-Optimism",
-                    "SNX": "SNX-Optimism",
-                    "SUSD": "sUSD-Optimism",
-                    "VELO": "VELO-Optimism",
-                    "WLD": "WLD-Optimism",
-                    "USDE": "USDe-Optimism",
-                },
-                56: {
-                    "BNB": "BNB",
-                    "BUSD": "BUSD-BEP20",
-                    "USDT": "USDT-BEP20",
-                    "WBNB": "WBNB-BEP20",
-                    "ETH": "ETH-BEP20",
-                    "BTCB": "BTCB-BEP20",
-                    "DOGE": "DOGE-BEP20",
-                    "USDC": "USDC-BEP20",
-                    "SHIB": "SHIB-BEP20",
-                    "UST": "UST-BEP20",
-                    "DAI": "DAI-BEP20",
-                    "CAKE": "Cake-BEP20",
-                    "BCH": "BCH-BEP20",
-                    "USD1": "USD1-BEP20",
-                    "TUSD": "TUSD-BEP20",
-                    "USDE": "USDe-BEP20",
-                    "FDUSD": "FDUSD-BEP20",
-                },
-                137: {
-                    "POL": "POL-Polygon",
-                    "WMATIC": "WMATIC-Polygon",
-                    "WETH": "WETH-Polygon",
-                    "USDC": "USDC-Polygon",
-                    "USDC.E": "USDC.e-Polygon",
-                    "USDT": "USDT-Polygon",
-                    "DAI": "DAI-Polygon",
-                    "WBTC": "WBTC-Polygon",
-                    "AAVE": "AAVE-Polygon",
-                    "LINK": "LINK-Polygon",
-                    "UNI": "UNI-Polygon",
-                    "UST": "UST-Polygon",
-                    "SUSHI": "SUSHI-Polygon",
-                    "WUSD": "WUSD-Polygon",
-                    "BUSD": "BUSD-Polygon",
-                },
-                324: {
-                    "ETH": "ETH-zkSync",
-                    "ZK": "ZK-zkSync",
-                    "USDT": "USDT-zkSync",
-                    "USDC": "USDC-zkSync",
-                },
-                4200: {"BTC": "BTC-Merlin"},
-                4689: {"IOTX": "IOTX"},
-                8453: {
-                    "ETH": "ETH-Base",
-                    "USDC": "USDC-Base",
-                    "USDBC": "USDbC-Base",
-                    "WETH": "WETH-Base",
-                    "DEGEN": "DEGEN-Base",
-                    "DAI": "DAI-Base",
-                    "CBETH": "cbETH-Base",
-                    "USDT": "USDT-Base",
-                    "WBTC": "WBTC-Base",
-                    "USDS": "USDS-Base",
-                    "WSTETH": "wstETH-Base",
-                    "USDE": "USDe-Base",
-                    "LINK": "LINK-Base",
-                    "CBBTC": "cbBTC-Base",
-                    "AAVE": "AAVE-Base",
-                    "LBTC": "LBTC-Base",
-                    "OM": "OM-Base",
-                    "RETH": "rETH-Base",
-                    "CRV": "CRV-Base",
-                    "SOLVBTC": "SolvBTC-Base",
-                },
-                42161: {
-                    "ETH": "ETH-Arbitrum",
-                    "USDT": "USDT-Arbitrum",
-                    "USDC": "USDC-Arbitrum",
-                    "USDC.E": "USDC.e-Arbitrum",
-                    "WETH": "WETH-Arbitrum",
-                    "DAI": "DAI-Arbitrum",
-                    "WBTC": "WBTC-Arbitrum",
-                    "LINK": "LINK-Arbitrum",
-                    "GMX": "GMX-Arbitrum",
-                    "SBFGMX": "sbfGMX-Arbitrum",
-                    "STG": "STG-Arbitrum",
-                    "MAGIC": "MAGIC-Arbitrum",
-                    "ARB": "ARB-Arbitrum",
-                    "USDS": "USDS-Arbitrum",
-                    "USDE": "USDe-Arbitrum",
-                    "FDUSD": "FDUSD-Arbitrum",
-                },
-                43114: {
-                    "AVAX": "AVAX-Avalanche",
-                    "WAVAX": "WAVAX-Avalanche",
-                    "BTC.B": "BTC.b-Avalanche",
-                    "USDT": "USDT-Avalanche",
-                    "USDT.E": "USDT.e-Avalanche",
-                    "USDC": "USDC-Avalanche",
-                    "USDC.E": "USDC.e-Avalanche",
-                    "WETH.E": "WETH.e-Avalanche",
-                    "DAI.E": "DAI.e-Avalanche",
-                    "WBTC.E": "WBTC.e-Avalanche",
-                },
-            }
-            mapping = chain_mappings.get(chain.chain_id)
+            mapping = OPENAPI_EVM_COIN.get(chain.chain_id)
             if mapping and symbol in mapping:
                 return mapping[symbol]
-        raise RuntimeError(
+        raise UnsupportedRiskProviderChainError(
             f"unsupported MistTrack OpenAPI coin: {crypto.symbol} on {chain.code}"
         )
