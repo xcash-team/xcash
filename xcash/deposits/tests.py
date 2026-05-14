@@ -567,6 +567,8 @@ class DepositServiceCoreTests(TestCase):
             customer=None,
             transfer=transfer,
             status=DepositStatus.CONFIRMING,
+            risk_level=None,
+            risk_score=None,
         )
         content = Deposit.content.fget(fake_deposit)
 
