@@ -1,5 +1,44 @@
 # Xcash
 
+<p align="center">
+  <strong>Open-Source Self-Hosted Cryptocurrency Payment Gateway</strong>
+  <br />
+  Accept USDT · BTC · ETH · and 100+ blockchains — zero platform fees, full self-custody
+</p>
+
+<p align="center">
+  <a href="https://xca.sh"><img src="https://img.shields.io/badge/Website-xca.sh-blue" alt="Website"></a>
+  <a href="https://github.com/xca-sh/xcash/stargazers"><img src="https://img.shields.io/github/stars/xca-sh/xcash" alt="GitHub Stars"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-3.13-blue.svg" alt="Python">
+  <img src="https://img.shields.io/badge/django-5.2-green.svg" alt="Django">
+</p>
+
+## What is Xcash?
+
+**Xcash** is an open-source, self-hosted **cryptocurrency payment gateway** that lets businesses accept crypto payments (USDT, BTC, ETH, and 100+ other tokens) directly into their own wallets — without any third party holding their funds.
+
+Unlike hosted payment processors like CoinGate or OpenNode, Xcash is **fully self-custodial**: your private keys stay on your infrastructure, every payment goes directly to your wallet, and you pay zero platform fees. It's the self-hosted alternative to BTCPay Server with broader chain support and a modern architecture.
+
+**Use cases:** e-commerce crypto payments, USDT deposit/withdraw systems, cross-border stablecoin settlements, SaaS subscription billing in crypto, and exchange-style wallet infrastructure.
+
+**Quick start:** Deploy with Docker in 3 minutes — `docker compose up -d`
+
+### Key Capabilities
+
+| Feature | Detail |
+|---------|--------|
+| 💳 **Payment Gateway** | Accept USDT, BTC, ETH on 100+ chains |
+| 🔐 **Self-Custody** | Private keys on your infrastructure, zero third-party risk |
+| 💰 **Zero Platform Fees** | No percentage cuts — pay only blockchain gas |
+| 🚀 **3-Min Deploy** | Docker Compose, one command |
+| 🛡️ **Risk Control** | MistTrack on-chain address risk scoring |
+| 🔄 **Deposit/Withdraw** | Full exchange-style crypto deposit and withdrawal flows |
+| 📡 **Webhooks** | Real-time payment event notifications |
+| 🔗 **100+ Chains** | All EVM chains + Bitcoin + Tron |
+
+## 什么是 Xcash？
+
 企业级开源加密货币支付网关 —— 专注链上价值流通
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -72,6 +111,18 @@ Provider 选择规则很简单：系统先读取 **MistTrack OpenAPI API Key**�
 ## 截图
 
 ![管理后台 Dashboard](xcash/static/xcash-dashboard.jpeg)
+
+## Why Xcash?
+
+| vs. | Xcash | BTCPay Server | CoinGate | OpenNode |
+|---|---|---|---|---|
+| **Self-Hosted** | ✅ | ✅ | ❌ | ❌ |
+| **100+ Chains** | ✅ | ❌ Bitcoin only | ✅ | ❌ BTC/Lightning |
+| **Zero Fees** | ✅ | ✅ | ❌ 1%+ | ❌ 1%+ |
+| **Deposit/Withdraw** | ✅ | ❌ | ❌ | ❌ |
+| **Risk Control** | ✅ | ❌ | ❌ | ❌ |
+| **EasyPay Compat** | ✅ | ❌ | ❌ | ❌ |
+| **3-Min Deploy** | ✅ | ❌ Complex | N/A | N/A |
 
 ## 特性
 
