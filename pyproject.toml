@@ -4,7 +4,7 @@ package = false
 [project]
 name = "xcash"
 version = "0.1.0"
-description = "Crypto finance."
+description = "Open-source self-hosted cryptocurrency payment gateway. Accept USDT, BTC, ETH. Zero platform fees, 100+ blockchains, Docker deploy, full self-custody."
 requires-python = "==3.13.*"
 dependencies = [
     "web3==7.14.1",
